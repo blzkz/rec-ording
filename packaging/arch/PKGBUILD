@@ -1,7 +1,7 @@
 # Maintainer: blzkz <sergiobl88@gmail.com>
 pkgname=rec-ording
 pkgver=0.1.0
-pkgrel=1
+pkgrel=2
 pkgdesc="Grabador de pantalla y estudio de edición 3D para demos de Android (ADB) y PC con FFmpeg y MCP"
 arch=('x86_64')
 url="https://github.com/blzkz/rec-ording"
