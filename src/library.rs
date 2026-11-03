@@ -336,7 +336,7 @@ pub fn thumbnail(src: &ModelSource, w: usize, h: usize) -> Option<Vec<u8>> {
     let model = model3d::prepare(src, part, 0).ok()?;
     let style = Style {
         frame: FrameStyle::Custom,
-        model: Some(CustomModel { screen_part: part, ..Default::default() }),
+        model: Some(CustomModel::default()),
         background: Background { a: [64, 64, 70], b: [46, 46, 51], angle: 90.0 },
         padding: 0.1,
         shadow: 0.5,

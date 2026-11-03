@@ -415,7 +415,6 @@ impl RecOrdingApp {
     fn default_model_settings(path: &str, src: &ModelSource) -> CustomModel {
         CustomModel {
             path: path.to_string(),
-            screen_part: src.guess.unwrap_or(0),
             animation: (!src.animations.is_empty()).then_some(0),
             ..Default::default()
         }
@@ -456,7 +455,13 @@ impl RecOrdingApp {
             self.load_model(cm.path.clone());
             return;
         };
-        match model3d::prepare(src, cm.screen_part, cm.quarter_turns) {
+        let Some(part) = cm.screen(src.guess, src.parts.len()) else {
+            self.model_prepared = None;
+            self.model_error = Some(cm);
+            self.toast("No se encontró la pantalla del modelo: elígela en «Pantalla».");
+            return;
+        };
+        match model3d::prepare(src, part, cm.quarter_turns) {
             Ok(m) => {
                 self.model_prepared = Some((cm, Arc::new(m)));
                 self.model_error = None;
@@ -1490,18 +1495,38 @@ impl RecOrdingApp {
         section(ui, "Ajustes del modelo", |ui| {
             ui.horizontal(|ui| {
                 fixed_label(ui, 78.0, RichText::new("Pantalla").color(TEXT), Align::Min);
-                let current = src.parts.get(cm.screen_part).map(|p| p.name.clone()).unwrap_or_default();
+                let detected = src.guess.and_then(|g| src.parts.get(g)).map(|p| p.name.clone());
+                let current = match cm.screen_part.and_then(|i| src.parts.get(i)) {
+                    Some(p) => p.name.clone(),
+                    None => match &detected {
+                        Some(d) => format!("Automática ({d})"),
+                        None => "Elige una pieza".to_string(),
+                    },
+                };
                 egui::ComboBox::from_id_salt("model-screen")
                     .selected_text(current)
                     .width(ui.available_width() - 8.0)
                     .show_ui(ui, |ui| {
+                        if src.guess.is_some() {
+                            ui.selectable_value(&mut cm.screen_part, None, "Automática (recomendada)");
+                            ui.separator();
+                        }
                         for (i, p) in src.parts.iter().enumerate() {
-                            ui.selectable_value(&mut cm.screen_part, i, &p.name);
+                            let label = if Some(i) == src.guess { format!("{} · detectada", p.name) } else { p.name.clone() };
+                            ui.selectable_value(&mut cm.screen_part, Some(i), label);
                         }
                     });
             })
             .response
             .on_hover_text("La pieza del modelo donde se ve tu grabación");
+            if cm.screen_part.is_some() && src.guess.is_some() {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Elegida a mano.").color(YELLOW).font(regular(11.5)));
+                    if ui.link(RichText::new("Volver a automática").font(regular(11.5))).clicked() {
+                        cm.screen_part = None;
+                    }
+                });
+            }
             ui.horizontal(|ui| {
                 fixed_label(ui, 78.0, RichText::new("Orientación").color(TEXT), Align::Min);
                 if secondary_button(ui, "Girar 90°").on_hover_text("Si la grabación sale tumbada o al revés").clicked() {

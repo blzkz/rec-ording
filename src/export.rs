@@ -168,7 +168,8 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
     let model = match (&project.style.frame, &project.style.model) {
         (crate::model::FrameStyle::Custom, Some(cm)) => {
             let src = crate::model3d::load(&cm.path)?;
-            Some(crate::model3d::prepare(&src, cm.screen_part, cm.quarter_turns)?)
+            let part = cm.screen(src.guess, src.parts.len()).ok_or("No se encontró la pantalla del modelo: elígela en «Pantalla»")?;
+            Some(crate::model3d::prepare(&src, part, cm.quarter_turns)?)
         }
         _ => None,
     };
@@ -266,7 +267,8 @@ mod tests {
             let src = crate::model3d::load(&path).expect("model");
             project.style.frame = FrameStyle::Custom;
             let animation = std::env::var("REC_TEST_ANIM").ok().and_then(|a| a.parse().ok());
-            project.style.model = Some(CustomModel { path, screen_part: src.guess.expect("screen"), animation, ..Default::default() });
+            assert!(src.guess.is_some(), "screen");
+            project.style.model = Some(CustomModel { path, animation, ..Default::default() });
         }
         project.zooms.push(ZoomSegment { id: 1, start: 1.0, end: 4.0, scale: 2.0, x: 0.5, y: 0.2, auto: false });
         project.touches.push(Touch { time: 1.5, duration: 0.1, x: 0.5, y: 0.2, end_x: 0.5, end_y: 0.2, kind: TouchKind::Tap });

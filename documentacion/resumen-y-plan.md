@@ -49,6 +49,10 @@ Se han retirado, de momento, el servidor MCP, el autoactualizador, los subtítul
 - Importar valida el modelo antes de copiarlo: un modelo que no carga no entra en la galería. Se puede importar el `.zip` de la descarga.
 - Renombrar y eliminar modelos importados (clic derecho o desde «Ajustes del modelo»), con confirmación; los que no cargan se marcan en la galería.
 
+## v0.6.3: pantalla automática
+
+- La pieza que hace de pantalla es «Automática» por defecto y sigue a la detección; elegir otra a mano queda indicado, con un enlace para volver a automática. Las elecciones guardadas por versiones anteriores se descartan (numeraban las piezas de otra forma).
+
 ## Ideas para siguientes versiones
 
 - Títulos y textos animados sobre el vídeo (intro, llamada a la acción).

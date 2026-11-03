@@ -304,8 +304,10 @@ pub struct Style {
 #[serde(default)]
 pub struct CustomModel {
     pub path: String,
-    /// Index of the model part that is the screen.
-    pub screen_part: usize,
+    /// Model part that is the screen; `None` follows the automatic detection. Saved under a new
+    /// key: indices saved by earlier versions (no automatic option, other numbering) are dropped.
+    #[serde(rename = "screen")]
+    pub screen_part: Option<usize>,
     /// Extra 90° turns of the screen, for models whose top was guessed wrong.
     pub quarter_turns: u8,
     /// Animation of the model to play, if it has any.
@@ -315,7 +317,14 @@ pub struct CustomModel {
 
 impl Default for CustomModel {
     fn default() -> Self {
-        Self { path: String::new(), screen_part: 0, quarter_turns: 0, animation: None, loop_animation: true }
+        Self { path: String::new(), screen_part: None, quarter_turns: 0, animation: None, loop_animation: true }
+    }
+}
+
+impl CustomModel {
+    /// The part to use as screen: the user's choice if it still exists, else the detected one.
+    pub fn screen(&self, detected: Option<usize>, parts: usize) -> Option<usize> {
+        self.screen_part.filter(|i| *i < parts).or(detected)
     }
 }
 
@@ -581,4 +590,20 @@ pub fn load_last_project() -> Project {
 pub fn save_project(project: &Project) -> Result<(), String> {
     let json = serde_json::to_string_pretty(project).map_err(|e| e.to_string())?;
     fs::write(autosave_path(), json).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn old_screen_choice_becomes_automatic() {
+        let old: CustomModel = serde_json::from_str(r#"{"path":"a.glb","screen_part":1,"quarter_turns":0}"#).unwrap();
+        assert_eq!(old.screen_part, None);
+        assert_eq!(old.screen(Some(27), 32), Some(27));
+        let manual = CustomModel { screen_part: Some(3), ..Default::default() };
+        let back: CustomModel = serde_json::from_str(&serde_json::to_string(&manual).unwrap()).unwrap();
+        assert_eq!(back.screen(Some(27), 32), Some(3));
+        assert_eq!(back.screen(Some(27), 2), Some(27), "a choice that no longer exists falls back to automatic");
+    }
 }
