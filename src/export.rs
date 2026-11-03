@@ -165,6 +165,13 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
     });
 
     let track = CameraTrack::build(&project.zooms, 0.0, media.duration);
+    let model = match (&project.style.frame, &project.style.model) {
+        (crate::model::FrameStyle::Custom, Some(cm)) => {
+            let src = crate::model3d::load(&cm.path)?;
+            Some(crate::model3d::prepare(&src, cm.screen_material, cm.quarter_turns)?)
+        }
+        _ => None,
+    };
     let began = Instant::now();
     let mut written = 0usize;
     let mut last_mips: Option<Mips> = None;
@@ -198,6 +205,8 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
                 touches: &project.touches,
                 time: t,
                 since_start: t - start,
+                model: model.as_ref(),
+                supersample: 2,
             },
         );
         if out_tx.send(buf).is_err() {
@@ -252,6 +261,12 @@ mod tests {
         project.style.turn = -28.0;
         project.style.tilt = 6.0;
         project.style.intro = true;
+        // Optionally through an imported model: REC_TEST_MODEL=/path/model.glb
+        if let Ok(path) = std::env::var("REC_TEST_MODEL") {
+            let src = crate::model3d::load(&path).expect("model");
+            project.style.frame = FrameStyle::Custom;
+            project.style.model = Some(CustomModel { path, screen_material: src.guess.expect("screen"), quarter_turns: 0 });
+        }
         project.zooms.push(ZoomSegment { id: 1, start: 1.0, end: 4.0, scale: 2.0, x: 0.5, y: 0.2, auto: false });
         project.touches.push(Touch { time: 1.5, duration: 0.1, x: 0.5, y: 0.2, end_x: 0.5, end_y: 0.2, kind: TouchKind::Tap });
         let out = output_path(&project);

@@ -3,6 +3,7 @@
 
 use crate::camera::CamState;
 use crate::model::{FrameStyle, Style, Touch, TouchKind};
+use crate::model3d::{Lighting, ModelMeta, PreparedModel};
 use rayon::prelude::*;
 
 /// An RGBA8 image.
@@ -104,18 +105,42 @@ pub struct Layout {
 }
 
 impl Layout {
-    pub fn new(cw: f32, ch: f32, style: &Style, video_w: f32, video_h: f32) -> Self {
+    /// `model` gives the proportions of an imported model; without it a `Custom` frame falls
+    /// back to the rounded phone.
+    pub fn new(cw: f32, ch: f32, style: &Style, video_w: f32, video_h: f32, model: Option<&ModelMeta>) -> Self {
         let min_dim = cw.min(ch);
         let pad = style.padding * min_dim;
         let avail_w = (cw - 2.0 * pad).max(1.0);
         let avail_h = (ch - 2.0 * pad).max(1.0);
+
+        if let (FrameStyle::Custom, Some(m)) = (style.frame, model) {
+            // Fit the whole model; `unit` is the screen width in pixels.
+            let (bw, bh) = ((m.x1 - m.x0).max(1e-3), (m.y1 - m.y0).max(1e-3));
+            let unit = (avail_w / bw).min(avail_h / bh);
+            let body = Rect2::from_center(cw * 0.5, ch * 0.5, bw * unit, bh * unit);
+            let (scx, scy) = (body.cx() - (m.x0 + m.x1) * 0.5 * unit, body.cy() - (m.y0 + m.y1) * 0.5 * unit);
+            let screen = Rect2::from_center(scx, scy, unit, unit / m.screen_aspect.max(0.05));
+            return Self {
+                cw,
+                ch,
+                body,
+                body_r: 0.12 * body.w().min(body.h()),
+                screen,
+                screen_r: 0.0,
+                bezel: 0.0,
+                depth: (m.z1 - m.z0) * unit,
+                frame: FrameStyle::Custom,
+                framed: false,
+                portrait: m.screen_aspect < 1.0,
+            };
+        }
 
         let aspect = (video_w / video_h.max(1.0)).max(0.05);
         let portrait = aspect < 1.0;
         let framed = style.frame != FrameStyle::None;
         // Bezel, screen corner radius and thickness, in units of the screen's short side.
         let (k, radius_k, depth_k) = match style.frame {
-            FrameStyle::Rounded => (0.045, 0.105, 0.1),
+            FrameStyle::Rounded | FrameStyle::Custom => (0.045, 0.105, 0.1),
             FrameStyle::Flat => (0.035, 0.035, 0.1),
             FrameStyle::Curved => (0.025, 0.07, 0.1),
             FrameStyle::Tablet => (0.07, 0.035, 0.045),
@@ -133,7 +158,8 @@ impl Layout {
         let screen_r = unit * radius_k;
         let body_r = if framed { screen_r + bezel } else { screen_r };
 
-        Self { cw, ch, body, body_r, screen, screen_r, bezel, depth: depth_k * unit, frame: style.frame, framed, portrait }
+        let frame = if style.frame == FrameStyle::Custom { FrameStyle::Rounded } else { style.frame };
+        Self { cw, ch, body, body_r, screen, screen_r, bezel, depth: depth_k * unit, frame, framed, portrait }
     }
 
     /// Scale and translation the camera applies to the scene: `out = c + (q - c) * s + t`.
@@ -182,6 +208,10 @@ pub struct ComposeInput<'a> {
     pub time: f32,
     /// Seconds since the start of the (trimmed) video, for the intro and idle motion.
     pub since_start: f32,
+    /// Imported model, drawn instead of the built-in phone when the style asks for it.
+    pub model: Option<&'a PreparedModel>,
+    /// Supersampling of the model's edges (1 = off, 2 = 4 samples per pixel).
+    pub supersample: usize,
 }
 
 struct Indicator {
@@ -410,7 +440,8 @@ pub fn compose(out: &mut [u8], ow: usize, oh: usize, inp: &ComposeInput) {
     }
     let style = inp.style;
     let (cw, ch) = (ow as f32, oh as f32);
-    let layout = Layout::new(cw, ch, style, inp.video_w, inp.video_h);
+    let model = inp.model.filter(|_| style.frame == FrameStyle::Custom);
+    let layout = Layout::new(cw, ch, style, inp.video_w, inp.video_h, model.map(|m| &m.meta));
     let cam = layout.camera(inp.cam);
     let (s, tx, ty) = cam;
     let inv_s = 1.0 / s;
@@ -428,17 +459,34 @@ pub fn compose(out: &mut [u8], ow: usize, oh: usize, inp: &ComposeInput) {
     // 3D pose: the device is a slab whose front face sits at z = 0, seen in perspective from
     // the front. With no angle this reduces exactly to the flat 2D layout.
     let (tilt, turn, roll, lift) = device_pose(style, inp.cam, inp.since_start, min_dim);
-    let angled = tilt.abs() > 0.01 || turn.abs() > 0.01 || roll.abs() > 0.01;
+    let angled = tilt.abs() > 0.01 || turn.abs() > 0.01 || roll.abs() > 0.01 || model.is_some();
     let rot = rotation(tilt, turn, roll);
     let focal = 1.15 * cw.max(ch);
     let (lcx, lcy) = (layout.body.cx(), layout.body.cy());
     // Push the device back so its nearest corner stays at the flat layout's size: turning it
     // never makes it grow past the margins.
     let (hx, hy) = (layout.body.w() * 0.5, layout.body.h() * 0.5);
-    let nearest = [(-hx, -hy), (hx, -hy), (-hx, hy), (hx, hy)]
-        .iter()
-        .map(|&(x, y)| apply(&rot, [x, y, 0.0])[2])
-        .fold(0.0f32, f32::max);
+    let unit = layout.screen.w();
+    // Model points (screen-width units, origin at the screen centre) relative to the device centre.
+    let (mox, moy) = (layout.screen.cx() - lcx, layout.screen.cy() - lcy);
+    let nearest = match model {
+        Some(m) => {
+            let mm = &m.meta;
+            let mut z = f32::MIN;
+            for x in [mm.x0, mm.x1] {
+                for y in [mm.y0, mm.y1] {
+                    for zz in [mm.z0, mm.z1] {
+                        z = z.max(apply(&rot, [mox + x * unit, moy + y * unit, zz * unit])[2]);
+                    }
+                }
+            }
+            z.max(0.0)
+        }
+        None => [(-hx, -hy), (hx, -hy), (-hx, hy), (hx, hy)]
+            .iter()
+            .map(|&(x, y)| apply(&rot, [x, y, 0.0])[2])
+            .fold(0.0f32, f32::max),
+    };
     let eye = apply_t(&rot, [0.0, 0.0, focal + nearest]);
     let face_n = apply(&rot, [0.0, 0.0, 1.0]);
     let light = {
@@ -517,175 +565,208 @@ pub fn compose(out: &mut [u8], ow: usize, oh: usize, inp: &ComposeInput) {
     let body_top = layout.body.y0;
     let body_h = layout.body.h().max(1.0);
 
-    out.par_chunks_mut(ow * 4).enumerate().for_each(|(py, row)| {
-        let yf = py as f32 + 0.5;
-        for px in 0..ow {
-            let xf = px as f32 + 0.5;
+    const BAND: usize = 16;
+    let lighting = Lighting { light, half: half_v };
+    let projected = model.map(|m| {
+        m.project(
+            |p| {
+                let w = apply(&rot, [mox + p[0] * unit, moy + p[1] * unit, p[2] * unit]);
+                let f = focal / (focal + nearest - w[2]);
+                let (x, y) = (lcx + w[0] * f, lcy + lift + w[1] * f);
+                (ccx + (x - ccx) * s + tx, ccy + (y - ccy) * s + ty, f)
+            },
+            |n| apply(&rot, n),
+            ow,
+            oh,
+            inp.supersample.clamp(1, 3),
+            BAND,
+        )
+    });
+    let screen_color = |u: f32, v: f32| match mip {
+        Some(f) => sample(f, u.clamp(0.0, 1.0), v.clamp(0.0, 1.0)),
+        None => [18.0, 18.0, 20.0],
+    };
 
-            // 1. Background: gradient with a soft light from the top-left, dithered to avoid banding.
-            let g = (((xf - ccx) * gdx + (yf - ccy) * gdy) / half_extent * 0.5 + 0.5).clamp(0.0, 1.0);
-            let mut col = mix(bg_a, bg_b, smoothstep(0.0, 1.0, g));
-            let glow = (1.0 - ((xf * xf + yf * yf).sqrt() / diag)).max(0.0) * 0.07;
-            col = mix(col, white, glow);
+    out.par_chunks_mut(ow * 4 * BAND).enumerate().for_each(|(band_idx, chunk)| {
+        let rows = chunk.len() / (ow * 4);
+        let mesh = projected.as_ref().map(|p| p.raster(band_idx, rows, &screen_color, &lighting));
+        for (ri, row) in chunk.chunks_mut(ow * 4).enumerate() {
+            let py = band_idx * BAND + ri;
+            let yf = py as f32 + 0.5;
+            for px in 0..ow {
+                let xf = px as f32 + 0.5;
 
-            // 2. Point of the device's front face under this pixel (camera zoom, then 3D pose).
-            let sx = (xf - ccx - tx) * inv_s + ccx;
-            let sy = (yf - ccy - ty) * inv_s + ccy - lift;
-            let (qx, qy, inv_s, ray) = if angled {
-                let dir = [sx - lcx, sy - lcy, -focal];
-                let d = apply_t(&rot, dir);
-                if d[2] > -1e-4 {
-                    write_px(row, px, col, py);
-                    continue;
+                // 1. Background: gradient with a soft light from the top-left, dithered to avoid banding.
+                let g = (((xf - ccx) * gdx + (yf - ccy) * gdy) / half_extent * 0.5 + 0.5).clamp(0.0, 1.0);
+                let mut col = mix(bg_a, bg_b, smoothstep(0.0, 1.0, g));
+                let glow = (1.0 - ((xf * xf + yf * yf).sqrt() / diag)).max(0.0) * 0.07;
+                col = mix(col, white, glow);
+
+                // 2. Point of the device's front face under this pixel (camera zoom, then 3D pose).
+                let sx = (xf - ccx - tx) * inv_s + ccx;
+                let sy = (yf - ccy - ty) * inv_s + ccy - lift;
+                let (qx, qy, inv_s, ray) = if angled {
+                    let dir = [sx - lcx, sy - lcy, -focal];
+                    let d = apply_t(&rot, dir);
+                    if d[2] > -1e-4 {
+                        write_px(row, px, col, py);
+                        continue;
+                    }
+                    let t = -eye[2] / d[2];
+                    let dlen = dot(dir, dir).sqrt();
+                    let facing = (dot(face_n, dir) / dlen).abs().max(0.25);
+                    let size = inv_s * t * dlen / focal / facing;
+                    (lcx + eye[0] + t * d[0], lcy + eye[1] + t * d[1], size, Some(d))
+                } else {
+                    (sx, sy, inv_s, None)
+                };
+                let cov = |d: f32| (0.5 - d / inv_s).clamp(0.0, 1.0);
+
+                // 3. Shadows
+                if shadow_alpha > 0.0 {
+                    let d = shadow_body.sd(qx, qy);
+                    let a = shadow_alpha * (1.0 - smoothstep(-shadow_blur, shadow_blur, d));
+                    let d2 = contact.sd(qx, qy);
+                    let a2 = shadow_alpha * 0.5 * (1.0 - smoothstep(-shadow_blur * 0.12, shadow_blur * 0.12, d2));
+                    let k = 1.0 - (a + a2 - a * a2);
+                    col = [col[0] * k, col[1] * k, col[2] * k];
                 }
-                let t = -eye[2] / d[2];
-                let dlen = dot(dir, dir).sqrt();
-                let facing = (dot(face_n, dir) / dlen).abs().max(0.25);
-                let size = inv_s * t * dlen / focal / facing;
-                (lcx + eye[0] + t * d[0], lcy + eye[1] + t * d[1], size, Some(d))
-            } else {
-                (sx, sy, inv_s, None)
-            };
-            let cov = |d: f32| (0.5 - d / inv_s).clamp(0.0, 1.0);
 
-            // 3. Shadows
-            if shadow_alpha > 0.0 {
-                let d = shadow_body.sd(qx, qy);
-                let a = shadow_alpha * (1.0 - smoothstep(-shadow_blur, shadow_blur, d));
-                let d2 = contact.sd(qx, qy);
-                let a2 = shadow_alpha * 0.5 * (1.0 - smoothstep(-shadow_blur * 0.12, shadow_blur * 0.12, d2));
-                let k = 1.0 - (a + a2 - a * a2);
-                col = [col[0] * k, col[1] * k, col[2] * k];
-            }
-
-            // 4. Device edge (only visible when the device is turned)
-            let d_body = body.sd(qx, qy);
-            if let Some(d) = ray {
-                if depth > 0.0 && d_body > -inv_s && d_body < depth * 2.0 + 2.0 * inv_s {
-                    // Walk the ray from the front face to the back face and find where it is
-                    // deepest inside the outline: that is the side wall it hits.
-                    let tb = (-depth - eye[2]) / d[2];
-                    let (bx, by) = (lcx + eye[0] + tb * d[0], lcy + eye[1] + tb * d[1]);
-                    let (mut best, mut bp) = (f32::MAX, (qx, qy));
-                    for k in 1..=8 {
-                        let f = k as f32 / 8.0;
-                        let (x, y) = (qx + (bx - qx) * f, qy + (by - qy) * f);
-                        let sd = body.sd(x, y);
-                        if sd < best {
-                            best = sd;
-                            bp = (x, y);
+                // 4. Imported model, or the built-in device (edge, front, screen)
+                if let Some(m) = &mesh {
+                    let (c, a) = m.pixel(px, ri);
+                    if a > 0.0 {
+                        col = [col[0] * (1.0 - a) + c[0], col[1] * (1.0 - a) + c[1], col[2] * (1.0 - a) + c[2]];
+                    }
+                }
+                let d_body = body.sd(qx, qy);
+                if let (Some(d), None) = (ray, &mesh) {
+                    if depth > 0.0 && d_body > -inv_s && d_body < depth * 2.0 + 2.0 * inv_s {
+                        // Walk the ray from the front face to the back face and find where it is
+                        // deepest inside the outline: that is the side wall it hits.
+                        let tb = (-depth - eye[2]) / d[2];
+                        let (bx, by) = (lcx + eye[0] + tb * d[0], lcy + eye[1] + tb * d[1]);
+                        let (mut best, mut bp) = (f32::MAX, (qx, qy));
+                        for k in 1..=8 {
+                            let f = k as f32 / 8.0;
+                            let (x, y) = (qx + (bx - qx) * f, qy + (by - qy) * f);
+                            let sd = body.sd(x, y);
+                            if sd < best {
+                                best = sd;
+                                bp = (x, y);
+                            }
+                        }
+                        let c = cov(best);
+                        if c > 0.0 {
+                            let (nx, ny) = body.normal(bp.0, bp.1);
+                            let n = apply(&rot, [nx, ny, 0.0]);
+                            let diffuse = dot(n, light).max(0.0);
+                            let spec = dot(n, half_v).max(0.0).powi(30) * 140.0;
+                            let k = 0.3 + 0.75 * diffuse;
+                            let side = [metal[0] * k + spec, metal[1] * k + spec, metal[2] * k + spec];
+                            col = mix(col, side, c);
                         }
                     }
-                    let c = cov(best);
-                    if c > 0.0 {
-                        let (nx, ny) = body.normal(bp.0, bp.1);
-                        let n = apply(&rot, [nx, ny, 0.0]);
-                        let diffuse = dot(n, light).max(0.0);
-                        let spec = dot(n, half_v).max(0.0).powi(30) * 140.0;
-                        let k = 0.3 + 0.75 * diffuse;
-                        let side = [metal[0] * k + spec, metal[1] * k + spec, metal[2] * k + spec];
-                        col = mix(col, side, c);
-                    }
                 }
-            }
 
-            // 5. Device front
-            if layout.framed {
-                let shade = (1.12 - 0.3 * ((qy - body_top) / body_h).clamp(0.0, 1.0)) * face_light;
-                let metal_px = [metal[0] * shade, metal[1] * shade, metal[2] * shade];
-                for b in &buttons {
-                    let c = cov(b.sd(qx, qy));
+                // 5. Device front
+                if layout.framed && mesh.is_none() {
+                    let shade = (1.12 - 0.3 * ((qy - body_top) / body_h).clamp(0.0, 1.0)) * face_light;
+                    let metal_px = [metal[0] * shade, metal[1] * shade, metal[2] * shade];
+                    for b in &buttons {
+                        let c = cov(b.sd(qx, qy));
+                        if c > 0.0 {
+                            col = mix(col, mix(metal_px, [0.0; 3], 0.12), c);
+                        }
+                    }
+                    let c = cov(d_body);
                     if c > 0.0 {
-                        col = mix(col, mix(metal_px, [0.0; 3], 0.12), c);
+                        let inset = -d_body;
+                        // Polished edge highlight, then the metal band, then the black glass bezel.
+                        let hl = (1.0 - inset / (rim * 0.4)).clamp(0.0, 1.0) * 0.28;
+                        let band = mix(metal_px, white, hl);
+                        let inner = smoothstep(rim - inv_s, rim + inv_s, inset);
+                        let mut front = mix(band, glass, inner);
+                        if tablet {
+                            if let Some((hx, hy, hr)) = hole {
+                                let dh = ((qx - hx).powi(2) + (qy - hy).powi(2)).sqrt() - hr;
+                                front = mix(front, [28.0, 30.0, 40.0], cov(dh));
+                            }
+                        }
+                        col = mix(col, front, c);
                     }
                 }
-                let c = cov(d_body);
+
+                // 6. Screen
+                let d = screen.sd(qx, qy);
+                let c = if mesh.is_some() { 0.0 } else { cov(d) };
                 if c > 0.0 {
-                    let inset = -d_body;
-                    // Polished edge highlight, then the metal band, then the black glass bezel.
-                    let hl = (1.0 - inset / (rim * 0.4)).clamp(0.0, 1.0) * 0.28;
-                    let band = mix(metal_px, white, hl);
-                    let inner = smoothstep(rim - inv_s, rim + inv_s, inset);
-                    let mut front = mix(band, glass, inner);
-                    if tablet {
+                    let u = (qx - layout.screen.x0) / layout.screen.w();
+                    let v = (qy - layout.screen.y0) / layout.screen.h();
+                    let mut sc = match mip {
+                        Some(f) => sample(f, u, v),
+                        None => [18.0, 18.0, 20.0],
+                    };
+                    if curved {
+                        // Glass curving away along the long edges.
+                        let e = if layout.portrait { u.min(1.0 - u) * layout.screen.w() } else { v.min(1.0 - v) * layout.screen.h() };
+                        let e = e / (sc_short * 0.045);
+                        let dark = (1.0 - smoothstep(0.0, 1.0, e)) * 0.45;
+                        sc = [sc[0] * (1.0 - dark), sc[1] * (1.0 - dark), sc[2] * (1.0 - dark)];
+                        sc = mix(sc, white, (-((e - 0.35) / 0.12).powi(2)).exp() * 0.18);
+                    }
+                    if !tablet {
                         if let Some((hx, hy, hr)) = hole {
                             let dh = ((qx - hx).powi(2) + (qy - hy).powi(2)).sqrt() - hr;
-                            front = mix(front, [28.0, 30.0, 40.0], cov(dh));
+                            let ch = cov(dh);
+                            if ch > 0.0 {
+                                sc = mix(sc, [4.0, 4.0, 6.0], ch);
+                            }
                         }
                     }
-                    col = mix(col, front, c);
+                    if sheen_amount > 0.0 {
+                        let g = u * 0.6 + v * 0.4 - (0.55 - turn / 120.0 + tilt / 160.0);
+                        sc = mix(sc, white, sheen_amount * (-(g / 0.12).powi(2)).exp());
+                    }
+                    col = mix(col, sc, c);
                 }
-            }
 
-            // 6. Screen
-            let d = screen.sd(qx, qy);
-            let c = cov(d);
-            if c > 0.0 {
-                let u = (qx - layout.screen.x0) / layout.screen.w();
-                let v = (qy - layout.screen.y0) / layout.screen.h();
-                let mut sc = match mip {
-                    Some(f) => sample(f, u, v),
-                    None => [18.0, 18.0, 20.0],
-                };
-                if curved {
-                    // Glass curving away along the long edges.
-                    let e = if layout.portrait { u.min(1.0 - u) * layout.screen.w() } else { v.min(1.0 - v) * layout.screen.h() };
-                    let e = e / (sc_short * 0.045);
-                    let dark = (1.0 - smoothstep(0.0, 1.0, e)) * 0.45;
-                    sc = [sc[0] * (1.0 - dark), sc[1] * (1.0 - dark), sc[2] * (1.0 - dark)];
-                    sc = mix(sc, white, (-((e - 0.35) / 0.12).powi(2)).exp() * 0.18);
-                }
-                if !tablet {
-                    if let Some((hx, hy, hr)) = hole {
-                        let dh = ((qx - hx).powi(2) + (qy - hy).powi(2)).sqrt() - hr;
-                        let ch = cov(dh);
-                        if ch > 0.0 {
-                            sc = mix(sc, [4.0, 4.0, 6.0], ch);
+                // 7. Touch indicators
+                for ind in &inds {
+                    if let Some((sx, sy, ta)) = ind.trail {
+                        // Distance to the segment from the trail start to the finger.
+                        let (vx, vy) = (ind.x - sx, ind.y - sy);
+                        let len2 = (vx * vx + vy * vy).max(1e-6);
+                        let h = (((qx - sx) * vx + (qy - sy) * vy) / len2).clamp(0.0, 1.0);
+                        let dd = ((qx - sx - vx * h).powi(2) + (qy - sy - vy * h).powi(2)).sqrt();
+                        let a = ta * h * cov(dd - ind.r * 0.7);
+                        if a > 0.0 {
+                            col = mix(col, white, a);
+                        }
+                    }
+                    let dist = ((qx - ind.x).powi(2) + (qy - ind.y).powi(2)).sqrt();
+                    if ind.alpha > 0.0 {
+                        let dd = dist - ind.r;
+                        let fill = cov(dd);
+                        if fill > 0.0 {
+                            // Grey body with a white rim reads well on both light and dark apps.
+                            let rim = smoothstep(-ind.r * 0.16 - inv_s, -ind.r * 0.16 + inv_s, dd);
+                            let body_col = [118.0, 118.0, 126.0];
+                            let a = ind.alpha * fill * (1.0 + 0.6 * rim).min(1.6);
+                            col = mix(col, mix(body_col, white, rim), a.min(1.0));
+                        }
+                    }
+                    if ind.ring_alpha > 0.0 {
+                        let dd = (dist - ind.ring_r).abs() - ind.r * 0.06;
+                        let a = cov(dd) * ind.ring_alpha;
+                        if a > 0.0 {
+                            col = mix(col, white, a);
                         }
                     }
                 }
-                if sheen_amount > 0.0 {
-                    let g = u * 0.6 + v * 0.4 - (0.55 - turn / 120.0 + tilt / 160.0);
-                    sc = mix(sc, white, sheen_amount * (-(g / 0.12).powi(2)).exp());
-                }
-                col = mix(col, sc, c);
-            }
 
-            // 7. Touch indicators
-            for ind in &inds {
-                if let Some((sx, sy, ta)) = ind.trail {
-                    // Distance to the segment from the trail start to the finger.
-                    let (vx, vy) = (ind.x - sx, ind.y - sy);
-                    let len2 = (vx * vx + vy * vy).max(1e-6);
-                    let h = (((qx - sx) * vx + (qy - sy) * vy) / len2).clamp(0.0, 1.0);
-                    let dd = ((qx - sx - vx * h).powi(2) + (qy - sy - vy * h).powi(2)).sqrt();
-                    let a = ta * h * cov(dd - ind.r * 0.7);
-                    if a > 0.0 {
-                        col = mix(col, white, a);
-                    }
-                }
-                let dist = ((qx - ind.x).powi(2) + (qy - ind.y).powi(2)).sqrt();
-                if ind.alpha > 0.0 {
-                    let dd = dist - ind.r;
-                    let fill = cov(dd);
-                    if fill > 0.0 {
-                        // Grey body with a white rim reads well on both light and dark apps.
-                        let rim = smoothstep(-ind.r * 0.16 - inv_s, -ind.r * 0.16 + inv_s, dd);
-                        let body_col = [118.0, 118.0, 126.0];
-                        let a = ind.alpha * fill * (1.0 + 0.6 * rim).min(1.6);
-                        col = mix(col, mix(body_col, white, rim), a.min(1.0));
-                    }
-                }
-                if ind.ring_alpha > 0.0 {
-                    let dd = (dist - ind.ring_r).abs() - ind.r * 0.06;
-                    let a = cov(dd) * ind.ring_alpha;
-                    if a > 0.0 {
-                        col = mix(col, white, a);
-                    }
-                }
+                write_px(row, px, col, py);
             }
-
-            write_px(row, px, col, py);
         }
     });
 }
@@ -721,6 +802,8 @@ mod tests {
             touches: &[],
             time: 0.0,
             since_start: 0.0,
+            model: None,
+            supersample: 1,
         };
         compose(&mut out, w, h, &inp);
         let px = |x: usize, y: usize| &out[(y * w + x) * 4..(y * w + x) * 4 + 4];
@@ -734,7 +817,7 @@ mod tests {
     #[test]
     fn zoom_keeps_device_covering_frame() {
         let style = Style::default();
-        let layout = Layout::new(1920.0, 1080.0, &style, 1080.0, 2400.0);
+        let layout = Layout::new(1920.0, 1080.0, &style, 1080.0, 2400.0, None);
         let cam = layout.camera(CamState { scale: 2.5, fx: 0.5, fy: 0.05 });
         // Top edge of the zoomed device must not come down into the frame.
         let (_, top) = layout.to_scene(cam, 960.0, 0.0);
@@ -764,7 +847,7 @@ mod pose_tests {
         let style = Style { tilt: 38.0, ..Style::default() };
         let (w, h) = (320usize, 180usize);
         let mut out = vec![0u8; w * h * 4];
-        let inp = ComposeInput { style: &style, screen: None, video_w: 1080.0, video_h: 2400.0, cam: CamState::IDENTITY, touches: &[], time: 0.0, since_start: 5.0 };
+        let inp = ComposeInput { style: &style, screen: None, video_w: 1080.0, video_h: 2400.0, cam: CamState::IDENTITY, touches: &[], time: 0.0, since_start: 5.0, model: None, supersample: 1 };
         compose(&mut out, w, h, &inp);
         // Top and bottom rows are background (no dark device pixels).
         for y in [0, h - 1] {

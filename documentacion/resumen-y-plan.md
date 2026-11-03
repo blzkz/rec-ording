@@ -26,9 +26,16 @@ Se han retirado, de momento, el servidor MCP, el autoactualizador, los subtítul
 - Se endereza solo al hacer zoom, para que la app se lea; opcionalmente flota o entra girando al empezar.
 - Nuevos modelos: Curvo (pantalla con bordes curvados) y Tablet (marco ancho, cámara en el marco).
 
+## v0.5.0: modelos 3D propios
+
+- Importación de modelos `.glb` / `.gltf` (escena con jerarquía de nodos, materiales PBR básicos, texturas PNG/JPEG y transparencias).
+- Detección de la pieza de pantalla por nombre (screen, display, pantalla…) o, si no hay pistas, como la superficie plana más adelantada; se puede cambiar a mano.
+- El modelo se endereza y escala solo alrededor de su pantalla, y usa la misma cámara, ángulo 3D, zooms y toques que los marcos integrados.
+- Render por software con perspectiva, iluminación de estudio y suavizado de bordes (2×2 al exportar y en pausa).
+- Limitaciones: sin compresión Draco, sin animaciones/esqueletos y la grabación se estira a las proporciones de la pantalla del modelo.
+
 ## Ideas para siguientes versiones
 
-- Importar modelos 3D (.glb / .gltf) y proyectar la grabación en su pantalla.
 - Títulos y textos animados sobre el vídeo (intro, llamada a la acción).
 - Desenfocar zonas sensibles (correos, tokens).
 - Fondos con imagen propia.

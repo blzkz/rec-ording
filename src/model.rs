@@ -153,11 +153,19 @@ pub enum FrameStyle {
     Curved,
     Tablet,
     None,
+    /// A .glb / .gltf model chosen by the user (see `Style::model`).
+    Custom,
 }
 
 impl FrameStyle {
-    pub const ALL: [FrameStyle; 5] =
-        [FrameStyle::Rounded, FrameStyle::Flat, FrameStyle::Curved, FrameStyle::Tablet, FrameStyle::None];
+    pub const ALL: [FrameStyle; 6] = [
+        FrameStyle::Rounded,
+        FrameStyle::Flat,
+        FrameStyle::Curved,
+        FrameStyle::Tablet,
+        FrameStyle::None,
+        FrameStyle::Custom,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -166,6 +174,7 @@ impl FrameStyle {
             FrameStyle::Curved => "Curvo",
             FrameStyle::Tablet => "Tablet",
             FrameStyle::None => "Sin marco",
+            FrameStyle::Custom => "Modelo 3D",
         }
     }
 }
@@ -284,6 +293,17 @@ pub struct Style {
     pub float_motion: bool,
     /// The device swings into place at the start of the video.
     pub intro: bool,
+    /// Imported 3D model, used when `frame` is `Custom`.
+    pub model: Option<CustomModel>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CustomModel {
+    pub path: String,
+    /// Index of the material that is the screen.
+    pub screen_material: usize,
+    /// Extra 90° turns of the screen, for models whose top was guessed wrong.
+    pub quarter_turns: u8,
 }
 
 impl Style {
@@ -311,6 +331,7 @@ impl Default for Style {
             straighten_on_zoom: true,
             float_motion: false,
             intro: false,
+            model: None,
         }
     }
 }

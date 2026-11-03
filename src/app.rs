@@ -4,6 +4,7 @@ use crate::compositor::{compose, ComposeInput, Layout};
 use crate::export::{self, ExportEvent};
 use crate::media::{self, DecodedFrame, PreviewDecoder, PREVIEW_FPS};
 use crate::model::*;
+use crate::model3d::{self, ModelSource, PreparedModel};
 use crate::theme::{self, *};
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use egui::{
@@ -27,6 +28,8 @@ enum AppEvent {
     ImportPicked(PathBuf),
     FolderPicked(PathBuf),
     PickerUnavailable,
+    ModelPicked(PathBuf),
+    ModelLoaded { path: String, result: Result<Arc<ModelSource>, String> },
 }
 
 #[derive(PartialEq, Eq, Clone, Copy)]
@@ -74,6 +77,8 @@ struct RenderKey {
     cam: (u32, u32, u32),
     size: (usize, usize),
     touches: usize,
+    model: usize,
+    supersample: usize,
 }
 
 /// Timeline geometry: maps seconds to x and back.
@@ -124,6 +129,12 @@ pub struct RecOrdingApp {
     cam_dur: f32,
     thumbs: Vec<TextureHandle>,
     thumb_aspect: f32,
+
+    // Imported 3D model: the loaded file, and the copy prepared for the current settings.
+    model_src: Option<(String, Arc<ModelSource>)>,
+    model_prepared: Option<(CustomModel, Arc<PreparedModel>)>,
+    model_loading: bool,
+    model_error: Option<CustomModel>,
 
     // Editing
     selected_zoom: Option<u64>,
@@ -215,6 +226,10 @@ impl RecOrdingApp {
             cam_dur: -1.0,
             thumbs: Vec::new(),
             thumb_aspect: 0.5,
+            model_src: None,
+            model_prepared: None,
+            model_loading: false,
+            model_error: None,
             selected_zoom: None,
             drag: None,
             sheet: Sheet::None,
@@ -233,6 +248,9 @@ impl RecOrdingApp {
         if let Some(m) = app.project.media.clone() {
             app.time = app.project.trim_start;
             app.open_media(&m);
+        }
+        if let Some(cm) = app.project.style.model.clone() {
+            app.load_model(PathBuf::from(cm.path));
         }
         app
     }
@@ -303,6 +321,72 @@ impl RecOrdingApp {
             }
             ctx.request_repaint();
         });
+    }
+
+    fn pick_model(&self) {
+        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        let home = std::env::var("HOME").unwrap_or_default();
+        thread::spawn(move || {
+            let res = run_picker(
+                &["--file-selection", "--title=Importar modelo 3D", "--file-filter=Modelos 3D | *.glb *.gltf *.GLB *.GLTF"],
+                &["--getopenfilename", &home, "Modelos 3D (*.glb *.gltf)"],
+            );
+            match res {
+                Ok(Some(p)) => {
+                    let _ = tx.send(AppEvent::ModelPicked(PathBuf::from(p)));
+                }
+                Ok(None) => {}
+                Err(()) => {
+                    let _ = tx.send(AppEvent::PickerUnavailable);
+                }
+            }
+            ctx.request_repaint();
+        });
+    }
+
+    fn load_model(&mut self, path: PathBuf) {
+        self.model_loading = true;
+        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        thread::spawn(move || {
+            let p = path.to_string_lossy().into_owned();
+            let result = model3d::load(&p).map(Arc::new);
+            let _ = tx.send(AppEvent::ModelLoaded { path: p, result });
+            ctx.request_repaint();
+        });
+    }
+
+    /// Keeps the prepared model in step with the style (screen material, turns, file).
+    fn sync_model(&mut self) {
+        let Some(cm) = self.project.style.model.clone() else {
+            self.model_prepared = None;
+            return;
+        };
+        if self.model_prepared.as_ref().is_some_and(|(k, _)| *k == cm) || self.model_error.as_ref() == Some(&cm) {
+            return;
+        }
+        let Some((path, src)) = &self.model_src else { return };
+        if *path != cm.path {
+            return;
+        }
+        match model3d::prepare(src, cm.screen_material, cm.quarter_turns) {
+            Ok(m) => {
+                self.model_prepared = Some((cm, Arc::new(m)));
+                self.model_error = None;
+                self.last_render = None;
+            }
+            Err(e) => {
+                self.model_prepared = None;
+                self.model_error = Some(cm);
+                self.toast(e);
+            }
+        }
+    }
+
+    fn active_model(&self) -> Option<&PreparedModel> {
+        if self.project.style.frame != FrameStyle::Custom {
+            return None;
+        }
+        self.model_prepared.as_ref().map(|(_, m)| m.as_ref())
     }
 
     fn pick_folder(&self) {
@@ -391,6 +475,30 @@ impl RecOrdingApp {
                 }
                 AppEvent::ImportPicked(p) => self.import(p),
                 AppEvent::FolderPicked(p) => self.project.export.folder = p.to_string_lossy().into_owned(),
+                AppEvent::ModelPicked(p) => self.load_model(p),
+                AppEvent::ModelLoaded { path, result } => {
+                    self.model_loading = false;
+                    match result {
+                        Ok(src) => {
+                            let style = &mut self.project.style;
+                            let same_file = style.model.as_ref().is_some_and(|m| m.path == path);
+                            if !same_file {
+                                let screen = src.guess.or_else(|| src.used_materials().first().copied()).unwrap_or(0);
+                                style.model = Some(CustomModel { path: path.clone(), screen_material: screen, quarter_turns: 0 });
+                                style.frame = FrameStyle::Custom;
+                                self.toast(if src.guess.is_some() {
+                                    "Modelo importado. Si la grabación no cae en la pantalla, elige otra pieza en «Pantalla».".to_string()
+                                } else {
+                                    "Modelo importado. Elige en «Pantalla» la pieza donde va la grabación.".to_string()
+                                });
+                            }
+                            self.model_src = Some((path, src));
+                            self.model_prepared = None;
+                            self.model_error = None;
+                        }
+                        Err(e) => self.toast(e),
+                    }
+                }
                 AppEvent::PickerUnavailable => {
                     self.toast("No hay diálogo de archivos (instala zenity). Puedes arrastrar el vídeo a la ventana.")
                 }
@@ -714,6 +822,7 @@ impl eframe::App for RecOrdingApp {
 
         self.shortcuts(ctx);
         self.tick();
+        self.sync_model();
         self.autosave();
 
         if let Some(rec) = &mut self.recording {
@@ -978,6 +1087,8 @@ impl RecOrdingApp {
             cam: (cam.scale.to_bits(), cam.fx.to_bits(), cam.fy.to_bits()),
             size: (ow, oh),
             touches: self.project.touches.len(),
+            model: self.active_model().map(|m| m as *const PreparedModel as usize).unwrap_or(0),
+            supersample: if self.playing { 1 } else { 2 },
         };
         if self.last_render.as_ref() != Some(&key) {
             self.viewer_buf.resize(ow * oh * 4, 0);
@@ -994,6 +1105,8 @@ impl RecOrdingApp {
                     touches: &self.project.touches,
                     time: self.time,
                     since_start: self.time - self.project.trim_start,
+                    model: self.model_prepared.as_ref().map(|(_, m)| m.as_ref()).filter(|_| style.frame == FrameStyle::Custom),
+                    supersample: key.supersample,
                 },
             );
             let img = ColorImage::from_rgba_unmultiplied([ow, oh], &self.viewer_buf);
@@ -1014,7 +1127,14 @@ impl RecOrdingApp {
         let Some(z) = editing else { return };
 
         // Editing a zoom: show the whole frame and the area the camera will frame.
-        let layout = Layout::new(ow as f32, oh as f32, &self.project.style, media.width as f32, media.height as f32);
+        let layout = Layout::new(
+            ow as f32,
+            oh as f32,
+            &self.project.style,
+            media.width as f32,
+            media.height as f32,
+            self.active_model().map(|m| &m.meta),
+        );
         let cam = layout.camera(CamState { scale: z.scale, fx: z.x, fy: z.y });
         let (ax, ay) = layout.to_scene(cam, 0.0, 0.0);
         let (bx, by) = layout.to_scene(cam, ow as f32, oh as f32);
@@ -1169,6 +1289,12 @@ impl RecOrdingApp {
     }
 
     fn style_inspector(&mut self, ui: &mut Ui) {
+        let model_info = self.model_src.as_ref().map(|(_, src)| {
+            let mats: Vec<(usize, String)> = src.used_materials().into_iter().map(|i| (i, src.materials[i].name.clone())).collect();
+            (src.file_name.clone(), src.triangle_count(), mats)
+        });
+        let model_loading = self.model_loading;
+        let mut want_model_file = false;
         let style = &mut self.project.style;
 
         section(ui, "Dispositivo", |ui| {
@@ -1178,13 +1304,68 @@ impl RecOrdingApp {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = gap;
                     for f in row {
-                        if model_tile(ui, *f, style.frame == *f, tile_w).clicked() {
-                            style.frame = *f;
+                        let resp = model_tile(ui, *f, style.frame == *f, tile_w);
+                        let resp = if *f == FrameStyle::Custom { resp.on_hover_text("Importa un modelo .glb o .gltf") } else { resp };
+                        if resp.clicked() {
+                            if *f == FrameStyle::Custom && style.model.is_none() {
+                                want_model_file = true;
+                            } else {
+                                style.frame = *f;
+                            }
                         }
                     }
                 });
             }
-            if style.frame != FrameStyle::None {
+            if style.frame == FrameStyle::Custom {
+                ui.add_space(4.0);
+                if model_loading {
+                    ui.horizontal(|ui| {
+                        ui.add(egui::Spinner::new().size(14.0).color(TEXT_2));
+                        ui.label(RichText::new("Cargando modelo…").color(TEXT_2));
+                    });
+                } else if let (Some((name, tris, mats)), Some(cm)) = (&model_info, style.model.as_mut()) {
+                    ui.horizontal(|ui| {
+                        ui.vertical(|ui| {
+                            ui.spacing_mut().item_spacing.y = 0.0;
+                            ui.add(egui::Label::new(RichText::new(name).color(TEXT)).truncate());
+                            ui.label(RichText::new(format!("{} triángulos", tris)).color(TEXT_3).font(regular(11.5)));
+                        });
+                        ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                            if secondary_button(ui, "Cambiar…").clicked() {
+                                want_model_file = true;
+                            }
+                        });
+                    });
+                    ui.horizontal(|ui| {
+                        fixed_label(ui, 78.0, RichText::new("Pantalla").color(TEXT), Align::Min);
+                        let current = mats.iter().find(|(i, _)| *i == cm.screen_material).map(|(_, n)| n.clone()).unwrap_or_default();
+                        egui::ComboBox::from_id_salt("model-screen")
+                            .selected_text(current)
+                            .width(ui.available_width() - 8.0)
+                            .show_ui(ui, |ui| {
+                                for (i, n) in mats {
+                                    ui.selectable_value(&mut cm.screen_material, *i, n);
+                                }
+                            });
+                    });
+                    ui.horizontal(|ui| {
+                        fixed_label(ui, 78.0, RichText::new("Orientación").color(TEXT), Align::Min);
+                        if secondary_button(ui, "Girar 90°").on_hover_text("Si la grabación sale tumbada o al revés").clicked() {
+                            cm.quarter_turns = (cm.quarter_turns + 1) % 4;
+                        }
+                    });
+                    ui.label(
+                        RichText::new("«Pantalla» es la pieza del modelo donde se ve tu grabación.")
+                            .color(TEXT_3)
+                            .font(regular(11.5)),
+                    );
+                } else {
+                    ui.label(RichText::new("No se pudo cargar el modelo.").color(YELLOW));
+                    if secondary_button(ui, "Elegir otro…").clicked() {
+                        want_model_file = true;
+                    }
+                }
+            } else if style.frame != FrameStyle::None {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     for c in FrameColor::ALL {
@@ -1204,6 +1385,11 @@ impl RecOrdingApp {
                 });
             }
         });
+
+        if want_model_file {
+            self.pick_model();
+        }
+        let style = &mut self.project.style;
 
         section(ui, "Ángulo 3D", |ui| {
             ui.horizontal_wrapped(|ui| {
@@ -2041,9 +2227,24 @@ fn model_tile(ui: &mut Ui, f: FrameStyle, selected: bool, width: f32) -> egui::R
         FrameStyle::Curved => (Vec2::new(17.0, 32.0), 3.5, 1.2),
         FrameStyle::Tablet => (Vec2::new(36.0, 26.0), 3.0, 3.0),
         FrameStyle::None => (Vec2::new(15.0, 30.0), 3.0, 0.0),
+        FrameStyle::Custom => (Vec2::ZERO, 0.0, 0.0),
     };
     let body = Rect::from_center_size(c, size);
-    if f == FrameStyle::None {
+    if f == FrameStyle::Custom {
+        // A small cube.
+        let st = Stroke::new(1.5_f32, line);
+        let r = 13.0;
+        let pts: Vec<Pos2> = (0..6)
+            .map(|i| {
+                let a = (i as f32 * 60.0 - 90.0).to_radians();
+                Pos2::new(c.x + r * a.cos(), c.y + r * a.sin())
+            })
+            .collect();
+        p.add(egui::Shape::closed_line(pts.clone(), st));
+        for k in [1, 3, 5] {
+            p.line_segment([c, pts[k]], st);
+        }
+    } else if f == FrameStyle::None {
         p.rect_filled(body, Rounding::same(r), screen);
     } else {
         p.rect_filled(body, Rounding::same(r), Color32::from_rgb(24, 24, 27));

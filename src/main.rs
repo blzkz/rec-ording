@@ -5,6 +5,7 @@ mod compositor;
 mod export;
 mod media;
 mod model;
+mod model3d;
 mod theme;
 
 fn main() -> eframe::Result<()> {
