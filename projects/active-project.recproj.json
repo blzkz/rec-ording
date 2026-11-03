@@ -1,0 +1,441 @@
+{
+  "version": "1.0.0",
+  "id": "proj-default-playstore",
+  "name": "Demo Play Store 3D — Mi App Android",
+  "createdAt": "2026-11-03T19:47:57.767Z",
+  "updatedAt": "2026-11-03T19:47:57.767Z",
+  "durationSec": 12,
+  "tracks": [
+    {
+      "id": "video-track-1",
+      "name": "V1 · Android Principal",
+      "kind": "video",
+      "index": 1,
+      "muted": false,
+      "solo": false,
+      "locked": false,
+      "volume": 1,
+      "clips": [
+        {
+          "id": "clip-demo-android",
+          "trackId": "video-track-1",
+          "name": "Demo_App_Android_PlayStore.mp4",
+          "type": "video",
+          "mediaPath": "builtin://android-demo",
+          "sourceRole": "android-main",
+          "startSec": 0,
+          "durationSec": 12,
+          "trimInSec": 0,
+          "trimOutSec": 12,
+          "speed": 1,
+          "volume": 1,
+          "muted": false,
+          "fadeInSec": 0.3,
+          "fadeOutSec": 0.5,
+          "freezeFrames": [],
+          "opacityKeyframes": [
+            {
+              "id": "kf-op-1",
+              "timeSec": 0,
+              "value": 1,
+              "easing": "linear"
+            }
+          ],
+          "scaleKeyframes": [
+            {
+              "id": "kf-sc-1",
+              "timeSec": 0,
+              "value": 1,
+              "easing": "spring"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "video-track-2",
+      "name": "V2 · Pantalla PC / Secundaria",
+      "kind": "video",
+      "index": 2,
+      "muted": false,
+      "solo": false,
+      "locked": false,
+      "volume": 1,
+      "clips": [
+        {
+          "id": "clip-demo-pc",
+          "trackId": "video-track-2",
+          "name": "AndroidStudio_Logcat_Backend.mp4",
+          "type": "video",
+          "mediaPath": "builtin://pc-demo",
+          "sourceRole": "pc-screen",
+          "startSec": 0,
+          "durationSec": 12,
+          "trimInSec": 0,
+          "trimOutSec": 12,
+          "speed": 1,
+          "volume": 0.5,
+          "muted": false,
+          "fadeInSec": 0,
+          "fadeOutSec": 0,
+          "freezeFrames": [],
+          "opacityKeyframes": [],
+          "scaleKeyframes": []
+        }
+      ]
+    },
+    {
+      "id": "video-track-3",
+      "name": "V3 · Webcam / PiP",
+      "kind": "video",
+      "index": 3,
+      "muted": false,
+      "solo": false,
+      "locked": false,
+      "volume": 1,
+      "clips": []
+    },
+    {
+      "id": "video-track-4",
+      "name": "V4 · B-Roll / Overlay",
+      "kind": "video",
+      "index": 4,
+      "muted": false,
+      "solo": false,
+      "locked": false,
+      "volume": 1,
+      "clips": []
+    },
+    {
+      "id": "audio-track-1",
+      "name": "A1 · Micrófono Voz en Off",
+      "kind": "audio",
+      "index": 1,
+      "muted": false,
+      "solo": false,
+      "locked": false,
+      "volume": 1,
+      "clips": [
+        {
+          "id": "clip-voiceover-1",
+          "trackId": "audio-track-1",
+          "name": "Locución_Demo_PlayStore.wav",
+          "type": "audio",
+          "mediaPath": "builtin://voiceover-demo",
+          "startSec": 0.4,
+          "durationSec": 11.2,
+          "trimInSec": 0,
+          "trimOutSec": 11.2,
+          "speed": 1,
+          "volume": 1.1,
+          "muted": false,
+          "fadeInSec": 0.2,
+          "fadeOutSec": 0.4,
+          "freezeFrames": [],
+          "opacityKeyframes": [],
+          "scaleKeyframes": []
+        }
+      ]
+    },
+    {
+      "id": "audio-track-2",
+      "name": "A2 · Audio Sistema / App",
+      "kind": "audio",
+      "index": 2,
+      "muted": false,
+      "solo": false,
+      "locked": false,
+      "volume": 1,
+      "clips": []
+    },
+    {
+      "id": "audio-track-3",
+      "name": "A3 · Música de Fondo",
+      "kind": "audio",
+      "index": 3,
+      "muted": false,
+      "solo": false,
+      "locked": false,
+      "volume": 0.35,
+      "clips": []
+    },
+    {
+      "id": "audio-track-4",
+      "name": "A4 · Efectos SFX (Toques/Whoosh)",
+      "kind": "audio",
+      "index": 4,
+      "muted": false,
+      "solo": false,
+      "locked": false,
+      "volume": 1,
+      "clips": []
+    },
+    {
+      "id": "text-track-1",
+      "name": "T1 · Títulos Principales",
+      "kind": "text",
+      "index": 1,
+      "muted": false,
+      "solo": false,
+      "locked": false,
+      "volume": 1,
+      "clips": [
+        {
+          "id": "clip-title-intro",
+          "trackId": "text-track-1",
+          "name": "Título: Nueva App en Google Play",
+          "type": "text",
+          "startSec": 0.2,
+          "durationSec": 3.6,
+          "trimInSec": 0,
+          "trimOutSec": 3.6,
+          "speed": 1,
+          "volume": 1,
+          "muted": false,
+          "fadeInSec": 0.3,
+          "fadeOutSec": 0.3,
+          "freezeFrames": [],
+          "opacityKeyframes": [],
+          "scaleKeyframes": [],
+          "text": "Diseñada para velocidad extrema",
+          "subtitleText": "Disponible ahora en Google Play Store · 120 Hz nativos",
+          "titlePreset": "pop-elastic",
+          "fontSize": 44,
+          "textColor": "#ffffff",
+          "bgColor": "rgba(15, 23, 42, 0.78)",
+          "posX": 0.5,
+          "posY": 0.12
+        }
+      ]
+    },
+    {
+      "id": "text-track-2",
+      "name": "T2 · Badges de Función",
+      "kind": "text",
+      "index": 2,
+      "muted": false,
+      "solo": false,
+      "locked": false,
+      "volume": 1,
+      "clips": []
+    },
+    {
+      "id": "text-track-3",
+      "name": "T3 · Callouts / Flechas",
+      "kind": "text",
+      "index": 3,
+      "muted": false,
+      "solo": false,
+      "locked": false,
+      "volume": 1,
+      "clips": []
+    },
+    {
+      "id": "text-track-4",
+      "name": "T4 · Banner Inferior",
+      "kind": "text",
+      "index": 4,
+      "muted": false,
+      "solo": false,
+      "locked": false,
+      "volume": 1,
+      "clips": []
+    },
+    {
+      "id": "text-track-5",
+      "name": "T5 · Marca de Agua / CTA",
+      "kind": "text",
+      "index": 5,
+      "muted": false,
+      "solo": false,
+      "locked": false,
+      "volume": 1,
+      "clips": []
+    }
+  ],
+  "directorKeyframes": [
+    {
+      "id": "dir-kf-1",
+      "timeSec": 0,
+      "durationSec": 2.2,
+      "focusX": 0.5,
+      "focusY": 0.5,
+      "zoom": 1.05,
+      "rotXDeg": 8,
+      "rotYDeg": -18,
+      "rotZDeg": 2,
+      "easing": "spring",
+      "label": "Plano Héroe 3D Inicial"
+    },
+    {
+      "id": "dir-kf-2",
+      "timeSec": 2.5,
+      "durationSec": 2.4,
+      "focusX": 0.52,
+      "focusY": 0.32,
+      "zoom": 1.65,
+      "rotXDeg": -4,
+      "rotYDeg": 12,
+      "rotZDeg": -1,
+      "easing": "spring",
+      "label": "Auto-Zoom: Toque en Tarjeta Principal",
+      "autoGenerated": true
+    }
+  ],
+  "privacyMasks": [
+    {
+      "id": "mask-api-key",
+      "label": "Ocultar Token / Email de Usuario",
+      "startSec": 2.2,
+      "endSec": 5.2,
+      "x": 0.18,
+      "y": 0.22,
+      "width": 0.64,
+      "height": 0.07,
+      "mode": "blur",
+      "intensity": 18,
+      "color": "#0f172a"
+    }
+  ],
+  "pointerEvents": [
+    {
+      "id": "pt-1",
+      "timestampMs": 1200,
+      "source": "android",
+      "type": "touch_tap",
+      "x": 0.5,
+      "y": 0.34,
+      "durationMs": 180,
+      "button": "finger"
+    },
+    {
+      "id": "pt-2",
+      "timestampMs": 2600,
+      "source": "android",
+      "type": "touch_tap",
+      "x": 0.52,
+      "y": 0.32,
+      "durationMs": 210,
+      "button": "finger"
+    }
+  ],
+  "keyEvents": [],
+  "subtitles": [
+    {
+      "id": "sub-1",
+      "startSec": 0.4,
+      "endSec": 3.9,
+      "words": [
+        {
+          "id": "w-1",
+          "word": "Presenta",
+          "startSec": 0.4,
+          "endSec": 0.9,
+          "confidence": 0.99
+        },
+        {
+          "id": "w-2",
+          "word": "tu",
+          "startSec": 0.9,
+          "endSec": 1.15,
+          "confidence": 0.99
+        },
+        {
+          "id": "w-3",
+          "word": "app",
+          "startSec": 1.15,
+          "endSec": 1.5,
+          "confidence": 0.99,
+          "highlight": true
+        },
+        {
+          "id": "w-4",
+          "word": "Android",
+          "startSec": 1.5,
+          "endSec": 2.05,
+          "confidence": 0.98,
+          "highlight": true
+        },
+        {
+          "id": "w-5",
+          "word": "en",
+          "startSec": 2.05,
+          "endSec": 2.3,
+          "confidence": 0.99
+        },
+        {
+          "id": "w-6",
+          "word": "3D.",
+          "startSec": 2.3,
+          "endSec": 3.9,
+          "confidence": 0.99,
+          "highlight": true
+        }
+      ]
+    }
+  ],
+  "subtitleStyle": {
+    "enabled": true,
+    "positionY": 0.87,
+    "fontSize": 32,
+    "fontFamily": "Inter, system-ui, sans-serif",
+    "textColor": "#f8fafc",
+    "activeWordColor": "#38bdf8",
+    "backgroundColor": "rgba(15, 23, 42, 0.82)",
+    "wordByWordHighlight": true,
+    "maxWordsPerLine": 6
+  },
+  "device3D": {
+    "primaryModel": "pixel-11-pro",
+    "secondaryModel": "desktop-window",
+    "dualLayout": "single",
+    "bodyColor": "#1e293b",
+    "frameMetalness": 0.85,
+    "frameRoughness": 0.22,
+    "screenCornerRadius": 0.08,
+    "bezelWidth": 0.035,
+    "showShadow": true,
+    "shadowIntensity": 0.65,
+    "floatingAnimation": true,
+    "floatingAmplitude": 0.25,
+    "orientation": "portrait",
+    "ambientLightIntensity": 1.1,
+    "directionalLightIntensity": 1.8
+  },
+  "cursorStyle": {
+    "smoothCursor": true,
+    "smoothingFactor": 0.22,
+    "cursorSize": 1.25,
+    "cursorStyle": "touch-orb",
+    "cursorColor": "#38bdf8",
+    "showClickRipples": true,
+    "clickRippleColor": "#818cf8",
+    "showTouchTrails": true,
+    "hideIdleCursorAfterMs": 2500,
+    "showKeystrokesHUD": true,
+    "keystrokePosition": "bottom-right"
+  },
+  "background": {
+    "type": "mesh-gradient",
+    "colorA": "#0f172a",
+    "colorB": "#1e1b4b",
+    "colorC": "#042f2e",
+    "gradientAngle": 135,
+    "paddingRatio": 0.08,
+    "motionBlurEnabled": true,
+    "motionBlurIntensity": 0.45
+  },
+  "exportSettings": {
+    "presetId": "play-store-16-9-1080p",
+    "width": 1920,
+    "height": 1080,
+    "fps": 60,
+    "codec": "h264",
+    "crf": 20,
+    "transparentBackground": false,
+    "includeAudio": true,
+    "burnSubtitles": true,
+    "motionBlurSamples": 8,
+    "outputPath": "demo_playstore_export.mp4"
+  }
+}

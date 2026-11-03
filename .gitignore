@@ -1,0 +1,12 @@
+node_modules/
+dist/
+src-tauri/target/
+packaging/arch/pkg/
+packaging/arch/src/
+packaging/arch/*.pkg.tar.zst
+packaging/arch/rec-ording
+packaging/arch/mcp-server.mjs
+packaging/arch/rec-ording.png
+*.pkg.tar.zst
+.DS_Store
+*.log
