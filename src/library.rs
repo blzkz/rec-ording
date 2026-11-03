@@ -70,42 +70,131 @@ pub fn list() -> Vec<LibraryModel> {
             }
         }
     }
-    let mut mine: Vec<PathBuf> = std::fs::read_dir(user_dir())
-        .map(|rd| rd.flatten().map(|e| e.path()).collect())
-        .unwrap_or_default();
-    mine.retain(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("glb")));
+    // Imported models: a single `.glb`, or a folder holding a model and the files it uses.
+    let mut mine: Vec<(String, PathBuf)> = Vec::new();
+    for entry in std::fs::read_dir(user_dir()).map(|rd| rd.flatten().collect::<Vec<_>>()).unwrap_or_default() {
+        let p = entry.path();
+        if p.is_dir() {
+            let model = std::fs::read_dir(&p)
+                .map(|rd| rd.flatten().map(|e| e.path()).collect::<Vec<_>>())
+                .unwrap_or_default()
+                .into_iter()
+                .find(|f| is_model_file(f));
+            if let Some(f) = model {
+                mine.push((p.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(), f));
+            }
+        } else if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("glb")) {
+            mine.push((p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(), p));
+        }
+    }
     mine.sort();
-    for p in mine {
-        out.push(LibraryModel {
-            name: p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
-            path: p.to_string_lossy().into_owned(),
-            author: None,
-            license: None,
-        });
+    for (name, p) in mine {
+        out.push(LibraryModel { name, path: p.to_string_lossy().into_owned(), author: None, license: None });
     }
     out
 }
 
-/// Adds a model to the gallery: `.glb` files are copied in; a `.gltf` (which may reference
-/// other files next to it) is used where it is.
-pub fn import(path: &Path) -> Result<PathBuf, String> {
-    let is_glb = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("glb"));
-    if !is_glb {
-        return Ok(path.to_path_buf());
+fn is_model_file(p: &Path) -> bool {
+    p.extension().is_some_and(|e| e.eq_ignore_ascii_case("glb") || e.eq_ignore_ascii_case("gltf"))
+}
+
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
     }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Files a model loads from next to itself (textures, `.bin` buffers), as relative paths.
+fn external_files(path: &Path) -> Result<Vec<PathBuf>, String> {
+    let g = gltf::Gltf::open(path).map_err(|e| format!("No se pudo leer el modelo: {e}"))?;
+    let mut uris = Vec::new();
+    for b in g.document.buffers() {
+        if let gltf::buffer::Source::Uri(u) = b.source() {
+            uris.push(u.to_string());
+        }
+    }
+    for i in g.document.images() {
+        if let gltf::image::Source::Uri { uri, .. } = i.source() {
+            uris.push(uri.to_string());
+        }
+    }
+    uris.retain(|u| !u.starts_with("data:"));
+    uris.sort();
+    uris.dedup();
+    Ok(uris.iter().map(|u| PathBuf::from(percent_decode(u))).collect())
+}
+
+/// Adds a model to the gallery. A self-contained `.glb` is copied in as is; a model that loads
+/// textures or buffers from next to it (any `.gltf`, and some `.glb`) is copied into its own
+/// folder together with those files. Returns where the gallery copy lives.
+pub fn import(path: &Path) -> Result<PathBuf, String> {
+    if !is_model_file(path) {
+        return Err("Elige un archivo .glb o .gltf".into());
+    }
+    let deps = external_files(path)?;
     let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "modelo".into());
     let dir = user_dir();
-    let mut dest = dir.join(format!("{stem}.glb"));
-    let mut n = 2;
-    while dest.exists() {
-        if std::fs::read(&dest).ok() == std::fs::read(path).ok() {
-            return Ok(dest);
+
+    if deps.is_empty() {
+        let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_else(|| "glb".into());
+        let mut dest = dir.join(format!("{stem}.{ext}"));
+        let mut n = 2;
+        while dest.exists() {
+            if std::fs::read(&dest).ok() == std::fs::read(path).ok() {
+                return Ok(dest);
+            }
+            dest = dir.join(format!("{stem} {n}.{ext}"));
+            n += 1;
         }
-        dest = dir.join(format!("{stem} {n}.glb"));
+        std::fs::copy(path, &dest).map_err(|e| format!("No se pudo copiar el modelo: {e}"))?;
+        return Ok(dest);
+    }
+
+    let src_dir = path.parent().unwrap_or(Path::new("."));
+    // Files outside the model's folder (absolute or "../") cannot be bundled: use it in place.
+    let contained = deps.iter().all(|d| d.components().all(|c| matches!(c, std::path::Component::Normal(_) | std::path::Component::CurDir)));
+    if !contained {
+        return Ok(path.to_path_buf());
+    }
+    let missing: Vec<String> = deps.iter().filter(|d| !src_dir.join(d).is_file()).map(|d| d.display().to_string()).collect();
+    if !missing.is_empty() {
+        return Err(format!(
+            "Al modelo le faltan archivos que deberían estar junto a él: {}. Descomprime la descarga completa y vuelve a importarlo.",
+            missing.join(", ")
+        ));
+    }
+    let mut folder = dir.join(&stem);
+    let mut n = 2;
+    while folder.exists() {
+        folder = dir.join(format!("{stem} {n}"));
         n += 1;
     }
-    std::fs::copy(path, &dest).map_err(|e| format!("No se pudo copiar el modelo: {e}"))?;
-    Ok(dest)
+    let copy = |rel: &Path| -> Result<(), String> {
+        let to = folder.join(rel);
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        std::fs::copy(src_dir.join(rel), &to).map(|_| ()).map_err(|e| format!("No se pudo copiar {}: {e}", rel.display()))
+    };
+    let file_name = PathBuf::from(path.file_name().unwrap_or_default());
+    let result = copy(&file_name).and_then(|_| deps.iter().try_for_each(|d| copy(d)));
+    if let Err(e) = result {
+        let _ = std::fs::remove_dir_all(&folder);
+        return Err(e);
+    }
+    Ok(folder.join(file_name))
 }
 
 /// A stand-in app screen for thumbnails: a soft gradient with a few cards.
@@ -171,6 +260,39 @@ pub fn thumbnail(src: &ModelSource, w: usize, h: usize) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Downloads with loose textures. Run with a throwaway data folder:
+    /// XDG_DATA_HOME=<tmp> MODEL_DIR=<dir with descarga_glb/, descarga_gltf/, phone_named.glb> cargo test imports_ -- --ignored
+    #[test]
+    #[ignore]
+    fn imports_models_with_their_files() {
+        let Ok(dir) = std::env::var("MODEL_DIR") else { return };
+        let dir = PathBuf::from(dir);
+
+        let glb = import(&dir.join("descarga_glb/movil.glb")).expect("glb with loose texture");
+        assert!(glb.ends_with("movil/movil.glb"), "{}", glb.display());
+        assert!(glb.parent().unwrap().join("textures/checker con espacio.png").is_file());
+        model3d::load(&glb.to_string_lossy()).expect("loads from the gallery copy");
+
+        let gltf = import(&dir.join("descarga_gltf/scene.gltf")).expect("gltf");
+        assert!(gltf.parent().unwrap().join("scene.bin").is_file());
+        model3d::load(&gltf.to_string_lossy()).expect("gltf loads from the gallery copy");
+
+        let single = import(&dir.join("phone_named.glb")).expect("self-contained glb");
+        assert!(single.is_file() && single.parent().unwrap() == user_dir());
+
+        // Only the .glb, without its texture folder.
+        let lonely = dir.join("solo");
+        let _ = std::fs::create_dir_all(&lonely);
+        std::fs::copy(dir.join("descarga_glb/movil.glb"), lonely.join("movil.glb")).unwrap();
+        let err = import(&lonely.join("movil.glb")).unwrap_err();
+        assert!(err.contains("faltan") && err.contains("checker con espacio.png"), "{err}");
+
+        let names: Vec<String> = list().into_iter().filter(|m| m.license.is_none()).map(|m| m.name).collect();
+        for n in ["movil", "scene", "phone_named"] {
+            assert!(names.iter().any(|x| x == n), "{n} not in {names:?}");
+        }
+    }
 
     #[test]
     fn bundled_models_load_and_render() {

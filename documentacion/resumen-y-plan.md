@@ -35,7 +35,7 @@ Se han retirado, de momento, el servidor MCP, el autoactualizador, los subtítul
 
 ## v0.6.0: galería de modelos, encaje del vídeo y animaciones
 
-- Galería con miniaturas renderizadas: cinco modelos gratuitos de Poly Pizza (CC0 y CC BY 3.0, créditos en `assets/models/CREDITS.md`) y los que importe el usuario (los `.glb` se copian a `~/.local/share/rec-ording/models`).
+- Galería con miniaturas renderizadas: cinco modelos gratuitos de Poly Pizza (CC0 y CC BY 3.0, créditos en `assets/models/CREDITS.md`) y los que importe el usuario, que se copian a `~/.local/share/rec-ording/models` junto con las texturas y `.bin` que usen (vale tanto para `.glb` como para `.gltf`).
 - Detección de pantalla más robusta: rectángulo mínimo (no le afecta la densidad de vértices de un agujero de cámara) y modelos low-poly pintados con una textura de paleta, que se separan en piezas por color.
 - Ajuste del vídeo en la pantalla del modelo: Rellenar (con encuadre), Encajar (bandas negras) o Estirar.
 - Animaciones glTF de nodos (traslación, rotación y escala; interpolación lineal, por pasos o cúbica), en bucle o una vez.
