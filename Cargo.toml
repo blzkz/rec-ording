@@ -1,0 +1,26 @@
+[package]
+name = "rec-ording"
+version = "0.2.0"
+edition = "2021"
+authors = ["blzkz <sergiobl88@gmail.com>"]
+description = "rec-ording — Estudio nativo 100% Rust (egui + Vulkan wgpu + Rayon multihilo + FFmpeg + ADB + MCP)"
+license = "MIT"
+
+[[bin]]
+name = "rec-ording"
+path = "src/main.rs"
+
+[dependencies]
+eframe = { version = "0.30", default-features = false, features = ["wgpu", "default_fonts", "x11", "wayland"] }
+egui = "0.30"
+rayon = "1.10"
+crossbeam-channel = "0.5"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+gltf = "1.4"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"

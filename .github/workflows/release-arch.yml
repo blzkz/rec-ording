@@ -1,4 +1,4 @@
-name: Release CachyOS / Arch Linux Package
+name: Release CachyOS / Arch Linux Package (Pure Rust + Vulkan)
 
 on:
   push:
@@ -12,19 +12,16 @@ jobs:
     container:
       image: archlinux:base-devel
     steps:
-      - name: Install Arch dependencies
+      - name: Install Arch dependencies (Pure Rust + Vulkan)
         run: |
-          pacman -Syu --noconfirm nodejs npm rust cargo webkit2gtk-4.1 gtk3 ffmpeg android-tools git github-cli
+          pacman -Syu --noconfirm rust cargo vulkan-icd-loader ffmpeg android-tools git github-cli
 
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Build Frontend & Native Rust Binary
+      - name: Build Pure Rust + Vulkan Binary
         run: |
-          npm install
-          node node_modules/esbuild/install.js || true
-          npm run build
-          cd src-tauri && cargo build --release
+          cargo build --release
 
       - name: Build .pkg.tar.zst with makepkg
         run: |
@@ -39,4 +36,4 @@ jobs:
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
           gh release upload "$TAG" packaging/arch/*.pkg.tar.zst --clobber || \
-          gh release create "$TAG" packaging/arch/*.pkg.tar.zst --title "rec-ording $TAG (Arch / CachyOS)" --notes "Paquete nativo x86_64 (.pkg.tar.zst) para Arch Linux y CachyOS."
+          gh release create "$TAG" packaging/arch/*.pkg.tar.zst --title "rec-ording $TAG (100% Rust + Vulkan · Arch / CachyOS)" --notes "Paquete nativo 100% Rust + Vulkan (wgpu) + Rayon multihilo (.pkg.tar.zst) para Arch Linux y CachyOS. Cero Node.js / Cero WebView."

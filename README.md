@@ -1,69 +1,36 @@
-# rec-ording — Grabación y Edición 3D para Demos de Apps Android y PC
+# rec-ording v0.2.0 — Estudio 3D 100% Rust Nativo (egui + Vulkan `wgpu` + Rayon Multihilo + FFmpeg + ADB + MCP)
 
-Estudio todo-en-uno para desarrolladores de Android y escritorio: captura pantalla de PC y dispositivos Android por USB (`adb`), edita en una línea de tiempo multipista (4 vídeo, 4 audio, 5 texto), aplica maquetas 3D interactivas (**Pixel 11 Pro**, **Galaxy S26 Ultra**, **Galaxy Tab S10 Ultra** o modelos `.GLB`), planifica movimientos de cámara con **Modo Director / Auto-Zoom**, transcribe subtítulos localmente palabra por palabra, expone un **Servidor MCP** para agentes de IA y exporta hasta en **4K a 60 fps** con **FFmpeg**.
+Aplicación nativa de escritorio para Linux (**CachyOS / Arch Linux**) escrita **100 % en Rust puro** — **cero Node.js, cero JavaScript y cero WebView**.
 
 ---
 
-## Instalación nativa en Arch Linux / CachyOS (`.pkg.tar.zst`)
+## Arquitectura 100% Rust + Vulkan + Multihilo Real
 
-El proyecto incluye empaquetado nativo para `pacman` en [`packaging/arch/PKGBUILD`](./packaging/arch/PKGBUILD):
+- **Interfaz y Texturas GPU (`egui` + `eframe` con backend `wgpu` Vulkan)**:
+  - Renderizado inmediato sin recolector de basura ni procesos de navegador en segundo plano.
+- **Motor 3D y Composición Paralela en todos los núcleos (`rayon` + `gltf`)** ([`src/renderer3d.rs`](./src/renderer3d.rs)):
+  - Trazado de rayos 3D y sombreado PBR paralelizado por líneas de escaneo (`par_chunks_mut`) en todos los hilos lógicos de la CPU.
+  - Maquetas 3D de **Google Pixel 11 Pro**, **Samsung Galaxy S26 Ultra**, **Galaxy Tab S10 Ultra**, **Ventana 3D de PC** e importador nativo de archivos **`.GLB` / `.GLTF`** mediante el crate `gltf`.
+  - Disposición dual en 3D (PC + Android simultáneamente), **Modo Director** con físicas *spring* y **Auto-Zoom** desde toques, *motion blur* por velocidad de cámara, máscaras de privacidad (*blur*, pixelado, sólido), ondas táctiles, estelas de gestos swipe, títulos animados, HUD de teclas y subtítulos palabra por palabra.
+- **Hilos de Trabajo Dedicados (`std::thread` + `crossbeam-channel`)** ([`src/workers.rs`](./src/workers.rs)):
+  - **Captura Multihilo**: hilos independientes para `ffmpeg -f x11grab` (pantalla/ventana PC), `adb shell screenrecord` (vídeo USB Android) y `adb shell getevent -lt` (telemetría táctil en tiempo real).
+  - **Tubería Directa a FFmpeg (`pipe:0`)**: renderiza lotes de fotogramas en paralelo con `rayon` (`into_par_iter`) e inyecta los buffers RGBA crudos directamente en el `stdin` de `/usr/bin/ffmpeg` hasta en **4K (3840×2160) a 60 fps** en **H.264**, **HEVC**, **AV1**, **VP9/ProRes con transparencia alpha**, **GIF** y **PNG**.
+- **Servidor MCP Compilado en el Propio Binario Rust (`rec-ording --mcp`)** ([`src/mcp.rs`](./src/mcp.rs)):
+  - Ejecuta `rec-ording --mcp` (o `/usr/bin/rec-ording-mcp`) para conectar Claude Desktop, Cursor o Codex por `stdio` JSON-RPC 2.0 sin instalar Node.js.
+
+---
+
+## Instalación en CachyOS / Arch Linux
 
 ```bash
-# Instalar directamente el paquete compilado en CachyOS / Arch Linux:
 ./install-cachyos.sh
-# o manualmente con pacman:
-sudo pacman -U rec-ording-0.1.0-1-x86_64.pkg.tar.zst
+# o directamente:
+sudo pacman -U rec-ording-0.2.0-1-x86_64.pkg.tar.zst
 ```
 
-Una vez instalado tendrás disponibles:
-- **`rec-ording`**: Aplicación de escritorio nativa (y acceso directo en el lanzador de aplicaciones de KDE/GNOME/Hyprland).
-- **`rec-ording-mcp`**: Comando global para conectar el servidor MCP directamente en Claude Desktop, Cursor o Codex.
-- **Auto-actualización integrada**: Desde el botón **`v0.1.0 / Actualizar`** de la barra superior puedes comprobar e instalar nuevas versiones publicadas en el repositorio privado [`github.com/blzkz/rec-ording`](https://github.com/blzkz/rec-ording).
+## Compilación manual desde código fuente
 
----
-
-## Cómo iniciar en modo desarrollo
-
-### 1. Modo Desarrollo Web Rápido (Vite + React + Three.js)
 ```bash
-npm run dev
+cargo build --release
+./target/release/rec-ording
 ```
-Abre `http://localhost:1420` en tu navegador.
-
-### 2. Modo Escritorio Nativo (Tauri v2 + Rust + FFmpeg + ADB)
-```bash
-npm run tauri dev
-```
-
-### 3. Servidor MCP para Agentes de IA (Claude Desktop, Cursor, Codex)
-```bash
-npm run mcp-server
-```
-Configuración para añadir a tu cliente MCP (`claude_desktop_config.json` o `.cursor/mcp.json`):
-```json
-{
-  "mcpServers": {
-    "rec-ording": {
-      "command": "node",
-      "args": ["/home/blzkz/Documentos/pet-projects/rec-ordingApp/scripts/mcp-server.mjs"]
-    }
-  }
-}
-```
-
----
-
-## Arquitectura del Proyecto
-
-- **Frontend 3D & Editor (`src/`)**:
-  - [`src/types/project.ts`](./src/types/project.ts): Esquema completo serializable del proyecto (`.recproj.json`).
-  - [`src/utils/deviceModels3D.ts`](./src/utils/deviceModels3D.ts): Generador 3D en Three.js para **Pixel 11 Pro**, **Galaxy S26 Ultra**, **Galaxy Tab S10 Ultra**, ventana de escritorio y cargador de archivos `.GLB`/`.GLTF`.
-  - [`src/utils/proceduralDemoTextures.ts`](./src/utils/proceduralDemoTextures.ts): Sintetizador de texturas interactivas de alta resolución y soporte para texturas de vídeo reales.
-  - [`src/components/Viewport3DCanvas.tsx`](./src/components/Viewport3DCanvas.tsx): Escenario 3D con interpolación de fotogramas clave de cámara, modo dual (PC + Android), desenfoque de movimiento (*motion blur*), cursor suavizado, ondas táctiles, máscaras de privacidad, títulos animados, HUD de teclas y subtítulos karaoke.
-  - [`src/components/MultiTrackTimeline.tsx`](./src/components/MultiTrackTimeline.tsx): Línea de tiempo con 4 pistas de vídeo (`V1..V4`), 4 de audio (`A1..A4`), 5 de texto (`T1..T5`), carril de Cámara Director y carril de Zonas Sensibles.
-  - [`src/components/RecordingModal.tsx`](./src/components/RecordingModal.tsx): Estudio de captura para pantalla de PC, ventana, simulador o teléfono/tablet Android por USB (`adb`) con registro de toques/gestos y auto-zoom.
-  - [`src/components/RightInspectorPanel.tsx`](./src/components/RightInspectorPanel.tsx): Inspector de 5 pestañas (`3D & Estilo`, `Director`, `Subtítulos`, `MCP / IA`, `Exportar`).
-- **Backend Nativo (`src-tauri/`)**:
-  - [`src-tauri/src/lib.rs`](./src-tauri/src/lib.rs): Integración nativa con `ffmpeg`, `adb devices`, `adb shell screenrecord`, `adb shell getevent -lt` y Whisper local.
-- **Servidor MCP (`scripts/mcp-server.mjs`)**:
-  - [`scripts/mcp-server.mjs`](./scripts/mcp-server.mjs): Servidor JSON-RPC 2.0 sobre `stdio` con 9 herramientas para importar grabaciones, editar pistas, cambiar maquetas 3D, aplicar auto-zoom y renderizar con FFmpeg manteniendo el archivo `.recproj.json` editable en la app.

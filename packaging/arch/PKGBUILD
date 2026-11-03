@@ -1,35 +1,28 @@
 # Maintainer: blzkz <sergiobl88@gmail.com>
 pkgname=rec-ording
-pkgver=0.1.0
-pkgrel=2
-pkgdesc="Grabador de pantalla y estudio de edición 3D para demos de Android (ADB) y PC con FFmpeg y MCP"
+pkgver=0.2.0
+pkgrel=1
+pkgdesc="Grabador de pantalla y estudio 3D 100% Rust + Vulkan (egui + wgpu + Rayon multihilo + FFmpeg + ADB + MCP)"
 arch=('x86_64')
 url="https://github.com/blzkz/rec-ording"
 license=('MIT')
-depends=('webkit2gtk-4.1' 'gtk3' 'ffmpeg')
+depends=('vulkan-icd-loader' 'ffmpeg')
 optdepends=(
   'android-tools: Captura de pantalla y eventos táctiles por USB (ADB)'
   'github-cli: Auto-actualización directa desde el repositorio privado de GitHub'
-  'nodejs: Ejecución del servidor MCP integrado (rec-ording-mcp)'
 )
 options=('!debug' '!strip')
 
 package() {
   local root_dir="${startdir}/../.."
 
-  # Binario principal nativo Tauri (Rust + WebKitGTK)
-  install -Dm755 "${root_dir}/src-tauri/target/release/rec-ording" "${pkgdir}/usr/bin/rec-ording"
+  # Binario principal 100% Rust nativo (egui + Vulkan wgpu + Rayon + MCP integrado)
+  install -Dm755 "${root_dir}/target/release/rec-ording" "${pkgdir}/usr/bin/rec-ording"
 
-  # Servidor MCP integrado + comando CLI rec-ording-mcp
-  install -Dm644 "${root_dir}/scripts/mcp-server.mjs" "${pkgdir}/usr/lib/rec-ording/mcp-server.mjs"
+  # Enlace directo rec-ording-mcp (ejecuta el mismo binario en modo servidor MCP --mcp sin Node.js)
   install -dm755 "${pkgdir}/usr/bin"
-  cat << 'EOF' > "${pkgdir}/usr/bin/rec-ording-mcp"
-#!/bin/sh
-exec node /usr/lib/rec-ording/mcp-server.mjs "$@"
-EOF
-  chmod 755 "${pkgdir}/usr/bin/rec-ording-mcp"
+  ln -sf /usr/bin/rec-ording "${pkgdir}/usr/bin/rec-ording-mcp"
 
-  # Entrada de escritorio (.desktop) e icono
+  # Entrada de escritorio (.desktop)
   install -Dm644 "${startdir}/rec-ording.desktop" "${pkgdir}/usr/share/applications/rec-ording.desktop"
-  install -Dm644 "${root_dir}/src-tauri/icons/128x128.png" "${pkgdir}/usr/share/icons/hicolor/128x128/apps/rec-ording.png"
 }
