@@ -32,7 +32,14 @@ Se han retirado, de momento, el servidor MCP, el autoactualizador, los subtítul
 - Detección de la pieza de pantalla por nombre (screen, display, pantalla…) o, si no hay pistas, como la superficie plana más adelantada; se puede cambiar a mano.
 - El modelo se endereza y escala solo alrededor de su pantalla, y usa la misma cámara, ángulo 3D, zooms y toques que los marcos integrados.
 - Render por software con perspectiva, iluminación de estudio y suavizado de bordes (2×2 al exportar y en pausa).
-- Limitaciones: sin compresión Draco, sin animaciones/esqueletos y la grabación se estira a las proporciones de la pantalla del modelo.
+
+## v0.6.0: galería de modelos, encaje del vídeo y animaciones
+
+- Galería con miniaturas renderizadas: cinco modelos gratuitos de Poly Pizza (CC0 y CC BY 3.0, créditos en `assets/models/CREDITS.md`) y los que importe el usuario (los `.glb` se copian a `~/.local/share/rec-ording/models`).
+- Detección de pantalla más robusta: rectángulo mínimo (no le afecta la densidad de vértices de un agujero de cámara) y modelos low-poly pintados con una textura de paleta, que se separan en piezas por color.
+- Ajuste del vídeo en la pantalla del modelo: Rellenar (con encuadre), Encajar (bandas negras) o Estirar.
+- Animaciones glTF de nodos (traslación, rotación y escala; interpolación lineal, por pasos o cúbica), en bucle o una vez.
+- Sigue sin soportarse: compresión Draco, esqueletos (skinning) y morph targets.
 
 ## Ideas para siguientes versiones
 

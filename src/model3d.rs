@@ -1,5 +1,6 @@
-//! Custom device models from glTF / GLB files: loading, finding and framing the screen, and a
-//! small software rasterizer so the model renders through the same compositor as everything else.
+//! Custom device models from glTF / GLB files: loading (with node animations), finding and
+//! framing the screen, and a small software rasterizer so the model renders through the same
+//! compositor as everything else.
 
 use rayon::prelude::*;
 use std::sync::Arc;
@@ -24,36 +25,75 @@ pub struct Material {
     cutoff: Option<f32>,
 }
 
-/// A model as loaded: world-space triangles with their materials.
+/// A selectable piece of the model: a material, or one colour of a palette-textured material
+/// (low-poly models often paint the whole phone, screen included, from one small palette).
+pub struct Part {
+    pub name: String,
+    color: [f32; 3],
+}
+
+#[derive(Clone, Copy)]
+struct NodeRest {
+    parent: Option<usize>,
+    t: [f32; 3],
+    r: [f32; 4],
+    s: [f32; 3],
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Target {
+    Translation,
+    Rotation,
+    Scale,
+}
+
+struct Channel {
+    node: usize,
+    target: Target,
+    times: Vec<f32>,
+    values: Vec<[f32; 4]>,
+    step: bool,
+    cubic: bool,
+}
+
+pub struct Animation {
+    pub name: String,
+    pub duration: f32,
+    channels: Vec<Channel>,
+}
+
+/// Node hierarchy and vertices in their nodes' local space, for posing animated models.
+struct Rig {
+    nodes: Vec<NodeRest>,
+    /// Parents before children.
+    order: Vec<usize>,
+    local: Vec<[f32; 3]>,
+    local_n: Vec<[f32; 3]>,
+    vnode: Vec<u32>,
+}
+
+/// A model as loaded: triangles in their rest pose, with materials and parts.
 pub struct ModelSource {
-    pub file_name: String,
     pos: Vec<[f32; 3]>,
     nrm: Vec<[f32; 3]>,
-    uv: Vec<[f32; 2]>,
-    tris: Vec<[u32; 3]>,
-    tri_mat: Vec<u32>,
-    pub materials: Arc<Vec<Material>>,
+    uv: Arc<Vec<[f32; 2]>>,
+    tris: Arc<Vec<[u32; 3]>>,
+    tri_mat: Arc<Vec<u32>>,
+    tri_part: Vec<u32>,
+    pub parts: Vec<Part>,
+    materials: Arc<Vec<Material>>,
     textures: Arc<Vec<Texture>>,
-    /// Best guess for the screen material.
+    pub animations: Arc<Vec<Animation>>,
+    rig: Arc<Rig>,
+    /// Best guess for the screen part.
     pub guess: Option<usize>,
 }
 
-impl ModelSource {
-    pub fn triangle_count(&self) -> usize {
-        self.tris.len()
-    }
-
-    /// Materials that are actually used, for the "screen" picker.
-    pub fn used_materials(&self) -> Vec<usize> {
-        let mut used = vec![false; self.materials.len()];
-        for m in &self.tri_mat {
-            used[*m as usize] = true;
-        }
-        (0..used.len()).filter(|i| used[*i]).collect()
-    }
-}
+// ---------- Small math ----------
 
 type M4 = [[f32; 4]; 4];
+
+const IDENTITY: M4 = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
 
 fn mul4(a: &M4, b: &M4) -> M4 {
     // Column-major, as glTF stores them.
@@ -66,12 +106,39 @@ fn mul4(a: &M4, b: &M4) -> M4 {
     m
 }
 
+fn trs(t: [f32; 3], q: [f32; 4], s: [f32; 3]) -> M4 {
+    let [x, y, z, w] = q;
+    [
+        [(1.0 - 2.0 * (y * y + z * z)) * s[0], (2.0 * (x * y + w * z)) * s[0], (2.0 * (x * z - w * y)) * s[0], 0.0],
+        [(2.0 * (x * y - w * z)) * s[1], (1.0 - 2.0 * (x * x + z * z)) * s[1], (2.0 * (y * z + w * x)) * s[1], 0.0],
+        [(2.0 * (x * z + w * y)) * s[2], (2.0 * (y * z - w * x)) * s[2], (1.0 - 2.0 * (x * x + y * y)) * s[2], 0.0],
+        [t[0], t[1], t[2], 1.0],
+    ]
+}
+
 fn xf_point(m: &M4, p: [f32; 3]) -> [f32; 3] {
     [
         m[0][0] * p[0] + m[1][0] * p[1] + m[2][0] * p[2] + m[3][0],
         m[0][1] * p[0] + m[1][1] * p[1] + m[2][1] * p[2] + m[3][1],
         m[0][2] * p[0] + m[1][2] * p[1] + m[2][2] * p[2] + m[3][2],
     ]
+}
+
+/// Cofactors of the 3×3 part: transforms normals like the inverse transpose (up to scale).
+fn cofactors(m: &M4) -> ([[f32; 3]; 3], f32) {
+    let c = [[m[0][0], m[0][1], m[0][2]], [m[1][0], m[1][1], m[1][2]], [m[2][0], m[2][1], m[2][2]]];
+    let cof = [cross(c[1], c[2]), cross(c[2], c[0]), cross(c[0], c[1])];
+    (cof, dot(c[0], cof[0]))
+}
+
+fn xf_normal(cof: &[[f32; 3]; 3], det: f32, n: [f32; 3]) -> [f32; 3] {
+    let v = [
+        n[0] * cof[0][0] + n[1] * cof[1][0] + n[2] * cof[2][0],
+        n[0] * cof[0][1] + n[1] * cof[1][1] + n[2] * cof[2][1],
+        n[0] * cof[0][2] + n[1] * cof[1][2] + n[2] * cof[2][2],
+    ];
+    let v = if det < 0.0 { [-v[0], -v[1], -v[2]] } else { v };
+    norm(v)
 }
 
 fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
@@ -125,6 +192,67 @@ fn looks_like_screen(name: Option<&str>) -> bool {
     .unwrap_or(false)
 }
 
+// ---------- Animation ----------
+
+fn sample_channel(ch: &Channel, t: f32) -> [f32; 4] {
+    let n = ch.times.len();
+    let value = |k: usize| if ch.cubic { ch.values[3 * k + 1] } else { ch.values[k] };
+    if n == 0 {
+        return [0.0, 0.0, 0.0, 1.0];
+    }
+    if t <= ch.times[0] {
+        return value(0);
+    }
+    if t >= ch.times[n - 1] {
+        return value(n - 1);
+    }
+    let k = ch.times.partition_point(|&x| x <= t) - 1;
+    if ch.step {
+        return value(k);
+    }
+    let span = (ch.times[k + 1] - ch.times[k]).max(1e-6);
+    let f = (t - ch.times[k]) / span;
+    let (a, mut b) = (value(k), value(k + 1));
+    if ch.target == Target::Rotation {
+        // Shortest way round, then normalized lerp.
+        if a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3] < 0.0 {
+            b = [-b[0], -b[1], -b[2], -b[3]];
+        }
+        let q = [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f, a[3] + (b[3] - a[3]) * f];
+        let l = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt().max(1e-9);
+        return [q[0] / l, q[1] / l, q[2] / l, q[3] / l];
+    }
+    [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f, 0.0]
+}
+
+impl Rig {
+    fn world_matrices(&self, anim: Option<(&Animation, f32)>) -> Vec<M4> {
+        let mut local: Vec<NodeRest> = self.nodes.clone();
+        if let Some((a, t)) = anim {
+            for ch in &a.channels {
+                let v = sample_channel(ch, t);
+                let n = &mut local[ch.node];
+                match ch.target {
+                    Target::Translation => n.t = [v[0], v[1], v[2]],
+                    Target::Rotation => n.r = v,
+                    Target::Scale => n.s = [v[0], v[1], v[2]],
+                }
+            }
+        }
+        let mut world = vec![IDENTITY; self.nodes.len()];
+        for &i in &self.order {
+            let l = trs(local[i].t, local[i].r, local[i].s);
+            world[i] = match local[i].parent {
+                Some(p) => mul4(&world[p], &l),
+                None => l,
+            };
+        }
+        world
+    }
+}
+
+// ---------- Loading ----------
+
 pub fn load(path: &str) -> Result<ModelSource, String> {
     let (doc, buffers, images) = gltf::import(path).map_err(|e| {
         let msg = e.to_string();
@@ -172,47 +300,55 @@ pub fn load(path: &str) -> Result<ModelSource, String> {
         cutoff: None,
     });
 
-    let mut src = ModelSource {
-        file_name: std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
-        pos: Vec::new(),
-        nrm: Vec::new(),
-        uv: Vec::new(),
-        tris: Vec::new(),
-        tri_mat: Vec::new(),
-        materials: Arc::new(Vec::new()),
-        textures: Arc::new(Vec::new()),
-        guess: None,
-    };
-    let mut named_screen_area = vec![0.0f32; materials.len()];
-
-    let scene = doc.default_scene().or_else(|| doc.scenes().next()).ok_or("El archivo no tiene ninguna escena")?;
-    let identity: M4 = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
-    let mut stack: Vec<(gltf::Node, M4)> = scene.nodes().map(|n| (n, identity)).collect();
-    while let Some((node, parent)) = stack.pop() {
-        let m = mul4(&parent, &node.transform().matrix());
-        for child in node.children() {
-            stack.push((child, m));
+    // Node hierarchy (rest pose).
+    let mut nodes: Vec<NodeRest> = doc
+        .nodes()
+        .map(|n| {
+            let (t, r, s) = n.transform().decomposed();
+            NodeRest { parent: None, t, r, s }
+        })
+        .collect();
+    for n in doc.nodes() {
+        for c in n.children() {
+            nodes[c.index()].parent = Some(n.index());
         }
-        let Some(mesh) = node.mesh() else { continue };
-        // Normals transform with the inverse transpose (cofactors); mirrored nodes flip winding.
-        let c = [[m[0][0], m[0][1], m[0][2]], [m[1][0], m[1][1], m[1][2]], [m[2][0], m[2][1], m[2][2]]];
-        let cof = [cross(c[1], c[2]), cross(c[2], c[0]), cross(c[0], c[1])];
-        let det = dot(c[0], cof[0]);
-        let flip = det < 0.0;
+    }
+    let scene = doc.default_scene().or_else(|| doc.scenes().next()).ok_or("El archivo no tiene ninguna escena")?;
+    let mut order = Vec::new();
+    let mut stack: Vec<gltf::Node> = scene.nodes().collect();
+    while let Some(n) = stack.pop() {
+        order.push(n.index());
+        stack.extend(n.children());
+    }
 
+    let mut rig = Rig { nodes, order, local: Vec::new(), local_n: Vec::new(), vnode: Vec::new() };
+    let rest = rig.world_matrices(None);
+    let doc_nodes: Vec<gltf::Node> = doc.nodes().collect();
+
+    let mut pos = Vec::new();
+    let mut nrm = Vec::new();
+    let mut uv = Vec::new();
+    let mut tris: Vec<[u32; 3]> = Vec::new();
+    let mut tri_mat: Vec<u32> = Vec::new();
+    let mut tri_named: Vec<bool> = Vec::new();
+
+    for &ni in &rig.order.clone() {
+        let node = &doc_nodes[ni];
+        let Some(mesh) = node.mesh() else { continue };
+        let m = &rest[ni];
+        let (cof, det) = cofactors(m);
+        let flip = det < 0.0;
         for prim in mesh.primitives() {
             let reader = prim.reader(|b| Some(&buffers[b.index()]));
             let Some(positions) = reader.read_positions() else { continue };
             let positions: Vec<[f32; 3]> = positions.collect();
             let mat_idx = prim.material().index().unwrap_or(default_mat);
-            let tex_set = materials[mat_idx].tex_coord;
             let normals: Option<Vec<[f32; 3]>> = reader.read_normals().map(|n| n.collect());
-            let uvs: Option<Vec<[f32; 2]>> = reader.read_tex_coords(tex_set).map(|t| t.into_f32().collect());
+            let uvs: Option<Vec<[f32; 2]>> = reader.read_tex_coords(materials[mat_idx].tex_coord).map(|t| t.into_f32().collect());
             let idx: Vec<u32> = reader
                 .read_indices()
                 .map(|i| i.into_u32().collect())
                 .unwrap_or_else(|| (0..positions.len() as u32).collect());
-
             let mut tri_idx: Vec<[u32; 3]> = Vec::new();
             match prim.mode() {
                 gltf::mesh::Mode::Triangles => tri_idx.extend(idx.chunks_exact(3).map(|t| [t[0], t[1], t[2]])),
@@ -229,18 +365,15 @@ pub fn load(path: &str) -> Result<ModelSource, String> {
                 _ => continue,
             }
 
-            let base = src.pos.len() as u32;
+            let base = pos.len() as u32;
             for (i, p) in positions.iter().enumerate() {
-                src.pos.push(xf_point(&m, *p));
-                let n = normals.as_ref().map(|n| n[i]).unwrap_or([0.0; 3]);
-                let tn = [
-                    n[0] * cof[0][0] + n[1] * cof[1][0] + n[2] * cof[2][0],
-                    n[0] * cof[0][1] + n[1] * cof[1][1] + n[2] * cof[2][1],
-                    n[0] * cof[0][2] + n[1] * cof[1][2] + n[2] * cof[2][2],
-                ];
-                let tn = if flip { [-tn[0], -tn[1], -tn[2]] } else { tn };
-                src.nrm.push(if normals.is_some() { norm(tn) } else { [0.0; 3] });
-                src.uv.push(uvs.as_ref().map(|u| u[i]).unwrap_or([0.0; 2]));
+                rig.local.push(*p);
+                rig.vnode.push(ni as u32);
+                pos.push(xf_point(m, *p));
+                let n = normals.as_ref().map(|n| n[i]).unwrap_or([0.0, 0.0, 1.0]);
+                rig.local_n.push(n);
+                nrm.push(xf_normal(&cof, det, n));
+                uv.push(uvs.as_ref().map(|u| u[i]).unwrap_or([0.0; 2]));
             }
             let named = looks_like_screen(prim.material().name()) || looks_like_screen(mesh.name()) || looks_like_screen(node.name());
             for t in tri_idx {
@@ -249,75 +382,203 @@ pub fn load(path: &str) -> Result<ModelSource, String> {
                 }
                 let t = if flip { [t[0], t[2], t[1]] } else { t };
                 let tri = [base + t[0], base + t[1], base + t[2]];
-                // Missing normals: use the face normal.
                 if normals.is_none() {
-                    let (a, b, c) = (src.pos[tri[0] as usize], src.pos[tri[1] as usize], src.pos[tri[2] as usize]);
-                    let fnrm = norm(cross(sub(b, a), sub(c, a)));
+                    // Flat shading from the face normal (in both spaces).
+                    let (a, b, c) = (pos[tri[0] as usize], pos[tri[1] as usize], pos[tri[2] as usize]);
+                    let fw = norm(cross(sub(b, a), sub(c, a)));
+                    let (la, lb, lc) = (rig.local[tri[0] as usize], rig.local[tri[1] as usize], rig.local[tri[2] as usize]);
+                    let fl = norm(cross(sub(lb, la), sub(lc, la)));
+                    let fl = if flip { [-fl[0], -fl[1], -fl[2]] } else { fl };
                     for &v in &tri {
-                        src.nrm[v as usize] = fnrm;
+                        nrm[v as usize] = fw;
+                        rig.local_n[v as usize] = fl;
                     }
                 }
-                if named {
-                    let (a, b, c) = (src.pos[tri[0] as usize], src.pos[tri[1] as usize], src.pos[tri[2] as usize]);
-                    named_screen_area[mat_idx] += dot(cross(sub(b, a), sub(c, a)), cross(sub(b, a), sub(c, a))).sqrt();
-                }
-                src.tris.push(tri);
-                src.tri_mat.push(mat_idx as u32);
+                tris.push(tri);
+                tri_mat.push(mat_idx as u32);
+                tri_named.push(named);
             }
         }
     }
-    if src.tris.is_empty() {
+    if tris.is_empty() {
         return Err("El modelo no tiene triángulos".into());
     }
 
-    src.guess = named_screen_area
-        .iter()
+    let animations: Vec<Animation> = doc
+        .animations()
         .enumerate()
-        .filter(|(_, a)| **a > 0.0)
-        .max_by(|a, b| a.1.total_cmp(b.1))
-        .map(|(i, _)| i)
-        .or_else(|| guess_planar_dark(&src, &materials));
-    src.materials = Arc::new(materials);
-    src.textures = Arc::new(textures);
+        .filter_map(|(i, a)| {
+            let mut channels = Vec::new();
+            let mut duration = 0.0f32;
+            for ch in a.channels() {
+                let reader = ch.reader(|b| Some(&buffers[b.index()]));
+                let (Some(inputs), Some(outputs)) = (reader.read_inputs(), reader.read_outputs()) else { continue };
+                let times: Vec<f32> = inputs.collect();
+                use gltf::animation::util::ReadOutputs;
+                let (target, values): (Target, Vec<[f32; 4]>) = match outputs {
+                    ReadOutputs::Translations(v) => (Target::Translation, v.map(|x| [x[0], x[1], x[2], 0.0]).collect()),
+                    ReadOutputs::Rotations(v) => (Target::Rotation, v.into_f32().collect()),
+                    ReadOutputs::Scales(v) => (Target::Scale, v.map(|x| [x[0], x[1], x[2], 0.0]).collect()),
+                    ReadOutputs::MorphTargetWeights(_) => continue,
+                };
+                let interp = ch.sampler().interpolation();
+                duration = duration.max(times.last().copied().unwrap_or(0.0));
+                channels.push(Channel {
+                    node: ch.target().node().index(),
+                    target,
+                    times,
+                    values,
+                    step: interp == gltf::animation::Interpolation::Step,
+                    cubic: interp == gltf::animation::Interpolation::CubicSpline,
+                });
+            }
+            (!channels.is_empty() && duration > 0.0).then(|| Animation {
+                name: a.name().map(str::to_string).unwrap_or_else(|| format!("Animación {}", i + 1)),
+                duration,
+                channels,
+            })
+        })
+        .collect();
+
+    let (parts, tri_part) = split_parts(&materials, &textures, &tris, &tri_mat, &uv);
+    let mut src = ModelSource {
+        pos,
+        nrm,
+        uv: Arc::new(uv),
+        tris: Arc::new(tris),
+        tri_mat: Arc::new(tri_mat),
+        tri_part,
+        parts,
+        materials: Arc::new(materials),
+        textures: Arc::new(textures),
+        animations: Arc::new(animations),
+        rig: Arc::new(rig),
+        guess: None,
+    };
+    src.guess = guess_screen(&src, &tri_named);
     Ok(src)
 }
 
-/// Without a telling name: among the large flat materials, the screen is the one that sits
-/// furthest out along its own normal (in front of the bezel), preferably dark or textured.
-fn guess_planar_dark(src: &ModelSource, materials: &[Material]) -> Option<usize> {
-    let n = materials.len();
+fn tri_area_normal(pos: &[[f32; 3]], t: &[u32; 3]) -> ([f32; 3], f32) {
+    let (a, b, c) = (pos[t[0] as usize], pos[t[1] as usize], pos[t[2] as usize]);
+    let cr = cross(sub(b, a), sub(c, a));
+    let l = dot(cr, cr).sqrt();
+    (if l > 0.0 { [cr[0] / l, cr[1] / l, cr[2] / l] } else { [0.0; 3] }, l)
+}
+
+/// One part per material, except palette-textured materials, which are split by the colour
+/// each triangle samples (when there are only a handful of colours).
+fn split_parts(
+    materials: &[Material],
+    textures: &[Texture],
+    tris: &[[u32; 3]],
+    tri_mat: &[u32],
+    uv: &[[f32; 2]],
+) -> (Vec<Part>, Vec<u32>) {
+    let mut tri_part = vec![0u32; tris.len()];
+    let mut parts = Vec::new();
+    for (mi, mat) in materials.iter().enumerate() {
+        let mine: Vec<usize> = (0..tris.len()).filter(|&i| tri_mat[i] as usize == mi).collect();
+        if mine.is_empty() {
+            continue;
+        }
+        let tex = mat.texture.and_then(|t| textures.get(t));
+        let mut split: Option<Vec<([u8; 3], Vec<usize>)>> = None;
+        if let Some(tex) = tex {
+            let mut buckets: Vec<([u8; 3], Vec<usize>)> = Vec::new();
+            for &i in &mine {
+                let t = tris[i];
+                let u = (uv[t[0] as usize][0] + uv[t[1] as usize][0] + uv[t[2] as usize][0]) / 3.0;
+                let v = (uv[t[0] as usize][1] + uv[t[1] as usize][1] + uv[t[2] as usize][1]) / 3.0;
+                let c = sample_tex(tex, u, v);
+                let key = [(c[0] as u8) >> 4, (c[1] as u8) >> 4, (c[2] as u8) >> 4];
+                match buckets.iter_mut().find(|(k, _)| *k == key) {
+                    Some((_, list)) => list.push(i),
+                    None => buckets.push((key, vec![i])),
+                }
+                if buckets.len() > 16 {
+                    break;
+                }
+            }
+            if buckets.len() > 1 && buckets.len() <= 16 {
+                split = Some(buckets);
+            }
+        }
+        match split {
+            Some(buckets) => {
+                for (key, list) in buckets {
+                    let color = [key[0] as f32 * 17.0, key[1] as f32 * 17.0, key[2] as f32 * 17.0];
+                    let id = parts.len() as u32;
+                    parts.push(Part {
+                        name: format!("{} · #{:02x}{:02x}{:02x}", mat.name, key[0] * 17, key[1] * 17, key[2] * 17),
+                        color,
+                    });
+                    for i in list {
+                        tri_part[i] = id;
+                    }
+                }
+            }
+            None => {
+                let id = parts.len() as u32;
+                parts.push(Part { name: mat.name.clone(), color: mat.base });
+                for i in mine {
+                    tri_part[i] = id;
+                }
+            }
+        }
+    }
+    (parts, tri_part)
+}
+
+/// Screen guess: a part whose name says so; otherwise, among the large flat parts, the one that
+/// sits furthest out along its own normal (in front of the bezel), preferably dark.
+fn guess_screen(src: &ModelSource, tri_named: &[bool]) -> Option<usize> {
+    let n = src.parts.len();
+    let mut named = vec![0.0f32; n];
     let mut area = vec![0.0f32; n];
     let mut nsum = vec![[0.0f32; 3]; n];
     let mut csum = vec![[0.0f32; 3]; n];
-    for (t, m) in src.tris.iter().zip(&src.tri_mat) {
-        let (a, b, c) = (src.pos[t[0] as usize], src.pos[t[1] as usize], src.pos[t[2] as usize]);
-        let cr = cross(sub(b, a), sub(c, a));
-        let ar = dot(cr, cr).sqrt();
-        let m = *m as usize;
-        area[m] += ar;
+    for (i, t) in src.tris.iter().enumerate() {
+        let p = src.tri_part[i] as usize;
+        let (nn, ar) = tri_area_normal(&src.pos, t);
+        if tri_named[i] {
+            named[p] += ar;
+        }
+        area[p] += ar;
         for k in 0..3 {
-            nsum[m][k] += cr[k];
-            csum[m][k] += ar * (a[k] + b[k] + c[k]) / 3.0;
+            nsum[p][k] += nn[k] * ar;
+            csum[p][k] += ar * (src.pos[t[0] as usize][k] + src.pos[t[1] as usize][k] + src.pos[t[2] as usize][k]) / 3.0;
+        }
+    }
+    if let Some((i, _)) = named.iter().enumerate().filter(|(_, a)| **a > 0.0).max_by(|a, b| a.1.total_cmp(b.1)) {
+        return Some(i);
+    }
+
+    // Area of each part that faces its main direction (an inset screen also has thin sides).
+    let mut front = vec![0.0f32; n];
+    for (i, t) in src.tris.iter().enumerate() {
+        let p = src.tri_part[i] as usize;
+        let (nn, ar) = tri_area_normal(&src.pos, t);
+        if dot(nn, norm(nsum[p])) > 0.9 {
+            front[p] += ar;
         }
     }
     let count = src.pos.len() as f32;
     let centroid = src.pos.iter().fold([0.0f32; 3], |acc, p| [acc[0] + p[0] / count, acc[1] + p[1] / count, acc[2] + p[2] / count]);
-    let planar: Vec<usize> = (0..n).filter(|&i| area[i] > 0.0 && dot(nsum[i], nsum[i]).sqrt() / area[i] > 0.95).collect();
-    let biggest = planar.iter().map(|&i| area[i]).fold(0.0f32, f32::max);
-    planar
-        .into_iter()
-        .filter(|&i| area[i] >= 0.3 * biggest)
-        .max_by(|&a, &b| {
-            let score = |i: usize| {
-                let c = [csum[i][0] / area[i], csum[i][1] / area[i], csum[i][2] / area[i]];
-                let out = dot(sub(c, centroid), norm(nsum[i]));
-                let col = materials[i].base;
-                let dark = col[0] + col[1] + col[2] < 180.0 || materials[i].texture.is_some();
-                out * if dark { 1.0 } else { 0.8 }
-            };
-            score(a).total_cmp(&score(b))
-        })
+    let flat: Vec<usize> = (0..n).filter(|&i| area[i] > 0.0 && front[i] / area[i] > 0.75).collect();
+    let biggest = flat.iter().map(|&i| front[i]).fold(0.0f32, f32::max);
+    flat.into_iter().filter(|&i| front[i] >= 0.3 * biggest).max_by(|&a, &b| {
+        let score = |i: usize| {
+            let c = [csum[i][0] / area[i], csum[i][1] / area[i], csum[i][2] / area[i]];
+            let out = dot(sub(c, centroid), norm(nsum[i]));
+            let col = src.parts[i].color;
+            out * if col[0] + col[1] + col[2] < 200.0 { 1.0 } else { 0.7 }
+        };
+        score(a).total_cmp(&score(b))
+    })
 }
+
+// ---------- Framing the screen ----------
 
 /// Size of the model around its screen, in units of the screen width, with the screen centred
 /// on the origin, facing +z, its top towards -y.
@@ -332,72 +593,128 @@ pub struct ModelMeta {
     pub z1: f32,
 }
 
+/// World → device space: `((p - origin) · [x y z] - shift) * scale`.
+#[derive(Clone, Copy)]
+struct Framing {
+    origin: [f32; 3],
+    x: [f32; 3],
+    y: [f32; 3],
+    z: [f32; 3],
+    shift: [f32; 3],
+    scale: f32,
+}
+
+impl Framing {
+    fn point(&self, p: [f32; 3]) -> [f32; 3] {
+        let d = sub(p, self.origin);
+        [
+            (dot(d, self.x) - self.shift[0]) * self.scale,
+            (dot(d, self.y) - self.shift[1]) * self.scale,
+            (dot(d, self.z) - self.shift[2]) * self.scale,
+        ]
+    }
+    fn normal(&self, n: [f32; 3]) -> [f32; 3] {
+        [dot(n, self.x), dot(n, self.y), dot(n, self.z)]
+    }
+}
+
 /// A model normalized around its screen and ready to draw.
 pub struct PreparedModel {
     pub meta: ModelMeta,
     pos: Vec<[f32; 3]>,
     nrm: Vec<[f32; 3]>,
-    uv: Vec<[f32; 2]>,
-    tris: Vec<[u32; 3]>,
-    tri_mat: Vec<u32>,
+    /// Where each screen vertex falls on the screen (0..1), from the rest pose.
+    suv: Vec<[f32; 2]>,
+    tri_screen: Vec<bool>,
+    uv: Arc<Vec<[f32; 2]>>,
+    tris: Arc<Vec<[u32; 3]>>,
+    tri_mat: Arc<Vec<u32>>,
     materials: Arc<Vec<Material>>,
     textures: Arc<Vec<Texture>>,
-    screen: u32,
-    screen_h: f32,
+    animations: Arc<Vec<Animation>>,
+    rig: Arc<Rig>,
+    framing: Framing,
 }
 
-/// Puts the model in device space: finds the screen's plane and long axis, turns the model so
-/// the screen faces the camera upright, and scales it so the screen is 1 unit wide.
-/// `quarter_turns` rotates the screen by 90° steps for models whose "up" was guessed wrong.
-pub fn prepare(src: &ModelSource, screen: usize, quarter_turns: u8) -> Result<PreparedModel, String> {
+/// Puts the model in device space: finds the screen's plane and the smallest rectangle around
+/// it, turns the model so the screen faces the camera upright, and scales it so the screen is
+/// 1 unit wide. `quarter_turns` rotates the screen by 90° for models whose "up" was guessed wrong.
+pub fn prepare(src: &ModelSource, screen_part: usize, quarter_turns: u8) -> Result<PreparedModel, String> {
+    // Main direction of the part, then only the triangles facing it (not the sides of an inset screen).
     let mut nsum = [0.0f32; 3];
+    for (i, t) in src.tris.iter().enumerate() {
+        if src.tri_part[i] as usize == screen_part {
+            let (n, a) = tri_area_normal(&src.pos, t);
+            for k in 0..3 {
+                nsum[k] += n[k] * a;
+            }
+        }
+    }
+    if dot(nsum, nsum) <= 0.0 {
+        return Err("Esa pieza no tiene superficie visible".into());
+    }
+    let main = norm(nsum);
+    let mut tri_screen = vec![false; src.tris.len()];
     let mut csum = [0.0f32; 3];
     let mut area = 0.0f32;
-    let mut screen_verts: Vec<u32> = Vec::new();
-    for (t, m) in src.tris.iter().zip(&src.tri_mat) {
-        if *m as usize != screen {
+    for (i, t) in src.tris.iter().enumerate() {
+        if src.tri_part[i] as usize != screen_part {
             continue;
         }
-        let (a, b, c) = (src.pos[t[0] as usize], src.pos[t[1] as usize], src.pos[t[2] as usize]);
-        let cr = cross(sub(b, a), sub(c, a));
-        let ar = dot(cr, cr).sqrt();
-        for k in 0..3 {
-            nsum[k] += cr[k];
-            csum[k] += ar * (a[k] + b[k] + c[k]) / 3.0;
+        let (n, a) = tri_area_normal(&src.pos, t);
+        if dot(n, main) < 0.85 {
+            continue;
         }
-        area += ar;
-        screen_verts.extend_from_slice(t);
-    }
-    if area <= 0.0 {
-        return Err("Ese material no tiene superficie visible".into());
+        tri_screen[i] = true;
+        area += a;
+        for k in 0..3 {
+            csum[k] += a * (src.pos[t[0] as usize][k] + src.pos[t[1] as usize][k] + src.pos[t[2] as usize][k]) / 3.0;
+        }
     }
     let center = [csum[0] / area, csum[1] / area, csum[2] / area];
-    let mut z = norm(nsum);
-
-    // The rest of the phone should sit behind the screen.
-    let all_c = src.pos.iter().fold([0.0f32; 3], |acc, p| [acc[0] + p[0], acc[1] + p[1], acc[2] + p[2]]);
-    let n = src.pos.len() as f32;
-    if dot(sub([all_c[0] / n, all_c[1] / n, all_c[2] / n], center), z) > 0.0 {
+    let mut z = main;
+    // The rest of the device should sit behind the screen.
+    let count = src.pos.len() as f32;
+    let all_c = src.pos.iter().fold([0.0f32; 3], |acc, p| [acc[0] + p[0] / count, acc[1] + p[1] / count, acc[2] + p[2] / count]);
+    if dot(sub(all_c, center), z) > 0.0 {
         z = [-z[0], -z[1], -z[2]];
     }
 
-    // Long axis of the screen (principal component within its plane).
+    // Smallest rectangle around the screen (robust to uneven vertex density, e.g. a camera hole).
+    let screen_verts: Vec<[f32; 3]> = src
+        .tris
+        .iter()
+        .zip(&tri_screen)
+        .filter(|(_, s)| **s)
+        .flat_map(|(t, _)| t.map(|i| src.pos[i as usize]))
+        .collect();
     let helper = if z[1].abs() < 0.9 { [0.0, 1.0, 0.0] } else { [1.0, 0.0, 0.0] };
     let a = norm(cross(helper, z));
     let b = cross(z, a);
-    let (mut sxx, mut sxy, mut syy) = (0.0f32, 0.0f32, 0.0f32);
-    for &v in &screen_verts {
-        let d = sub(src.pos[v as usize], center);
-        let (u, w) = (dot(d, a), dot(d, b));
-        sxx += u * u;
-        sxy += u * w;
-        syy += w * w;
+    let flat: Vec<(f32, f32)> = screen_verts.iter().map(|p| (dot(sub(*p, center), a), dot(sub(*p, center), b))).collect();
+    let mut best = (f32::MAX, 0.0f32, 0.0f32, 0.0f32);
+    for step in 0..360 {
+        let th = (step as f32 * 0.5).to_radians();
+        let (s, c) = th.sin_cos();
+        let (mut u0, mut u1, mut v0, mut v1) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+        for &(u, v) in &flat {
+            let (ru, rv) = (u * c + v * s, -u * s + v * c);
+            u0 = u0.min(ru);
+            u1 = u1.max(ru);
+            v0 = v0.min(rv);
+            v1 = v1.max(rv);
+        }
+        let ar = (u1 - u0) * (v1 - v0);
+        if ar < best.0 - 1e-9 {
+            best = (ar, th, u1 - u0, v1 - v0);
+        }
     }
-    let theta = 0.5 * (2.0 * sxy).atan2(sxx - syy);
+    let (_, th, du, dv) = best;
+    let th = if dv > du { th + std::f32::consts::FRAC_PI_2 } else { th };
     let mut long = norm([
-        a[0] * theta.cos() + b[0] * theta.sin(),
-        a[1] * theta.cos() + b[1] * theta.sin(),
-        a[2] * theta.cos() + b[2] * theta.sin(),
+        a[0] * th.cos() + b[0] * th.sin(),
+        a[1] * th.cos() + b[1] * th.sin(),
+        a[2] * th.cos() + b[2] * th.sin(),
     ]);
     // glTF is Y-up: the top of the screen is the end that points up.
     let up_ref = if long[1].abs() > 0.2 { [0.0, 1.0, 0.0] } else { [0.0, 0.0, -1.0] };
@@ -412,28 +729,35 @@ pub fn prepare(src: &ModelSource, screen: usize, quarter_turns: u8) -> Result<Pr
         y = ny;
     }
 
-    let to_dev = |p: [f32; 3]| {
-        let d = sub(p, center);
-        [dot(d, x), dot(d, y), dot(d, z)]
-    };
-    let mut pos: Vec<[f32; 3]> = src.pos.par_iter().map(|p| to_dev(*p)).collect();
-    let nrm: Vec<[f32; 3]> = src.nrm.par_iter().map(|n| [dot(*n, x), dot(*n, y), dot(*n, z)]).collect();
-
+    let mut framing = Framing { origin: center, x, y, z, shift: [0.0; 3], scale: 1.0 };
     let (mut sx0, mut sx1, mut sy0, mut sy1, mut sz1) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN, f32::MIN);
-    for &v in &screen_verts {
-        let p = pos[v as usize];
-        sx0 = sx0.min(p[0]);
-        sx1 = sx1.max(p[0]);
-        sy0 = sy0.min(p[1]);
-        sy1 = sy1.max(p[1]);
-        sz1 = sz1.max(p[2]);
+    for p in &screen_verts {
+        let d = framing.point(*p);
+        sx0 = sx0.min(d[0]);
+        sx1 = sx1.max(d[0]);
+        sy0 = sy0.min(d[1]);
+        sy1 = sy1.max(d[1]);
+        sz1 = sz1.max(d[2]);
     }
     let sw = (sx1 - sx0).max(1e-9);
     let sh = (sy1 - sy0).max(1e-9);
-    let (cx, cy) = ((sx0 + sx1) * 0.5, (sy0 + sy1) * 0.5);
+    framing.shift = [(sx0 + sx1) * 0.5, (sy0 + sy1) * 0.5, sz1];
+    framing.scale = 1.0 / sw;
+    let screen_h = sh / sw;
+
+    let pos: Vec<[f32; 3]> = src.pos.par_iter().map(|p| framing.point(*p)).collect();
+    let nrm: Vec<[f32; 3]> = src.nrm.par_iter().map(|n| framing.normal(*n)).collect();
+    let mut suv = vec![[0.0f32; 2]; pos.len()];
+    for (t, s) in src.tris.iter().zip(&tri_screen) {
+        if *s {
+            for &v in t {
+                let p = pos[v as usize];
+                suv[v as usize] = [p[0] + 0.5, p[1] / screen_h + 0.5];
+            }
+        }
+    }
     let mut bounds = [f32::MAX, f32::MIN, f32::MAX, f32::MIN, f32::MAX, f32::MIN];
-    for p in pos.iter_mut() {
-        *p = [(p[0] - cx) / sw, (p[1] - cy) / sw, (p[2] - sz1) / sw];
+    for p in &pos {
         bounds[0] = bounds[0].min(p[0]);
         bounds[1] = bounds[1].max(p[0]);
         bounds[2] = bounds[2].min(p[1]);
@@ -454,14 +778,49 @@ pub fn prepare(src: &ModelSource, screen: usize, quarter_turns: u8) -> Result<Pr
         },
         pos,
         nrm,
+        suv,
+        tri_screen,
         uv: src.uv.clone(),
         tris: src.tris.clone(),
         tri_mat: src.tri_mat.clone(),
         materials: src.materials.clone(),
         textures: src.textures.clone(),
-        screen: screen as u32,
-        screen_h: sh / sw,
+        animations: src.animations.clone(),
+        rig: src.rig.clone(),
+        framing,
     })
+}
+
+/// Vertex positions and normals (device space) at one instant of an animation.
+pub struct Pose {
+    pos: Vec<[f32; 3]>,
+    nrm: Vec<[f32; 3]>,
+}
+
+impl PreparedModel {
+    /// Poses the model at `t` seconds of animation `anim`.
+    pub fn pose(&self, anim: usize, t: f32) -> Option<Pose> {
+        let a = self.animations.get(anim)?;
+        let world = self.rig.world_matrices(Some((a, t)));
+        let cofs: Vec<([[f32; 3]; 3], f32)> = world.iter().map(cofactors).collect();
+        let rig = &self.rig;
+        let (pos, nrm): (Vec<[f32; 3]>, Vec<[f32; 3]>) = (0..rig.local.len())
+            .into_par_iter()
+            .map(|i| {
+                let ni = rig.vnode[i] as usize;
+                let (cof, det) = &cofs[ni];
+                (
+                    self.framing.point(xf_point(&world[ni], rig.local[i])),
+                    self.framing.normal(xf_normal(cof, *det, rig.local_n[i])),
+                )
+            })
+            .unzip();
+        Some(Pose { pos, nrm })
+    }
+
+    pub fn animation_duration(&self, anim: usize) -> Option<f32> {
+        self.animations.get(anim).map(|a| a.duration)
+    }
 }
 
 // ---------- Rasterizer ----------
@@ -487,9 +846,12 @@ pub struct Projected<'a> {
 
 impl PreparedModel {
     /// `place` maps a model point (screen-width units) to (output x, output y, 1/depth) and
-    /// `turn` rotates a normal into world space. `ss` is the supersampling factor.
+    /// `turn` rotates a normal into world space. `pose` overrides the rest pose (animation).
+    /// `ss` is the supersampling factor.
+    #[allow(clippy::too_many_arguments)]
     pub fn project<'a>(
         &'a self,
+        pose: Option<&Pose>,
         place: impl Fn([f32; 3]) -> (f32, f32, f32) + Sync,
         turn: impl Fn([f32; 3]) -> [f32; 3] + Sync,
         ow: usize,
@@ -498,15 +860,18 @@ impl PreparedModel {
         band_rows: usize,
     ) -> Projected<'a> {
         let ssf = ss as f32;
-        let projected: Vec<(f32, f32, f32)> = self
-            .pos
+        let (pos, nrm) = match pose {
+            Some(p) => (&p.pos, &p.nrm),
+            None => (&self.pos, &self.nrm),
+        };
+        let projected: Vec<(f32, f32, f32)> = pos
             .par_iter()
             .map(|p| {
                 let (x, y, iw) = place(*p);
                 (x * ssf, y * ssf, iw)
             })
             .collect();
-        let nw: Vec<[f32; 3]> = self.nrm.par_iter().map(|n| turn(*n)).collect();
+        let nw: Vec<[f32; 3]> = nrm.par_iter().map(|n| turn(*n)).collect();
         let (sx, rest): (Vec<f32>, Vec<(f32, f32)>) = projected.into_iter().map(|(x, y, w)| (x, (y, w))).unzip();
         let (sy, iw): (Vec<f32>, Vec<f32>) = rest.into_iter().unzip();
 
@@ -591,7 +956,7 @@ fn sample_tex(t: &Texture, u: f32, v: f32) -> [f32; 4] {
 
 impl Projected<'_> {
     /// Rasterizes the triangles of `band` (output rows `band * band_rows ..`). `screen` returns
-    /// the recording's colour at a point of the screen (u, v in 0..1).
+    /// the screen's colour at a point of the screen (u, v in 0..1).
     pub fn raster(&self, band: usize, rows: usize, screen: &dyn Fn(f32, f32) -> [f32; 3], light: &Lighting) -> Band {
         let m = self.model;
         let ss = self.ss;
@@ -615,7 +980,7 @@ impl Projected<'_> {
             let back = area < 0.0;
             let inv_area = 1.0 / area;
             let mat = &m.materials[m.tri_mat[ti as usize] as usize];
-            let is_screen = m.tri_mat[ti as usize] == m.screen;
+            let is_screen = m.tri_screen[ti as usize];
 
             let minx = x0.min(x1).min(x2).floor().max(0.0) as usize;
             let maxx = (x0.max(x1).max(x2).ceil() as isize).min(w as isize - 1);
@@ -643,21 +1008,17 @@ impl Projected<'_> {
                     }
                     // Perspective-correct weights.
                     let (b0, b1, b2) = (e0 * w0i / iw, e1 * w1i / iw, e2 * w2i / iw);
-                    let lerp3 = |a: [f32; 3], b: [f32; 3], c: [f32; 3]| {
-                        [a[0] * b0 + b[0] * b1 + c[0] * b2, a[1] * b0 + b[1] * b1 + c[1] * b2, a[2] * b0 + b[2] * b1 + c[2] * b2]
-                    };
+                    let lerp2 = |a: [f32; 2], b: [f32; 2], c: [f32; 2]| [a[0] * b0 + b[0] * b1 + c[0] * b2, a[1] * b0 + b[1] * b1 + c[1] * b2];
 
                     let (rgb, alpha) = if is_screen {
-                        let p = lerp3(m.pos[i0], m.pos[i1], m.pos[i2]);
-                        (screen(p[0] + 0.5, p[1] / m.screen_h + 0.5), 1.0)
+                        let s = lerp2(m.suv[i0], m.suv[i1], m.suv[i2]);
+                        (screen(s[0], s[1]), 1.0)
                     } else {
                         let mut base = mat.base;
                         let mut a = mat.alpha;
                         if let Some(tex) = mat.texture.and_then(|i| m.textures.get(i)) {
-                            let (ua, ub, uc) = (m.uv[i0], m.uv[i1], m.uv[i2]);
-                            let u = ua[0] * b0 + ub[0] * b1 + uc[0] * b2;
-                            let v = ua[1] * b0 + ub[1] * b1 + uc[1] * b2;
-                            let c = sample_tex(tex, u, v);
+                            let u = lerp2(m.uv[i0], m.uv[i1], m.uv[i2]);
+                            let c = sample_tex(tex, u[0], u[1]);
                             base = [base[0] * c[0] / 255.0, base[1] * c[1] / 255.0, base[2] * c[2] / 255.0];
                             a *= c[3] / 255.0;
                         }
@@ -669,7 +1030,12 @@ impl Projected<'_> {
                         } else if !mat.blend {
                             a = 1.0;
                         }
-                        let mut n = norm(lerp3(self.nw[i0], self.nw[i1], self.nw[i2]));
+                        let (n0, n1, n2) = (self.nw[i0], self.nw[i1], self.nw[i2]);
+                        let mut n = norm([
+                            n0[0] * b0 + n1[0] * b1 + n2[0] * b2,
+                            n0[1] * b0 + n1[1] * b1 + n2[1] * b2,
+                            n0[2] * b0 + n1[2] * b1 + n2[2] * b2,
+                        ]);
                         if back {
                             n = [-n[0], -n[1], -n[2]];
                         }
@@ -723,14 +1089,64 @@ mod tests {
         for (file, screen_name) in [("phone_named.glb", "Screen"), ("phone_unnamed.glb", "Material.003")] {
             let src = load(&format!("{dir}/{file}")).expect("load");
             let guess = src.guess.expect("guess");
-            assert_eq!(src.materials[guess].name, screen_name, "{file}");
+            assert_eq!(src.parts[guess].name, screen_name, "{file}");
             let m = prepare(&src, guess, 0).expect("prepare");
             assert!((m.meta.screen_aspect - 0.066 / 0.148).abs() < 0.01, "{:?}", m.meta);
             // The camera bump (last material) sits behind the screen, near its top (-y).
             let cam = src.materials.len() - 2;
-            let pts: Vec<[f32; 3]> = m.tris.iter().zip(&m.tri_mat).filter(|(_, mt)| **mt as usize == cam).flat_map(|(t, _)| t.map(|i| m.pos[i as usize])).collect();
+            let pts: Vec<[f32; 3]> = m
+                .tris
+                .iter()
+                .zip(m.tri_mat.iter())
+                .filter(|(_, mt)| **mt as usize == cam)
+                .flat_map(|(t, _)| t.map(|i| m.pos[i as usize]))
+                .collect();
             assert!(pts.iter().all(|p| p[2] < 0.0 && p[1] < 0.0), "{file}: camera at {:?}", pts[0]);
             assert!(m.meta.z1 < 0.02 && m.meta.z0 < -0.1, "{:?}", m.meta);
         }
     }
+
+    #[test]
+    #[ignore]
+    fn plays_node_animations() {
+        let Ok(dir) = std::env::var("MODEL_DIR") else { return };
+        let src = load(&format!("{dir}/phone_animated.glb")).expect("load");
+        let names: Vec<&str> = src.animations.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, ["Giro", "Salto"]);
+        assert!((src.animations[0].duration - 4.0).abs() < 1e-4);
+        let m = prepare(&src, src.guess.unwrap(), 0).expect("prepare");
+        // A quarter of the turn: the screen now faces sideways instead of the camera.
+        let start = m.pose(0, 0.0).unwrap();
+        let quarter = m.pose(0, 1.0).unwrap();
+        let screen_normal = |p: &Pose| {
+            let i = m.tris.iter().zip(&m.tri_screen).find(|(_, s)| **s).unwrap().0[0] as usize;
+            p.nrm[i]
+        };
+        assert!(screen_normal(&start)[2] > 0.99, "{:?}", screen_normal(&start));
+        assert!(screen_normal(&quarter)[2].abs() < 0.05, "{:?}", screen_normal(&quarter));
+        // "Salto" lifts the phone (towards the camera, as it lies on its back) and puts it back:
+        // 0.4 world units on a 0.66-wide screen.
+        let dist = |a: [f32; 3], b: [f32; 3]| dot(sub(a, b), sub(a, b)).sqrt();
+        let up = m.pose(1, 0.5).unwrap();
+        let down = m.pose(1, 1.0).unwrap();
+        assert!((dist(up.pos[0], m.pos[0]) - 0.4 / 0.66).abs() < 0.01, "{}", dist(up.pos[0], m.pos[0]));
+        assert!(dist(down.pos[0], m.pos[0]) < 1e-3);
+    }
+
+    #[test]
+    fn samples_rotation_keys() {
+        let ch = Channel {
+            node: 0,
+            target: Target::Rotation,
+            times: vec![0.0, 1.0],
+            values: vec![[0.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 0.0]],
+            step: false,
+            cubic: false,
+        };
+        let q = sample_channel(&ch, 0.5);
+        // Halfway through a 180° turn about Y is 90°.
+        assert!((q[1] - (0.5f32).sqrt()).abs() < 1e-4 && (q[3] - (0.5f32).sqrt()).abs() < 1e-4, "{q:?}");
+        assert_eq!(sample_channel(&ch, 2.0), [0.0, 1.0, 0.0, 0.0]);
+    }
 }
+

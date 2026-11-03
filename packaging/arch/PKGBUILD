@@ -1,6 +1,6 @@
 # Maintainer: blzkz <sergiobl88@gmail.com>
 pkgname=rec-ording
-pkgver=0.5.0
+pkgver=0.6.0
 pkgrel=1
 pkgdesc="Graba tu móvil Android y conviértelo en un vídeo promocional con marco, fondo y zooms automáticos"
 arch=('x86_64')
@@ -18,4 +18,9 @@ package() {
   local root_dir="${startdir}/../.."
   install -Dm755 "${root_dir}/target/release/rec-ording" "${pkgdir}/usr/bin/rec-ording"
   install -Dm644 "${startdir}/rec-ording.desktop" "${pkgdir}/usr/share/applications/rec-ording.desktop"
+
+  # Modelos 3D incluidos en la galería (con sus créditos y licencias)
+  install -dm755 "${pkgdir}/usr/share/rec-ording/models"
+  install -m644 "${root_dir}"/assets/models/*.glb "${root_dir}/assets/models/models.json" "${root_dir}/assets/models/CREDITS.md" \
+    "${pkgdir}/usr/share/rec-ording/models/"
 }

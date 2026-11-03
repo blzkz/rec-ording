@@ -295,15 +295,59 @@ pub struct Style {
     pub intro: bool,
     /// Imported 3D model, used when `frame` is `Custom`.
     pub model: Option<CustomModel>,
+    pub video_fit: VideoFit,
+    /// With `Fill`, which part of the recording stays visible along the cropped side (0..1).
+    pub fit_pan: f32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct CustomModel {
     pub path: String,
-    /// Index of the material that is the screen.
-    pub screen_material: usize,
+    /// Index of the model part that is the screen.
+    pub screen_part: usize,
     /// Extra 90° turns of the screen, for models whose top was guessed wrong.
     pub quarter_turns: u8,
+    /// Animation of the model to play, if it has any.
+    pub animation: Option<usize>,
+    pub loop_animation: bool,
+}
+
+impl Default for CustomModel {
+    fn default() -> Self {
+        Self { path: String::new(), screen_part: 0, quarter_turns: 0, animation: None, loop_animation: true }
+    }
+}
+
+/// How the recording fills a model's screen when their proportions differ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VideoFit {
+    /// Cover the whole screen, cropping what overflows.
+    Fill,
+    /// Show the whole recording, with black bars.
+    Fit,
+    /// Deform the recording to the screen's proportions.
+    Stretch,
+}
+
+impl VideoFit {
+    pub const ALL: [VideoFit; 3] = [VideoFit::Fill, VideoFit::Fit, VideoFit::Stretch];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            VideoFit::Fill => "Rellenar",
+            VideoFit::Fit => "Encajar",
+            VideoFit::Stretch => "Estirar",
+        }
+    }
+
+    pub fn hint(self) -> &'static str {
+        match self {
+            VideoFit::Fill => "Ocupa toda la pantalla y recorta lo que sobra",
+            VideoFit::Fit => "Muestra la grabación entera, con bandas negras",
+            VideoFit::Stretch => "Deforma la grabación para que encaje",
+        }
+    }
 }
 
 impl Style {
@@ -332,6 +376,8 @@ impl Default for Style {
             float_motion: false,
             intro: false,
             model: None,
+            video_fit: VideoFit::Fill,
+            fit_pan: 0.5,
         }
     }
 }

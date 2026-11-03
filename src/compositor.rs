@@ -2,7 +2,7 @@
 //! The same code drives the live preview and the export, so what you see is what you get.
 
 use crate::camera::CamState;
-use crate::model::{FrameStyle, Style, Touch, TouchKind};
+use crate::model::{FrameStyle, Style, Touch, TouchKind, VideoFit};
 use crate::model3d::{Lighting, ModelMeta, PreparedModel};
 use rayon::prelude::*;
 
@@ -96,6 +96,9 @@ pub struct Layout {
     pub body_r: f32,
     pub screen: Rect2,
     pub screen_r: f32,
+    /// Where the recording sits: the screen itself, or larger/smaller when an imported model's
+    /// screen has other proportions (see `VideoFit`).
+    pub video: Rect2,
     pub bezel: f32,
     /// Thickness of the device, shown as a lit edge when it is turned.
     pub depth: f32,
@@ -120,7 +123,23 @@ impl Layout {
             let body = Rect2::from_center(cw * 0.5, ch * 0.5, bw * unit, bh * unit);
             let (scx, scy) = (body.cx() - (m.x0 + m.x1) * 0.5 * unit, body.cy() - (m.y0 + m.y1) * 0.5 * unit);
             let screen = Rect2::from_center(scx, scy, unit, unit / m.screen_aspect.max(0.05));
+            let (vw, vh) = (video_w.max(1.0), video_h.max(1.0));
+            let video = match style.video_fit {
+                VideoFit::Stretch => screen,
+                fit => {
+                    let k = if fit == VideoFit::Fill {
+                        (screen.w() / vw).max(screen.h() / vh)
+                    } else {
+                        (screen.w() / vw).min(screen.h() / vh)
+                    };
+                    let (w, h) = (vw * k, vh * k);
+                    let pan = if fit == VideoFit::Fill { style.fit_pan.clamp(0.0, 1.0) } else { 0.5 };
+                    let (x0, y0) = (screen.x0 - (w - screen.w()) * pan, screen.y0 - (h - screen.h()) * pan);
+                    Rect2 { x0, y0, x1: x0 + w, y1: y0 + h }
+                }
+            };
             return Self {
+                video,
                 cw,
                 ch,
                 body,
@@ -159,15 +178,15 @@ impl Layout {
         let body_r = if framed { screen_r + bezel } else { screen_r };
 
         let frame = if style.frame == FrameStyle::Custom { FrameStyle::Rounded } else { style.frame };
-        Self { cw, ch, body, body_r, screen, screen_r, bezel, depth: depth_k * unit, frame, framed, portrait }
+        Self { cw, ch, body, body_r, screen, screen_r, video: screen, bezel, depth: depth_k * unit, frame, framed, portrait }
     }
 
     /// Scale and translation the camera applies to the scene: `out = c + (q - c) * s + t`.
     pub fn camera(&self, cam: CamState) -> (f32, f32, f32) {
         let s = cam.scale.clamp(0.5, 5.0);
         let (cx, cy) = (self.cw * 0.5, self.ch * 0.5);
-        let px = self.screen.x0 + cam.fx.clamp(0.0, 1.0) * self.screen.w();
-        let py = self.screen.y0 + cam.fy.clamp(0.0, 1.0) * self.screen.h();
+        let px = self.video.x0 + cam.fx.clamp(0.0, 1.0) * self.video.w();
+        let py = self.video.y0 + cam.fy.clamp(0.0, 1.0) * self.video.h();
 
         // Move the focus towards the centre as the zoom grows; untouched at rest (s = 1).
         let pull = (2.0 * (s - 1.0)).min(s).max(0.0);
@@ -310,7 +329,7 @@ fn indicators(layout: &Layout, style: &Style, touches: &[Touch], time: f32) -> V
     if !style.show_touches {
         return Vec::new();
     }
-    let sc = &layout.screen;
+    let sc = &layout.video;
     let to_scene = |u: f32, v: f32| (sc.x0 + u * sc.w(), sc.y0 + v * sc.h());
     let r = sc.w().min(sc.h()) * 0.055 * style.touch_size;
     const FADE: f32 = 0.4;
@@ -556,7 +575,7 @@ pub fn compose(out: &mut [u8], ow: usize, oh: usize, inp: &ComposeInput) {
     let curved = layout.frame == FrameStyle::Curved;
 
     let mip = inp.screen.map(|m| {
-        let ratio = m.width() as f32 / (layout.screen.w() * s).max(1.0);
+        let ratio = m.width() as f32 / (layout.video.w() * s).max(1.0);
         m.level_for(ratio)
     });
 
@@ -567,8 +586,17 @@ pub fn compose(out: &mut [u8], ow: usize, oh: usize, inp: &ComposeInput) {
 
     const BAND: usize = 16;
     let lighting = Lighting { light, half: half_v };
+    // Animated models: pose for this instant.
+    let pose = model.and_then(|m| {
+        let cm = style.model.as_ref()?;
+        let anim = cm.animation?;
+        let d = m.animation_duration(anim)?.max(1e-3);
+        let t = inp.since_start.max(0.0);
+        m.pose(anim, if cm.loop_animation { t.rem_euclid(d) } else { t.min(d) })
+    });
     let projected = model.map(|m| {
         m.project(
+            pose.as_ref(),
             |p| {
                 let w = apply(&rot, [mox + p[0] * unit, moy + p[1] * unit, p[2] * unit]);
                 let f = focal / (focal + nearest - w[2]);
@@ -582,9 +610,18 @@ pub fn compose(out: &mut [u8], ow: usize, oh: usize, inp: &ComposeInput) {
             BAND,
         )
     });
-    let screen_color = |u: f32, v: f32| match mip {
-        Some(f) => sample(f, u.clamp(0.0, 1.0), v.clamp(0.0, 1.0)),
-        None => [18.0, 18.0, 20.0],
+    // Point on the model's screen -> the recording (black outside it, for `VideoFit::Fit`).
+    let (scr, vid) = (layout.screen, layout.video);
+    let screen_color = |u: f32, v: f32| {
+        let vu = (scr.x0 + u * scr.w() - vid.x0) / vid.w();
+        let vv = (scr.y0 + v * scr.h() - vid.y0) / vid.h();
+        if !(-0.002..=1.002).contains(&vu) || !(-0.002..=1.002).contains(&vv) {
+            return [0.0, 0.0, 0.0];
+        }
+        match mip {
+            Some(f) => sample(f, vu.clamp(0.0, 1.0), vv.clamp(0.0, 1.0)),
+            None => [18.0, 18.0, 20.0],
+        }
     };
 
     out.par_chunks_mut(ow * 4 * BAND).enumerate().for_each(|(band_idx, chunk)| {
@@ -825,6 +862,36 @@ mod tests {
     }
 }
 
+
+#[cfg(test)]
+mod fit_tests {
+    use super::*;
+    use crate::model::{Style, VideoFit};
+
+    #[test]
+    fn video_fill_fit_and_stretch() {
+        // A model screen wider (0.6) than the recording (0.45).
+        let meta = ModelMeta { screen_aspect: 0.6, x0: -0.55, x1: 0.55, y0: -0.95, y1: 0.95, z0: -0.1, z1: 0.0 };
+        let layout = |fit: VideoFit, pan: f32| {
+            let style = Style { frame: FrameStyle::Custom, video_fit: fit, fit_pan: pan, ..Style::default() };
+            Layout::new(1920.0, 1080.0, &style, 1080.0, 2400.0, Some(&meta))
+        };
+        let close = |a: f32, b: f32| (a - b).abs() < 0.01;
+
+        let l = layout(VideoFit::Fill, 0.5);
+        assert!(close(l.video.w(), l.screen.w()) && l.video.h() > l.screen.h(), "fill covers, cropping top and bottom");
+        assert!(close(l.video.cy(), l.screen.cy()));
+        let top = layout(VideoFit::Fill, 0.0);
+        assert!(close(top.video.y0, top.screen.y0), "pan 0 keeps the top of the recording");
+
+        let l = layout(VideoFit::Fit, 0.5);
+        assert!(close(l.video.h(), l.screen.h()) && l.video.w() < l.screen.w(), "fit shows everything, with side bars");
+        assert!(close(l.video.w() / l.video.h(), 0.45));
+
+        let l = layout(VideoFit::Stretch, 0.5);
+        assert!(close(l.video.w(), l.screen.w()) && close(l.video.h(), l.screen.h()));
+    }
+}
 
 #[cfg(test)]
 mod pose_tests {

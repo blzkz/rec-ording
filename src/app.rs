@@ -4,7 +4,9 @@ use crate::compositor::{compose, ComposeInput, Layout};
 use crate::export::{self, ExportEvent};
 use crate::media::{self, DecodedFrame, PreviewDecoder, PREVIEW_FPS};
 use crate::model::*;
+use crate::library::{self, LibraryModel};
 use crate::model3d::{self, ModelSource, PreparedModel};
+use std::collections::HashMap;
 use crate::theme::{self, *};
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use egui::{
@@ -30,6 +32,7 @@ enum AppEvent {
     PickerUnavailable,
     ModelPicked(PathBuf),
     ModelLoaded { path: String, result: Result<Arc<ModelSource>, String> },
+    ModelThumb { path: String, src: Option<Arc<ModelSource>>, size: (usize, usize), rgba: Option<Vec<u8>> },
 }
 
 #[derive(PartialEq, Eq, Clone, Copy)]
@@ -131,10 +134,14 @@ pub struct RecOrdingApp {
     thumb_aspect: f32,
 
     // Imported 3D model: the loaded file, and the copy prepared for the current settings.
-    model_src: Option<(String, Arc<ModelSource>)>,
+    model_cache: HashMap<String, Arc<ModelSource>>,
     model_prepared: Option<(CustomModel, Arc<PreparedModel>)>,
-    model_loading: bool,
+    model_loading: Option<String>,
     model_error: Option<CustomModel>,
+    /// A model picked in the gallery that is still loading; gets default settings once loaded.
+    model_pending: Option<String>,
+    library: Vec<LibraryModel>,
+    library_thumbs: HashMap<String, TextureHandle>,
 
     // Editing
     selected_zoom: Option<u64>,
@@ -226,10 +233,13 @@ impl RecOrdingApp {
             cam_dur: -1.0,
             thumbs: Vec::new(),
             thumb_aspect: 0.5,
-            model_src: None,
+            model_cache: HashMap::new(),
             model_prepared: None,
-            model_loading: false,
+            model_loading: None,
             model_error: None,
+            model_pending: None,
+            library: Vec::new(),
+            library_thumbs: HashMap::new(),
             selected_zoom: None,
             drag: None,
             sheet: Sheet::None,
@@ -250,8 +260,9 @@ impl RecOrdingApp {
             app.open_media(&m);
         }
         if let Some(cm) = app.project.style.model.clone() {
-            app.load_model(PathBuf::from(cm.path));
+            app.load_model(cm.path);
         }
+        app.refresh_library();
         app
     }
 
@@ -344,31 +355,85 @@ impl RecOrdingApp {
         });
     }
 
-    fn load_model(&mut self, path: PathBuf) {
-        self.model_loading = true;
+    fn load_model(&mut self, path: String) {
+        if self.model_cache.contains_key(&path) || self.model_loading.as_deref() == Some(path.as_str()) {
+            return;
+        }
+        self.model_loading = Some(path.clone());
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
         thread::spawn(move || {
-            let p = path.to_string_lossy().into_owned();
-            let result = model3d::load(&p).map(Arc::new);
-            let _ = tx.send(AppEvent::ModelLoaded { path: p, result });
+            let result = model3d::load(&path).map(Arc::new);
+            let _ = tx.send(AppEvent::ModelLoaded { path, result });
             ctx.request_repaint();
         });
     }
 
-    /// Keeps the prepared model in step with the style (screen material, turns, file).
+    /// Re-reads the gallery and renders thumbnails for models that do not have one yet.
+    fn refresh_library(&mut self) {
+        self.library = library::list();
+        let todo: Vec<String> = self.library.iter().map(|m| m.path.clone()).filter(|p| !self.library_thumbs.contains_key(p)).collect();
+        if todo.is_empty() {
+            return;
+        }
+        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        let cached: HashMap<String, Arc<ModelSource>> =
+            todo.iter().filter_map(|p| self.model_cache.get(p).map(|s| (p.clone(), s.clone()))).collect();
+        thread::spawn(move || {
+            let size = (132usize, 156usize);
+            for path in todo {
+                let src = cached.get(&path).cloned().or_else(|| model3d::load(&path).ok().map(Arc::new));
+                let rgba = src.as_ref().and_then(|s| library::thumbnail(s, size.0, size.1));
+                let _ = tx.send(AppEvent::ModelThumb { path, src, size, rgba });
+                ctx.request_repaint();
+            }
+        });
+    }
+
+    fn default_model_settings(path: &str, src: &ModelSource) -> CustomModel {
+        CustomModel {
+            path: path.to_string(),
+            screen_part: src.guess.unwrap_or(0),
+            animation: (!src.animations.is_empty()).then_some(0),
+            ..Default::default()
+        }
+    }
+
+    /// Uses a gallery model as the device.
+    fn select_model(&mut self, path: String) {
+        let style = &mut self.project.style;
+        style.frame = FrameStyle::Custom;
+        if style.model.as_ref().is_some_and(|m| m.path == path) {
+            return;
+        }
+        match self.model_cache.get(&path).cloned() {
+            Some(src) => {
+                if src.guess.is_none() {
+                    self.toast("No se encontró la pantalla del modelo: elígela en «Pantalla».");
+                }
+                self.project.style.model = Some(Self::default_model_settings(&path, &src));
+            }
+            None => {
+                self.model_pending = Some(path.clone());
+                self.load_model(path);
+            }
+        }
+    }
+
+    /// Keeps the prepared model in step with the style (screen part, turns, file).
     fn sync_model(&mut self) {
         let Some(cm) = self.project.style.model.clone() else {
             self.model_prepared = None;
             return;
         };
-        if self.model_prepared.as_ref().is_some_and(|(k, _)| *k == cm) || self.model_error.as_ref() == Some(&cm) {
+        let same = |k: &CustomModel| k.path == cm.path && k.screen_part == cm.screen_part && k.quarter_turns == cm.quarter_turns;
+        if self.model_prepared.as_ref().is_some_and(|(k, _)| same(k)) || self.model_error.as_ref().is_some_and(same) {
             return;
         }
-        let Some((path, src)) = &self.model_src else { return };
-        if *path != cm.path {
+        let Some(src) = self.model_cache.get(&cm.path) else {
+            self.load_model(cm.path.clone());
             return;
-        }
-        match model3d::prepare(src, cm.screen_material, cm.quarter_turns) {
+        };
+        match model3d::prepare(src, cm.screen_part, cm.quarter_turns) {
             Ok(m) => {
                 self.model_prepared = Some((cm, Arc::new(m)));
                 self.model_error = None;
@@ -475,28 +540,47 @@ impl RecOrdingApp {
                 }
                 AppEvent::ImportPicked(p) => self.import(p),
                 AppEvent::FolderPicked(p) => self.project.export.folder = p.to_string_lossy().into_owned(),
-                AppEvent::ModelPicked(p) => self.load_model(p),
+                AppEvent::ModelPicked(p) => match library::import(&p) {
+                    Ok(dest) => {
+                        let path = dest.to_string_lossy().into_owned();
+                        self.refresh_library();
+                        self.select_model(path);
+                    }
+                    Err(e) => self.toast(e),
+                },
                 AppEvent::ModelLoaded { path, result } => {
-                    self.model_loading = false;
+                    if self.model_loading.as_deref() == Some(path.as_str()) {
+                        self.model_loading = None;
+                    }
                     match result {
                         Ok(src) => {
-                            let style = &mut self.project.style;
-                            let same_file = style.model.as_ref().is_some_and(|m| m.path == path);
-                            if !same_file {
-                                let screen = src.guess.or_else(|| src.used_materials().first().copied()).unwrap_or(0);
-                                style.model = Some(CustomModel { path: path.clone(), screen_material: screen, quarter_turns: 0 });
-                                style.frame = FrameStyle::Custom;
-                                self.toast(if src.guess.is_some() {
-                                    "Modelo importado. Si la grabación no cae en la pantalla, elige otra pieza en «Pantalla».".to_string()
-                                } else {
-                                    "Modelo importado. Elige en «Pantalla» la pieza donde va la grabación.".to_string()
-                                });
+                            if self.model_pending.as_deref() == Some(path.as_str()) {
+                                self.model_pending = None;
+                                if src.guess.is_none() {
+                                    self.toast("No se encontró la pantalla del modelo: elígela en «Pantalla».");
+                                }
+                                self.project.style.model = Some(Self::default_model_settings(&path, &src));
+                                self.project.style.frame = FrameStyle::Custom;
                             }
-                            self.model_src = Some((path, src));
-                            self.model_prepared = None;
+                            self.model_cache.insert(path, src);
                             self.model_error = None;
                         }
-                        Err(e) => self.toast(e),
+                        Err(e) => {
+                            if self.model_pending.as_deref() == Some(path.as_str()) {
+                                self.model_pending = None;
+                            }
+                            self.toast(e);
+                        }
+                    }
+                }
+                AppEvent::ModelThumb { path, src, size, rgba } => {
+                    if let Some(src) = src {
+                        self.model_cache.entry(path.clone()).or_insert(src);
+                    }
+                    if let Some(rgba) = rgba {
+                        let img = ColorImage::from_rgba_unmultiplied([size.0, size.1], &rgba);
+                        let tex = self.ctx.load_texture(format!("model-{path}"), img, TextureOptions::LINEAR);
+                        self.library_thumbs.insert(path, tex);
                     }
                 }
                 AppEvent::PickerUnavailable => {
@@ -1149,7 +1233,7 @@ impl RecOrdingApp {
         p.rect_filled(Rect::from_min_max(Pos2::new(canvas.left(), region.top()), Pos2::new(region.left(), region.bottom())), 0.0, dim);
         p.rect_filled(Rect::from_min_max(Pos2::new(region.right(), region.top()), Pos2::new(canvas.right(), region.bottom())), 0.0, dim);
         p.rect_stroke(region, Rounding::same(4.0), Stroke::new(2.0_f32, YELLOW));
-        let focus = to_pt(layout.screen.x0 + z.x * layout.screen.w(), layout.screen.y0 + z.y * layout.screen.h());
+        let focus = to_pt(layout.video.x0 + z.x * layout.video.w(), layout.video.y0 + z.y * layout.video.h());
         p.circle_filled(focus, 8.0, Color32::from_black_alpha(80));
         p.circle_filled(focus, 6.0, YELLOW);
         p.circle_stroke(focus, 6.0, Stroke::new(1.5_f32, Color32::WHITE));
@@ -1167,8 +1251,8 @@ impl RecOrdingApp {
             if let Some(pos) = resp.interact_pointer_pos() {
                 let x = (pos.x - canvas.left()) / canvas.width() * ow as f32;
                 let y = (pos.y - canvas.top()) / canvas.height() * oh as f32;
-                let u = ((x - layout.screen.x0) / layout.screen.w()).clamp(0.0, 1.0);
-                let v = ((y - layout.screen.y0) / layout.screen.h()).clamp(0.0, 1.0);
+                let u = ((x - layout.video.x0) / layout.video.w()).clamp(0.0, 1.0);
+                let v = ((y - layout.video.y0) / layout.video.h()).clamp(0.0, 1.0);
                 if let Some(zm) = self.zoom_mut(z.id) {
                     zm.x = u;
                     zm.y = v;
@@ -1288,84 +1372,150 @@ impl RecOrdingApp {
         ui.add_space(6.0);
     }
 
-    fn style_inspector(&mut self, ui: &mut Ui) {
-        let model_info = self.model_src.as_ref().map(|(_, src)| {
-            let mats: Vec<(usize, String)> = src.used_materials().into_iter().map(|i| (i, src.materials[i].name.clone())).collect();
-            (src.file_name.clone(), src.triangle_count(), mats)
-        });
-        let model_loading = self.model_loading;
-        let mut want_model_file = false;
-        let style = &mut self.project.style;
+    fn models_inspector(&mut self, ui: &mut Ui) {
+        let mut pick: Option<String> = None;
+        let mut import = false;
+        let current = (self.project.style.frame == FrameStyle::Custom)
+            .then(|| self.project.style.model.as_ref().map(|m| m.path.clone()))
+            .flatten();
+        let loading = self.model_loading.clone().or_else(|| self.model_pending.clone());
 
-        section(ui, "Dispositivo", |ui| {
+        section(ui, "Modelos 3D", |ui| {
             let gap = 6.0;
             let tile_w = ((ui.available_width() - gap * 2.0) / 3.0).floor();
-            for row in FrameStyle::ALL.chunks(3) {
+            let mut tiles: Vec<Option<&LibraryModel>> = self.library.iter().map(Some).collect();
+            tiles.push(None);
+            for row in tiles.chunks(3) {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = gap;
-                    for f in row {
-                        let resp = model_tile(ui, *f, style.frame == *f, tile_w);
-                        let resp = if *f == FrameStyle::Custom { resp.on_hover_text("Importa un modelo .glb o .gltf") } else { resp };
-                        if resp.clicked() {
-                            if *f == FrameStyle::Custom && style.model.is_none() {
-                                want_model_file = true;
-                            } else {
-                                style.frame = *f;
+                    for t in row {
+                        match t {
+                            Some(m) => {
+                                let selected = current.as_deref() == Some(m.path.as_str());
+                                let busy = loading.as_deref() == Some(m.path.as_str());
+                                if gallery_tile(ui, m, self.library_thumbs.get(&m.path), selected, busy, tile_w).clicked() {
+                                    pick = Some(m.path.clone());
+                                }
+                            }
+                            None => {
+                                if import_tile(ui, tile_w).clicked() {
+                                    import = true;
+                                }
                             }
                         }
                     }
                 });
             }
-            if style.frame == FrameStyle::Custom {
-                ui.add_space(4.0);
-                if model_loading {
-                    ui.horizontal(|ui| {
-                        ui.add(egui::Spinner::new().size(14.0).color(TEXT_2));
-                        ui.label(RichText::new("Cargando modelo…").color(TEXT_2));
-                    });
-                } else if let (Some((name, tris, mats)), Some(cm)) = (&model_info, style.model.as_mut()) {
-                    ui.horizontal(|ui| {
-                        ui.vertical(|ui| {
-                            ui.spacing_mut().item_spacing.y = 0.0;
-                            ui.add(egui::Label::new(RichText::new(name).color(TEXT)).truncate());
-                            ui.label(RichText::new(format!("{} triángulos", tris)).color(TEXT_3).font(regular(11.5)));
-                        });
-                        ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                            if secondary_button(ui, "Cambiar…").clicked() {
-                                want_model_file = true;
-                            }
-                        });
-                    });
-                    ui.horizontal(|ui| {
-                        fixed_label(ui, 78.0, RichText::new("Pantalla").color(TEXT), Align::Min);
-                        let current = mats.iter().find(|(i, _)| *i == cm.screen_material).map(|(_, n)| n.clone()).unwrap_or_default();
-                        egui::ComboBox::from_id_salt("model-screen")
-                            .selected_text(current)
-                            .width(ui.available_width() - 8.0)
-                            .show_ui(ui, |ui| {
-                                for (i, n) in mats {
-                                    ui.selectable_value(&mut cm.screen_material, *i, n);
-                                }
-                            });
-                    });
-                    ui.horizontal(|ui| {
-                        fixed_label(ui, 78.0, RichText::new("Orientación").color(TEXT), Align::Min);
-                        if secondary_button(ui, "Girar 90°").on_hover_text("Si la grabación sale tumbada o al revés").clicked() {
-                            cm.quarter_turns = (cm.quarter_turns + 1) % 4;
+        });
+
+        if let Some(p) = pick {
+            self.select_model(p);
+        }
+        if import {
+            self.pick_model();
+        }
+
+        // Settings of the model in use.
+        if self.project.style.frame != FrameStyle::Custom {
+            return;
+        }
+        let Some(cm) = self.project.style.model.as_ref() else { return };
+        let Some(src) = self.model_cache.get(&cm.path).cloned() else { return };
+        let entry = self.library.iter().find(|m| m.path == cm.path).cloned();
+        let style = &mut self.project.style;
+        let Some(cm) = style.model.as_mut() else { return };
+
+        section(ui, "Ajustes del modelo", |ui| {
+            ui.horizontal(|ui| {
+                fixed_label(ui, 78.0, RichText::new("Pantalla").color(TEXT), Align::Min);
+                let current = src.parts.get(cm.screen_part).map(|p| p.name.clone()).unwrap_or_default();
+                egui::ComboBox::from_id_salt("model-screen")
+                    .selected_text(current)
+                    .width(ui.available_width() - 8.0)
+                    .show_ui(ui, |ui| {
+                        for (i, p) in src.parts.iter().enumerate() {
+                            ui.selectable_value(&mut cm.screen_part, i, &p.name);
                         }
                     });
-                    ui.label(
-                        RichText::new("«Pantalla» es la pieza del modelo donde se ve tu grabación.")
-                            .color(TEXT_3)
-                            .font(regular(11.5)),
-                    );
-                } else {
-                    ui.label(RichText::new("No se pudo cargar el modelo.").color(YELLOW));
-                    if secondary_button(ui, "Elegir otro…").clicked() {
-                        want_model_file = true;
-                    }
+            })
+            .response
+            .on_hover_text("La pieza del modelo donde se ve tu grabación");
+            ui.horizontal(|ui| {
+                fixed_label(ui, 78.0, RichText::new("Orientación").color(TEXT), Align::Min);
+                if secondary_button(ui, "Girar 90°").on_hover_text("Si la grabación sale tumbada o al revés").clicked() {
+                    cm.quarter_turns = (cm.quarter_turns + 1) % 4;
                 }
-            } else if style.frame != FrameStyle::None {
+            });
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
+                fixed_label(ui, 78.0, RichText::new("Vídeo").color(TEXT), Align::Min);
+                let opts: Vec<(VideoFit, &str)> = VideoFit::ALL.iter().map(|f| (*f, f.label())).collect();
+                segmented(ui, &mut style.video_fit, &opts, ui.available_width());
+            });
+            ui.label(RichText::new(style.video_fit.hint()).color(TEXT_3).font(regular(11.5)));
+            if style.video_fit == VideoFit::Fill {
+                slider_row(ui, "Encuadre", &mut style.fit_pan, 0.0..=1.0, |v| {
+                    match v {
+                        v if v < 0.15 => "Inicio",
+                        v if v > 0.85 => "Final",
+                        _ => "Centro",
+                    }
+                    .to_string()
+                });
+            }
+            if !src.animations.is_empty() {
+                ui.add_space(2.0);
+                ui.horizontal(|ui| {
+                    fixed_label(ui, 78.0, RichText::new("Animación").color(TEXT), Align::Min);
+                    let name = |a: Option<usize>| match a {
+                        Some(i) => src.animations.get(i).map(|a| a.name.clone()).unwrap_or_default(),
+                        None => "Sin animación".to_string(),
+                    };
+                    egui::ComboBox::from_id_salt("model-anim")
+                        .selected_text(name(cm.animation))
+                        .width(ui.available_width() - 8.0)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut cm.animation, None, "Sin animación");
+                            for (i, a) in src.animations.iter().enumerate() {
+                                ui.selectable_value(&mut cm.animation, Some(i), format!("{} · {}", a.name, fmt_secs(a.duration)));
+                            }
+                        });
+                });
+                if cm.animation.is_some() {
+                    toggle_row(ui, "Repetir en bucle", "Si no, se reproduce una vez al empezar", &mut cm.loop_animation);
+                }
+            }
+            if let Some(e) = &entry {
+                if let (Some(author), Some(license)) = (&e.author, &e.license) {
+                    ui.add_space(2.0);
+                    let note = if e.needs_credit() {
+                        format!("Modelo de {author} ({license}). Menciona al autor al publicar el vídeo.")
+                    } else {
+                        format!("Modelo de {author} ({license}). Uso libre, sin atribución.")
+                    };
+                    ui.label(RichText::new(note).color(TEXT_3).font(regular(11.5)));
+                }
+            }
+        });
+    }
+
+    fn style_inspector(&mut self, ui: &mut Ui) {
+        let style = &mut self.project.style;
+        section(ui, "Dispositivo", |ui| {
+            let gap = 6.0;
+            let tile_w = ((ui.available_width() - gap * 2.0) / 3.0).floor();
+            let builtin: Vec<FrameStyle> = FrameStyle::ALL.into_iter().filter(|f| *f != FrameStyle::Custom).collect();
+            for row in builtin.chunks(3) {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = gap;
+                    for f in row {
+                        if model_tile(ui, *f, style.frame == *f, tile_w).clicked() {
+                            style.frame = *f;
+                        }
+                    }
+                });
+            }
+            if style.frame != FrameStyle::None && style.frame != FrameStyle::Custom {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     for c in FrameColor::ALL {
@@ -1385,10 +1535,7 @@ impl RecOrdingApp {
                 });
             }
         });
-
-        if want_model_file {
-            self.pick_model();
-        }
+        self.models_inspector(ui);
         let style = &mut self.project.style;
 
         section(ui, "Ángulo 3D", |ui| {
@@ -2257,5 +2404,62 @@ fn model_tile(ui: &mut Ui, f: FrameStyle, selected: bool, width: f32) -> egui::R
         }
     }
     p.text(Pos2::new(rect.center().x, rect.bottom() - 11.0), Align2::CENTER_CENTER, f.label(), regular(11.5), line);
+    resp
+}
+
+/// A gallery model with its rendered thumbnail.
+fn gallery_tile(ui: &mut Ui, m: &LibraryModel, thumb: Option<&TextureHandle>, selected: bool, busy: bool, width: f32) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, width * 1.18 + 20.0), Sense::click());
+    let tip = match (&m.author, &m.license) {
+        (Some(a), Some(l)) => format!("{} · de {a} ({l})", m.name),
+        _ => format!("{} · importado por ti", m.name),
+    };
+    let resp = resp.on_hover_text(tip).on_hover_cursor(CursorIcon::PointingHand);
+    let h = ui.ctx().animate_bool(resp.id, resp.hovered());
+    let p = ui.painter();
+    let img = Rect::from_min_size(rect.min, Vec2::new(width, width * 1.18));
+    p.rect_filled(img, Rounding::same(8.0), lerp_color(Color32::from_rgb(56, 56, 61), Color32::from_rgb(68, 68, 74), h));
+    match thumb {
+        Some(t) => {
+            p.image(t.id(), img.shrink(1.0), Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+            // Round the corners of the picture.
+            p.rect_stroke(img.expand(1.0), Rounding::same(9.0), Stroke::new(2.5_f32, CARD));
+        }
+        None => {
+            icon_phone(p, img.center(), 30.0, TEXT_3);
+        }
+    }
+    if busy {
+        p.rect_filled(img, Rounding::same(8.0), Color32::from_black_alpha(110));
+        p.text(img.center(), Align2::CENTER_CENTER, "Cargando…", regular(11.0), TEXT);
+    }
+    if selected {
+        p.rect_stroke(img, Rounding::same(8.0), Stroke::new(2.0_f32, ACCENT));
+    }
+    if let Some(l) = &m.license {
+        let badge = if l.starts_with("CC BY") { "CC BY" } else { "CC0" };
+        let g = p.layout_no_wrap(badge.to_string(), medium(9.5), Color32::WHITE);
+        let r = Rect::from_min_size(Pos2::new(img.right() - g.size().x - 12.0, img.top() + 5.0), g.size() + Vec2::new(8.0, 3.0));
+        p.rect_filled(r, Rounding::same(4.0), Color32::from_black_alpha(130));
+        p.galley(r.min + Vec2::new(4.0, 1.5), g, Color32::WHITE);
+    }
+    let col = if selected { TEXT } else { TEXT_2 };
+    p.text(Pos2::new(rect.center().x, rect.bottom() - 9.0), Align2::CENTER_CENTER, &m.name, regular(11.5), col);
+    resp
+}
+
+fn import_tile(ui: &mut Ui, width: f32) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, width * 1.18 + 20.0), Sense::click());
+    let resp = resp.on_hover_text("Añadir un modelo .glb o .gltf").on_hover_cursor(CursorIcon::PointingHand);
+    let h = ui.ctx().animate_bool(resp.id, resp.hovered());
+    let p = ui.painter();
+    let img = Rect::from_min_size(rect.min, Vec2::new(width, width * 1.18));
+    p.rect_filled(img, Rounding::same(8.0), lerp_color(Color32::from_rgb(48, 48, 52), Color32::from_rgb(62, 62, 67), h));
+    p.rect_stroke(img.shrink(0.5), Rounding::same(8.0), Stroke::new(1.0_f32, Color32::from_rgb(84, 84, 90)));
+    let c = img.center();
+    let st = Stroke::new(2.0_f32, TEXT_2);
+    p.line_segment([c - Vec2::new(10.0, 0.0), c + Vec2::new(10.0, 0.0)], st);
+    p.line_segment([c - Vec2::new(0.0, 10.0), c + Vec2::new(0.0, 10.0)], st);
+    p.text(Pos2::new(rect.center().x, rect.bottom() - 9.0), Align2::CENTER_CENTER, "Importar", regular(11.5), TEXT_2);
     resp
 }

@@ -9,7 +9,7 @@ Pensado para la ficha de Google Play, YouTube, Reels/Shorts o redes, sin pasar p
 1. **Graba.** Conecta el móvil por USB (con la depuración USB activada), pulsa **Grabar** y usa tu app con normalidad. rec-ording registra dónde tocas.
    ¿Ya tienes una grabación? Pulsa **Importar** o arrastra el vídeo a la ventana.
 2. **Ajusta.** Elige formato (16:9, 9:16, 1:1, 4:5), modelo (redondeado, recto, curvo, tablet o sin marco) y color del dispositivo, fondo, margen y sombra.
-   ¿Quieres un móvil concreto? Elige **Modelo 3D** e importa un archivo `.glb` o `.gltf`: rec-ording busca la pantalla, endereza el modelo y proyecta tu grabación en ella (si no acierta con la pieza, cámbiala en «Pantalla» o gírala 90°). Los modelos con compresión Draco no se pueden leer.
+   En **Modelos 3D** tienes una galería de móviles en 3D (cinco incluidos, gratuitos) y puedes **importar** los tuyos en `.glb` o `.gltf`: rec-ording busca la pantalla, endereza el modelo y proyecta tu grabación en ella. En «Ajustes del modelo» eliges la pieza que hace de pantalla, cómo encaja el vídeo (**Rellenar** recortando, **Encajar** con bandas negras o **Estirar**) y, si el modelo trae animaciones, cuál reproducir y si se repite. Los modelos con licencia CC BY piden mencionar a su autor al publicar el vídeo (ver `assets/models/CREDITS.md`).
    En **Ángulo 3D** puedes girar e inclinar el móvil (con cantos y reflejos reales), hacer que se enderece al hacer zoom, que flote suavemente o que entre girando al empezar.
    Los zooms se crean solos a partir de los toques; puedes moverlos, alargarlos, cambiar su nivel o elegir dónde enfocan haciendo clic en la vista previa.
 3. **Exporta** en MP4 (H.264 o HEVC) o GIF, a 720p, 1080p o 4K, a 30 o 60 fps, con el sonido del móvil.
@@ -61,7 +61,8 @@ Aplicación nativa en Rust con [egui](https://github.com/emilk/egui).
 | `camera.rs` | Genera los zooms automáticos a partir de los toques y anima la cámara con un muelle amortiguado. |
 | `compositor.rs` | Dibuja cada fotograma: fondo, sombra, el móvil en 3D (perspectiva, grosor e iluminación), la grabación y los toques. La vista previa y la exportación usan el mismo código. |
 | `media.rs` | Lee vídeos con ffprobe/ffmpeg, crea una copia ligera para que la vista previa sea fluida y genera las miniaturas. |
-| `model3d.rs` | Carga modelos glTF/GLB, encuentra y endereza la pantalla y los rasteriza con perspectiva, texturas e iluminación. |
+| `model3d.rs` | Carga modelos glTF/GLB (con animaciones de nodos), encuentra y endereza la pantalla y los rasteriza con perspectiva, texturas e iluminación. |
+| `library.rs` | Galería de modelos: los incluidos en `assets/models` y los importados, con miniaturas renderizadas. |
 | `export.rs` | Decodifica la grabación, compone cada fotograma y codifica el resultado con ffmpeg. |
 | `app.rs`, `theme.rs` | Interfaz. |
 

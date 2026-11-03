@@ -3,6 +3,7 @@ mod camera;
 mod capture;
 mod compositor;
 mod export;
+mod library;
 mod media;
 mod model;
 mod model3d;
