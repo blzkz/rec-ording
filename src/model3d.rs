@@ -18,6 +18,8 @@ pub struct Material {
     alpha: f32,
     texture: Option<usize>,
     tex_coord: u32,
+    /// KHR_texture_transform, as a 2×3 matrix applied to the texture coordinates.
+    uv_xf: Option<[f32; 6]>,
     metallic: f32,
     roughness: f32,
     emissive: [f32; 3],
@@ -253,14 +255,41 @@ impl Rig {
 
 // ---------- Loading ----------
 
-pub fn load(path: &str) -> Result<ModelSource, String> {
-    let (doc, buffers, images) = gltf::import(path).map_err(|e| {
-        let msg = e.to_string();
-        if msg.to_lowercase().contains("draco") {
+/// Extensions that change how geometry is stored: without them the model cannot be read at all.
+const GEOMETRY_EXTENSIONS: &[&str] = &["KHR_draco_mesh_compression", "EXT_meshopt_compression", "KHR_meshopt_compression", "KHR_mesh_quantization"];
+
+/// Reads and validates a glTF/GLB document. Unlike `gltf::import`, extensions the file marks as
+/// required but we do not know are tolerated (the model is drawn with what we understand),
+/// except the ones that compress the geometry.
+pub fn read_document(path: &std::path::Path) -> Result<(gltf::Document, Option<Vec<u8>>), String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("No se pudo leer el modelo: {e}"))?;
+    let bad = |e: &dyn std::fmt::Display| format!("El archivo no es un modelo glTF válido: {e}");
+    let (mut root, blob) = if bytes.starts_with(b"glTF") {
+        let mut glb = gltf::Glb::from_slice(&bytes).map_err(|e| bad(&e))?;
+        let root = gltf::json::Root::from_slice(&glb.json).map_err(|e| bad(&e))?;
+        (root, glb.bin.take().map(|b| b.into_owned()))
+    } else {
+        (gltf::json::Root::from_slice(&bytes).map_err(|e| bad(&e))?, None)
+    };
+    if let Some(ext) = root.extensions_required.iter().find(|e| GEOMETRY_EXTENSIONS.contains(&e.as_str())) {
+        return Err(if ext.contains("draco") {
             "El modelo usa compresión Draco, que no se puede leer. Expórtalo de nuevo sin compresión (en Blender, desmarca «Compresión» al exportar a glTF).".to_string()
         } else {
-            format!("No se pudo abrir el modelo: {msg}")
-        }
+            format!("El modelo usa geometría comprimida ({ext}), que no se puede leer. Expórtalo de nuevo sin compresión.")
+        });
+    }
+    root.extensions_required.retain(|e| gltf::json::extensions::ENABLED_EXTENSIONS.contains(&e.as_str()));
+    let doc = gltf::Document::from_json(root).map_err(|e| bad(&e))?;
+    Ok((doc, blob))
+}
+
+pub fn load(path: &str) -> Result<ModelSource, String> {
+    let file = std::path::Path::new(path);
+    let (doc, blob) = read_document(file)?;
+    let base = file.parent();
+    let buffers = gltf::import_buffers(&doc, base, blob).map_err(|e| format!("No se pudieron leer los datos del modelo: {e}"))?;
+    let images = gltf::import_images(&doc, base, &buffers).map_err(|e| {
+        format!("No se pudieron leer las texturas del modelo ({e}). Comprueba que están junto al archivo.")
     })?;
     let textures: Vec<Texture> = images.iter().map(to_rgba).collect();
 
@@ -277,7 +306,15 @@ pub fn load(path: &str) -> Result<ModelSource, String> {
                 base: [to_srgb(f[0]), to_srgb(f[1]), to_srgb(f[2])],
                 alpha: f[3],
                 texture: tex.as_ref().map(|t| t.texture().source().index()),
-                tex_coord: tex.as_ref().map(|t| t.tex_coord()).unwrap_or(0),
+                tex_coord: tex
+                    .as_ref()
+                    .map(|t| t.texture_transform().and_then(|x| x.tex_coord()).unwrap_or(t.tex_coord()))
+                    .unwrap_or(0),
+                uv_xf: tex.as_ref().and_then(|t| t.texture_transform()).map(|x| {
+                    let ([ox, oy], r, [sx, sy]) = (x.offset(), x.rotation(), x.scale());
+                    let (sn, cs) = r.sin_cos();
+                    [cs * sx, sn * sy, ox, -sn * sx, cs * sy, oy]
+                }),
                 metallic: pbr.metallic_factor(),
                 roughness: pbr.roughness_factor(),
                 emissive: [to_srgb(e[0]), to_srgb(e[1]), to_srgb(e[2])],
@@ -293,6 +330,7 @@ pub fn load(path: &str) -> Result<ModelSource, String> {
         alpha: 1.0,
         texture: None,
         tex_coord: 0,
+        uv_xf: None,
         metallic: 0.0,
         roughness: 0.6,
         emissive: [0.0; 3],
@@ -344,7 +382,15 @@ pub fn load(path: &str) -> Result<ModelSource, String> {
             let positions: Vec<[f32; 3]> = positions.collect();
             let mat_idx = prim.material().index().unwrap_or(default_mat);
             let normals: Option<Vec<[f32; 3]>> = reader.read_normals().map(|n| n.collect());
-            let uvs: Option<Vec<[f32; 2]>> = reader.read_tex_coords(materials[mat_idx].tex_coord).map(|t| t.into_f32().collect());
+            let xf = materials[mat_idx].uv_xf;
+            let uvs: Option<Vec<[f32; 2]>> = reader.read_tex_coords(materials[mat_idx].tex_coord).map(|t| {
+                t.into_f32()
+                    .map(|[u, v]| match xf {
+                        Some(m) => [m[0] * u + m[1] * v + m[2], m[3] * u + m[4] * v + m[5]],
+                        None => [u, v],
+                    })
+                    .collect()
+            });
             let idx: Vec<u32> = reader
                 .read_indices()
                 .map(|i| i.into_u32().collect())
@@ -466,8 +512,8 @@ fn tri_area_normal(pos: &[[f32; 3]], t: &[u32; 3]) -> ([f32; 3], f32) {
     (if l > 0.0 { [cr[0] / l, cr[1] / l, cr[2] / l] } else { [0.0; 3] }, l)
 }
 
-/// One part per material, except palette-textured materials, which are split by the colour
-/// each triangle samples (when there are only a handful of colours).
+/// One part per material, except in palette-textured low-poly models, where a material is split
+/// by the colour each triangle samples (when there are only a handful of colours).
 fn split_parts(
     materials: &[Material],
     textures: &[Texture],
@@ -477,12 +523,18 @@ fn split_parts(
 ) -> (Vec<Part>, Vec<u32>) {
     let mut tri_part = vec![0u32; tris.len()];
     let mut parts = Vec::new();
+    // Low-poly models paint the whole device from one palette texture, so the screen is only a
+    // colour within it. Detailed models already give each piece its own material.
+    let mut used: Vec<u32> = tri_mat.to_vec();
+    used.sort_unstable();
+    used.dedup();
+    let palette_model = used.len() <= 2;
     for (mi, mat) in materials.iter().enumerate() {
         let mine: Vec<usize> = (0..tris.len()).filter(|&i| tri_mat[i] as usize == mi).collect();
         if mine.is_empty() {
             continue;
         }
-        let tex = mat.texture.and_then(|t| textures.get(t));
+        let tex = mat.texture.and_then(|t| textures.get(t)).filter(|_| palette_model);
         let mut split: Option<Vec<([u8; 3], Vec<usize>)>> = None;
         if let Some(tex) = tex {
             let mut buckets: Vec<([u8; 3], Vec<usize>)> = Vec::new();

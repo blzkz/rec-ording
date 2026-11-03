@@ -33,6 +33,7 @@ enum AppEvent {
     ModelPicked(PathBuf),
     ModelLoaded { path: String, result: Result<Arc<ModelSource>, String> },
     ModelThumb { path: String, src: Option<Arc<ModelSource>>, size: (usize, usize), rgba: Option<Vec<u8>> },
+    ModelImported(Result<(String, Arc<ModelSource>), String>),
 }
 
 #[derive(PartialEq, Eq, Clone, Copy)]
@@ -40,6 +41,16 @@ enum Sheet {
     None,
     Record,
     Export,
+    RenameModel,
+    DeleteModel,
+}
+
+/// An imported model being renamed or deleted.
+struct ModelEdit {
+    entry: PathBuf,
+    path: String,
+    name: String,
+    error: Option<String>,
 }
 
 enum ExportUi {
@@ -142,6 +153,10 @@ pub struct RecOrdingApp {
     model_pending: Option<String>,
     library: Vec<LibraryModel>,
     library_thumbs: HashMap<String, TextureHandle>,
+    /// Gallery models that could not be loaded.
+    library_broken: std::collections::HashSet<String>,
+    importing: bool,
+    model_edit: Option<ModelEdit>,
 
     // Editing
     selected_zoom: Option<u64>,
@@ -240,6 +255,9 @@ impl RecOrdingApp {
             model_pending: None,
             library: Vec::new(),
             library_thumbs: HashMap::new(),
+            library_broken: Default::default(),
+            importing: false,
+            model_edit: None,
             selected_zoom: None,
             drag: None,
             sheet: Sheet::None,
@@ -339,8 +357,8 @@ impl RecOrdingApp {
         let home = std::env::var("HOME").unwrap_or_default();
         thread::spawn(move || {
             let res = run_picker(
-                &["--file-selection", "--title=Importar modelo 3D", "--file-filter=Modelos 3D | *.glb *.gltf *.GLB *.GLTF"],
-                &["--getopenfilename", &home, "Modelos 3D (*.glb *.gltf)"],
+                &["--file-selection", "--title=Importar modelo 3D", "--file-filter=Modelos 3D | *.glb *.gltf *.GLB *.GLTF *.zip *.ZIP"],
+                &["--getopenfilename", &home, "Modelos 3D (*.glb *.gltf *.zip)"],
             );
             match res {
                 Ok(Some(p)) => {
@@ -371,7 +389,12 @@ impl RecOrdingApp {
     /// Re-reads the gallery and renders thumbnails for models that do not have one yet.
     fn refresh_library(&mut self) {
         self.library = library::list();
-        let todo: Vec<String> = self.library.iter().map(|m| m.path.clone()).filter(|p| !self.library_thumbs.contains_key(p)).collect();
+        let todo: Vec<String> = self
+            .library
+            .iter()
+            .map(|m| m.path.clone())
+            .filter(|p| !self.library_thumbs.contains_key(p) && !self.library_broken.contains(p))
+            .collect();
         if todo.is_empty() {
             return;
         }
@@ -540,14 +563,29 @@ impl RecOrdingApp {
                 }
                 AppEvent::ImportPicked(p) => self.import(p),
                 AppEvent::FolderPicked(p) => self.project.export.folder = p.to_string_lossy().into_owned(),
-                AppEvent::ModelPicked(p) => match library::import(&p) {
-                    Ok(dest) => {
-                        let path = dest.to_string_lossy().into_owned();
-                        self.refresh_library();
-                        self.select_model(path);
+                AppEvent::ModelPicked(p) => {
+                    // Load before copying, so a model that cannot be used never enters the gallery.
+                    self.importing = true;
+                    let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+                    thread::spawn(move || {
+                        let res = library::import_any(&p).map(|(dest, src)| (dest.to_string_lossy().into_owned(), Arc::new(src)));
+                        let _ = tx.send(AppEvent::ModelImported(res));
+                        ctx.request_repaint();
+                    });
+                }
+                AppEvent::ModelImported(res) => {
+                    self.importing = false;
+                    match res {
+                        Ok((path, src)) => {
+                            self.library_broken.remove(&path);
+                            self.library_thumbs.remove(&path);
+                            self.model_cache.insert(path.clone(), src);
+                            self.refresh_library();
+                            self.select_model(path);
+                        }
+                        Err(e) => self.toast(e),
                     }
-                    Err(e) => self.toast(e),
-                },
+                }
                 AppEvent::ModelLoaded { path, result } => {
                     if self.model_loading.as_deref() == Some(path.as_str()) {
                         self.model_loading = None;
@@ -577,10 +615,15 @@ impl RecOrdingApp {
                     if let Some(src) = src {
                         self.model_cache.entry(path.clone()).or_insert(src);
                     }
-                    if let Some(rgba) = rgba {
-                        let img = ColorImage::from_rgba_unmultiplied([size.0, size.1], &rgba);
-                        let tex = self.ctx.load_texture(format!("model-{path}"), img, TextureOptions::LINEAR);
-                        self.library_thumbs.insert(path, tex);
+                    match rgba {
+                        Some(rgba) => {
+                            let img = ColorImage::from_rgba_unmultiplied([size.0, size.1], &rgba);
+                            let tex = self.ctx.load_texture(format!("model-{path}"), img, TextureOptions::LINEAR);
+                            self.library_thumbs.insert(path, tex);
+                        }
+                        None => {
+                            self.library_broken.insert(path);
+                        }
                     }
                 }
                 AppEvent::PickerUnavailable => {
@@ -927,6 +970,7 @@ impl eframe::App for RecOrdingApp {
         match self.sheet {
             Sheet::Record => self.record_sheet(ctx),
             Sheet::Export => self.export_sheet(ctx),
+            Sheet::RenameModel | Sheet::DeleteModel => self.model_edit_sheet(ctx),
             Sheet::None => {}
         }
         if self.sheet == Sheet::Record && self.recording.is_none() {
@@ -1375,6 +1419,7 @@ impl RecOrdingApp {
     fn models_inspector(&mut self, ui: &mut Ui) {
         let mut pick: Option<String> = None;
         let mut import = false;
+        let mut edit: Option<(LibraryModel, Sheet)> = None;
         let current = (self.project.style.frame == FrameStyle::Custom)
             .then(|| self.project.style.model.as_ref().map(|m| m.path.clone()))
             .flatten();
@@ -1393,12 +1438,26 @@ impl RecOrdingApp {
                             Some(m) => {
                                 let selected = current.as_deref() == Some(m.path.as_str());
                                 let busy = loading.as_deref() == Some(m.path.as_str());
-                                if gallery_tile(ui, m, self.library_thumbs.get(&m.path), selected, busy, tile_w).clicked() {
+                                let broken = self.library_broken.contains(&m.path);
+                                let resp = gallery_tile(ui, m, self.library_thumbs.get(&m.path), selected, busy, broken, tile_w);
+                                if resp.clicked() {
                                     pick = Some(m.path.clone());
+                                }
+                                if m.entry.is_some() {
+                                    resp.context_menu(|ui| {
+                                        if ui.button("Renombrar…").clicked() {
+                                            edit = Some(((*m).clone(), Sheet::RenameModel));
+                                            ui.close_menu();
+                                        }
+                                        if ui.button(RichText::new("Eliminar…").color(RED)).clicked() {
+                                            edit = Some(((*m).clone(), Sheet::DeleteModel));
+                                            ui.close_menu();
+                                        }
+                                    });
                                 }
                             }
                             None => {
-                                if import_tile(ui, tile_w).clicked() {
+                                if import_tile(ui, tile_w, self.importing).clicked() && !self.importing {
                                     import = true;
                                 }
                             }
@@ -1410,6 +1469,9 @@ impl RecOrdingApp {
 
         if let Some(p) = pick {
             self.select_model(p);
+        }
+        if let Some((m, sheet)) = edit.take() {
+            self.start_model_edit(&m, sheet);
         }
         if import {
             self.pick_model();
@@ -1485,6 +1547,17 @@ impl RecOrdingApp {
                     toggle_row(ui, "Repetir en bucle", "Si no, se reproduce una vez al empezar", &mut cm.loop_animation);
                 }
             }
+            if let Some(e) = entry.as_ref().filter(|e| e.entry.is_some()) {
+                ui.add_space(2.0);
+                ui.horizontal(|ui| {
+                    if secondary_button(ui, "Renombrar…").clicked() {
+                        edit = Some((e.clone(), Sheet::RenameModel));
+                    }
+                    if ui.add(egui::Button::new(RichText::new("Eliminar…").color(RED)).min_size(Vec2::new(0.0, 28.0))).clicked() {
+                        edit = Some((e.clone(), Sheet::DeleteModel));
+                    }
+                });
+            }
             if let Some(e) = &entry {
                 if let (Some(author), Some(license)) = (&e.author, &e.license) {
                     ui.add_space(2.0);
@@ -1497,6 +1570,117 @@ impl RecOrdingApp {
                 }
             }
         });
+        if let Some((m, sheet)) = edit {
+            self.start_model_edit(&m, sheet);
+        }
+    }
+
+    fn start_model_edit(&mut self, m: &LibraryModel, sheet: Sheet) {
+        let Some(entry) = m.entry.clone() else { return };
+        self.model_edit = Some(ModelEdit { entry, path: m.path.clone(), name: m.name.clone(), error: None });
+        self.sheet = sheet;
+    }
+
+    /// Re-keys everything that refers to a model by path after it was renamed.
+    fn model_moved(&mut self, old: &str, new: String) {
+        if let Some(src) = self.model_cache.remove(old) {
+            self.model_cache.insert(new.clone(), src);
+        }
+        if let Some(t) = self.library_thumbs.remove(old) {
+            self.library_thumbs.insert(new.clone(), t);
+        }
+        if let Some(cm) = self.project.style.model.as_mut().filter(|m| m.path == old) {
+            cm.path = new.clone();
+        }
+        if let Some((cm, _)) = self.model_prepared.as_mut().filter(|(m, _)| m.path == old) {
+            cm.path = new;
+        }
+    }
+
+    fn model_edit_sheet(&mut self, ctx: &egui::Context) {
+        let Some(edit) = self.model_edit.as_mut() else {
+            self.sheet = Sheet::None;
+            return;
+        };
+        let renaming = self.sheet == Sheet::RenameModel;
+        let mut action: Option<bool> = None; // Some(true) = confirm, Some(false) = cancel
+        Self::sheet_window(ctx, "model-edit", 400.0, |ui| {
+            if renaming {
+                ui.label(RichText::new("Renombrar modelo").font(medium(20.0)).color(TEXT));
+                ui.add_space(8.0);
+                let resp = ui.add(egui::TextEdit::singleline(&mut edit.name).desired_width(f32::INFINITY).font(regular(14.0)));
+                if !resp.has_focus() && edit.error.is_none() && !resp.lost_focus() {
+                    resp.request_focus();
+                }
+                if resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                    action = Some(true);
+                }
+            } else {
+                ui.label(RichText::new(format!("¿Eliminar «{}»?", edit.name)).font(medium(20.0)).color(TEXT));
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new("Se borrará de tu galería junto con sus texturas. Los vídeos que ya has exportado no cambian.")
+                        .color(TEXT_2),
+                );
+            }
+            if let Some(e) = &edit.error {
+                ui.add_space(4.0);
+                info_box(ui, RED, e);
+            }
+            ui.add_space(12.0);
+            ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                let ok = if renaming { primary_button(ui, "Guardar", true) } else { tinted_button(ui, "Eliminar", RED, true) };
+                if ok.clicked() {
+                    action = Some(true);
+                }
+                if secondary_button(ui, "Cancelar").clicked() {
+                    action = Some(false);
+                }
+            });
+        });
+        match action {
+            Some(false) => {
+                self.model_edit = None;
+                self.sheet = Sheet::None;
+            }
+            Some(true) => {
+                let edit = self.model_edit.as_mut().unwrap();
+                if renaming {
+                    match library::rename(&edit.entry, &edit.name) {
+                        Ok(new_path) => {
+                            let (old, name) = (edit.path.clone(), edit.name.trim().to_string());
+                            self.model_moved(&old, new_path.to_string_lossy().into_owned());
+                            self.model_edit = None;
+                            self.sheet = Sheet::None;
+                            self.refresh_library();
+                            self.toast(format!("Modelo renombrado a «{name}»"));
+                        }
+                        Err(e) => edit.error = Some(e),
+                    }
+                } else {
+                    match library::remove(&edit.entry) {
+                        Ok(()) => {
+                            let (path, name) = (edit.path.clone(), edit.name.clone());
+                            self.model_cache.remove(&path);
+                            self.library_thumbs.remove(&path);
+                            self.library_broken.remove(&path);
+                            if self.project.style.model.as_ref().is_some_and(|m| m.path == path) {
+                                self.project.style.model = None;
+                                if self.project.style.frame == FrameStyle::Custom {
+                                    self.project.style.frame = FrameStyle::Rounded;
+                                }
+                            }
+                            self.model_edit = None;
+                            self.sheet = Sheet::None;
+                            self.refresh_library();
+                            self.toast(format!("«{name}» eliminado de la galería"));
+                        }
+                        Err(e) => edit.error = Some(e),
+                    }
+                }
+            }
+            None => {}
+        }
     }
 
     fn style_inspector(&mut self, ui: &mut Ui) {
@@ -2408,11 +2592,12 @@ fn model_tile(ui: &mut Ui, f: FrameStyle, selected: bool, width: f32) -> egui::R
 }
 
 /// A gallery model with its rendered thumbnail.
-fn gallery_tile(ui: &mut Ui, m: &LibraryModel, thumb: Option<&TextureHandle>, selected: bool, busy: bool, width: f32) -> egui::Response {
+fn gallery_tile(ui: &mut Ui, m: &LibraryModel, thumb: Option<&TextureHandle>, selected: bool, busy: bool, broken: bool, width: f32) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, width * 1.18 + 20.0), Sense::click());
     let tip = match (&m.author, &m.license) {
         (Some(a), Some(l)) => format!("{} · de {a} ({l})", m.name),
-        _ => format!("{} · importado por ti", m.name),
+        _ if broken => format!("{} · no se puede cargar (clic derecho para eliminarlo)", m.name),
+        _ => format!("{} · importado por ti (clic derecho para renombrar o eliminar)", m.name),
     };
     let resp = resp.on_hover_text(tip).on_hover_cursor(CursorIcon::PointingHand);
     let h = ui.ctx().animate_bool(resp.id, resp.hovered());
@@ -2432,6 +2617,10 @@ fn gallery_tile(ui: &mut Ui, m: &LibraryModel, thumb: Option<&TextureHandle>, se
     if busy {
         p.rect_filled(img, Rounding::same(8.0), Color32::from_black_alpha(110));
         p.text(img.center(), Align2::CENTER_CENTER, "Cargando…", regular(11.0), TEXT);
+    } else if broken {
+        p.rect_filled(img, Rounding::same(8.0), Color32::from_black_alpha(140));
+        p.text(img.center() - Vec2::new(0.0, 8.0), Align2::CENTER_CENTER, "⚠", regular(18.0), YELLOW);
+        p.text(img.center() + Vec2::new(0.0, 12.0), Align2::CENTER_CENTER, "No carga", regular(11.0), YELLOW);
     }
     if selected {
         p.rect_stroke(img, Rounding::same(8.0), Stroke::new(2.0_f32, ACCENT));
@@ -2448,18 +2637,24 @@ fn gallery_tile(ui: &mut Ui, m: &LibraryModel, thumb: Option<&TextureHandle>, se
     resp
 }
 
-fn import_tile(ui: &mut Ui, width: f32) -> egui::Response {
+fn import_tile(ui: &mut Ui, width: f32, busy: bool) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, width * 1.18 + 20.0), Sense::click());
-    let resp = resp.on_hover_text("Añadir un modelo .glb o .gltf").on_hover_cursor(CursorIcon::PointingHand);
+    let resp = resp
+        .on_hover_text("Añadir un modelo .glb, .gltf o la descarga .zip que lo contiene")
+        .on_hover_cursor(CursorIcon::PointingHand);
     let h = ui.ctx().animate_bool(resp.id, resp.hovered());
     let p = ui.painter();
     let img = Rect::from_min_size(rect.min, Vec2::new(width, width * 1.18));
     p.rect_filled(img, Rounding::same(8.0), lerp_color(Color32::from_rgb(48, 48, 52), Color32::from_rgb(62, 62, 67), h));
     p.rect_stroke(img.shrink(0.5), Rounding::same(8.0), Stroke::new(1.0_f32, Color32::from_rgb(84, 84, 90)));
     let c = img.center();
-    let st = Stroke::new(2.0_f32, TEXT_2);
-    p.line_segment([c - Vec2::new(10.0, 0.0), c + Vec2::new(10.0, 0.0)], st);
-    p.line_segment([c - Vec2::new(0.0, 10.0), c + Vec2::new(0.0, 10.0)], st);
+    if busy {
+        p.text(c, Align2::CENTER_CENTER, "Importando…", regular(11.0), TEXT_2);
+    } else {
+        let st = Stroke::new(2.0_f32, TEXT_2);
+        p.line_segment([c - Vec2::new(10.0, 0.0), c + Vec2::new(10.0, 0.0)], st);
+        p.line_segment([c - Vec2::new(0.0, 10.0), c + Vec2::new(0.0, 10.0)], st);
+    }
     p.text(Pos2::new(rect.center().x, rect.bottom() - 9.0), Align2::CENTER_CENTER, "Importar", regular(11.5), TEXT_2);
     resp
 }

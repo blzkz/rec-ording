@@ -5,3 +5,6 @@ packaging/arch/*.pkg.tar.zst
 *.pkg.tar.zst
 .DS_Store
 *.log
+
+# Modelos descargados para pruebas (licencias de terceros)
+/models/

@@ -41,6 +41,14 @@ Se han retirado, de momento, el servidor MCP, el autoactualizador, los subtítul
 - Animaciones glTF de nodos (traslación, rotación y escala; interpolación lineal, por pasos o cúbica), en bucle o una vez.
 - Sigue sin soportarse: compresión Draco, esqueletos (skinning) y morph targets.
 
+## v0.6.2: importación más robusta y gestión de la galería
+
+- Se leen modelos que exigen extensiones como `KHR_texture_transform` (habitual en exportaciones de Blender), que antes se rechazaban; las extensiones desconocidas se toleran salvo las de geometría comprimida (Draco, meshopt, cuantización).
+- Se implementa `KHR_texture_transform` (desplazamiento, giro y escala de texturas).
+- La separación de piezas por color solo se aplica a modelos low-poly de paleta (uno o dos materiales), no a modelos detallados con decenas de materiales.
+- Importar valida el modelo antes de copiarlo: un modelo que no carga no entra en la galería. Se puede importar el `.zip` de la descarga.
+- Renombrar y eliminar modelos importados (clic derecho o desde «Ajustes del modelo»), con confirmación; los que no cargan se marcan en la galería.
+
 ## Ideas para siguientes versiones
 
 - Títulos y textos animados sobre el vídeo (intro, llamada a la acción).

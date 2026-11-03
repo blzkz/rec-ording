@@ -13,6 +13,8 @@ pub struct LibraryModel {
     pub name: String,
     pub author: Option<String>,
     pub license: Option<String>,
+    /// For imported models: the file or folder in the gallery that holds it (renamable, removable).
+    pub entry: Option<PathBuf>,
 }
 
 impl LibraryModel {
@@ -66,12 +68,13 @@ pub fn list() -> Vec<LibraryModel> {
                     name: e.name,
                     author: e.author,
                     license: e.license,
+                    entry: None,
                 });
             }
         }
     }
     // Imported models: a single `.glb`, or a folder holding a model and the files it uses.
-    let mut mine: Vec<(String, PathBuf)> = Vec::new();
+    let mut mine: Vec<(String, PathBuf, PathBuf)> = Vec::new();
     for entry in std::fs::read_dir(user_dir()).map(|rd| rd.flatten().collect::<Vec<_>>()).unwrap_or_default() {
         let p = entry.path();
         if p.is_dir() {
@@ -81,15 +84,15 @@ pub fn list() -> Vec<LibraryModel> {
                 .into_iter()
                 .find(|f| is_model_file(f));
             if let Some(f) = model {
-                mine.push((p.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(), f));
+                mine.push((p.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(), f, p));
             }
-        } else if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("glb")) {
-            mine.push((p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(), p));
+        } else if is_model_file(&p) {
+            mine.push((p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(), p.clone(), p));
         }
     }
     mine.sort();
-    for (name, p) in mine {
-        out.push(LibraryModel { name, path: p.to_string_lossy().into_owned(), author: None, license: None });
+    for (name, p, entry) in mine {
+        out.push(LibraryModel { name, path: p.to_string_lossy().into_owned(), author: None, license: None, entry: Some(entry) });
     }
     out
 }
@@ -118,14 +121,14 @@ fn percent_decode(s: &str) -> String {
 
 /// Files a model loads from next to itself (textures, `.bin` buffers), as relative paths.
 fn external_files(path: &Path) -> Result<Vec<PathBuf>, String> {
-    let g = gltf::Gltf::open(path).map_err(|e| format!("No se pudo leer el modelo: {e}"))?;
+    let (doc, _) = model3d::read_document(path)?;
     let mut uris = Vec::new();
-    for b in g.document.buffers() {
+    for b in doc.buffers() {
         if let gltf::buffer::Source::Uri(u) = b.source() {
             uris.push(u.to_string());
         }
     }
-    for i in g.document.images() {
+    for i in doc.images() {
         if let gltf::image::Source::Uri { uri, .. } = i.source() {
             uris.push(uri.to_string());
         }
@@ -134,6 +137,114 @@ fn external_files(path: &Path) -> Result<Vec<PathBuf>, String> {
     uris.sort();
     uris.dedup();
     Ok(uris.iter().map(|u| PathBuf::from(percent_decode(u))).collect())
+}
+
+/// Imports what the user picked: a model file or a `.zip` download containing one. The model is
+/// loaded first, so nothing is added to the gallery if it cannot be used. Returns the gallery
+/// path and the loaded model.
+pub fn import_any(path: &Path) -> Result<(PathBuf, ModelSource), String> {
+    let is_zip = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("zip"));
+    if !is_zip {
+        let src = model3d::load(&path.to_string_lossy())?;
+        let dest = import(path)?;
+        return Ok((dest, src));
+    }
+
+    let tmp = crate::model::cache_dir().join(format!("import-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
+    let result = (|| {
+        let ok = std::process::Command::new("unzip")
+            .args(["-q", "-o"])
+            .arg(path)
+            .arg("-d")
+            .arg(&tmp)
+            .status()
+            .map(|s| s.success())
+            .or_else(|_| {
+                std::process::Command::new("bsdtar").arg("-xf").arg(path).arg("-C").arg(&tmp).status().map(|s| s.success())
+            })
+            .map_err(|_| "Para importar un .zip hace falta unzip (sudo pacman -S unzip).".to_string())?;
+        if !ok {
+            return Err("No se pudo descomprimir el .zip".to_string());
+        }
+        // Prefer a .glb (self-contained) over a .gltf; among several, the largest.
+        let mut found: Vec<(bool, u64, PathBuf)> = Vec::new();
+        let mut stack = vec![tmp.clone()];
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(&d).map_err(|e| e.to_string())?.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if is_model_file(&p) {
+                    let glb = p.extension().is_some_and(|x| x.eq_ignore_ascii_case("glb"));
+                    found.push((glb, e.metadata().map(|m| m.len()).unwrap_or(0), p));
+                }
+            }
+        }
+        found.sort();
+        let (_, _, model) = found.pop().ok_or("El .zip no contiene ningún modelo .glb ni .gltf")?;
+        let src = model3d::load(&model.to_string_lossy())?;
+        // Name the copy after the download, not after names like "Untitled" or "scene".
+        let named = model.with_file_name(format!(
+            "{}.{}",
+            path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "modelo".into()),
+            model.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_else(|| "glb".into())
+        ));
+        std::fs::rename(&model, &named).map_err(|e| e.to_string())?;
+        let dest = import(&named)?;
+        Ok((dest, src))
+    })();
+    let _ = std::fs::remove_dir_all(&tmp);
+    result
+}
+
+fn inside_gallery(entry: &Path) -> Result<PathBuf, String> {
+    let root = user_dir().canonicalize().map_err(|e| e.to_string())?;
+    let e = entry.canonicalize().map_err(|_| "Ese modelo ya no existe".to_string())?;
+    if e.parent() != Some(root.as_path()) {
+        return Err("Solo se pueden cambiar los modelos que has importado".into());
+    }
+    Ok(e)
+}
+
+/// Renames an imported model. Returns the new path of its model file.
+pub fn rename(entry: &Path, new_name: &str) -> Result<PathBuf, String> {
+    let entry = inside_gallery(entry)?;
+    let name = new_name.trim();
+    if name.is_empty() || name.contains(['/', '\\']) || name.starts_with('.') {
+        return Err("Escribe un nombre válido (sin barras)".into());
+    }
+    let (target, model_file) = if entry.is_dir() {
+        let model = std::fs::read_dir(&entry)
+            .map_err(|e| e.to_string())?
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| is_model_file(p))
+            .ok_or("No se encontró el modelo")?;
+        let target = entry.with_file_name(name);
+        let file = target.join(model.file_name().unwrap_or_default());
+        (target, file)
+    } else {
+        let ext = entry.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_else(|| "glb".into());
+        let target = entry.with_file_name(format!("{name}.{ext}"));
+        (target.clone(), target)
+    };
+    if target == entry {
+        return Ok(model_file);
+    }
+    if target.exists() {
+        return Err(format!("Ya hay un modelo llamado «{name}»"));
+    }
+    std::fs::rename(&entry, &target).map_err(|e| format!("No se pudo renombrar: {e}"))?;
+    Ok(model_file)
+}
+
+/// Deletes an imported model (its file, or its folder with textures) from the gallery.
+pub fn remove(entry: &Path) -> Result<(), String> {
+    let entry = inside_gallery(entry)?;
+    let r = if entry.is_dir() { std::fs::remove_dir_all(&entry) } else { std::fs::remove_file(&entry) };
+    r.map_err(|e| format!("No se pudo eliminar: {e}"))
 }
 
 /// Adds a model to the gallery. A self-contained `.glb` is copied in as is; a model that loads
@@ -292,6 +403,37 @@ mod tests {
         for n in ["movil", "scene", "phone_named"] {
             assert!(names.iter().any(|x| x == n), "{n} not in {names:?}");
         }
+    }
+
+    /// The user's flows: zip download, a broken file, rename and delete. Run with a throwaway data folder:
+    /// XDG_DATA_HOME=<tmp> ZIP=<model download .zip> BROKEN_DIR=<tmp dir> cargo test manages_ -- --ignored
+    #[test]
+    #[ignore]
+    fn manages_imported_models() {
+        let (Ok(zip), Ok(tmp)) = (std::env::var("ZIP"), std::env::var("BROKEN_DIR")) else { return };
+        let (dest, src) = import_any(Path::new(&zip)).expect("zip import");
+        assert!(src.guess.is_some());
+        let stem = Path::new(&zip).file_stem().unwrap().to_string_lossy().into_owned();
+        assert_eq!(dest.file_stem().unwrap().to_string_lossy(), stem, "named after the download: {}", dest.display());
+
+        // A broken file never reaches the gallery.
+        let broken = Path::new(&tmp).join("roto.glb");
+        std::fs::write(&broken, b"glTF esto no es un modelo").unwrap();
+        let before = list().len();
+        assert!(import_any(&broken).is_err());
+        assert_eq!(list().len(), before);
+
+        let entry = list().into_iter().find(|m| m.path == dest.to_string_lossy()).and_then(|m| m.entry).expect("listed");
+        let renamed = rename(&entry, "Mi Galaxy").expect("rename");
+        assert!(renamed.is_file() && renamed.file_stem().unwrap() == "Mi Galaxy");
+        assert!(rename(&renamed, "a/b").is_err());
+        let entry = list().into_iter().find(|m| m.name == "Mi Galaxy").and_then(|m| m.entry).expect("renamed in list");
+        crate::model3d::load(&renamed.to_string_lossy()).expect("still loads after rename");
+
+        // Nothing outside the gallery can be touched.
+        assert!(remove(&broken).is_err() && broken.exists());
+        remove(&entry).expect("remove");
+        assert!(!renamed.exists() && list().iter().all(|m| m.name != "Mi Galaxy"));
     }
 
     #[test]

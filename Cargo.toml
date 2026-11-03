@@ -1,6 +1,6 @@
 [package]
 name = "rec-ording"
-version = "0.6.1"
+version = "0.6.2"
 edition = "2021"
 authors = ["blzkz <sergiobl88@gmail.com>"]
 description = "Graba tu móvil Android y conviértelo en un vídeo promocional con marco, fondo y zooms automáticos"
@@ -17,7 +17,7 @@ rayon = "1.10"
 crossbeam-channel = "0.5"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-gltf = "1.4"
+gltf = { version = "1.4", features = ["KHR_texture_transform", "KHR_materials_unlit", "KHR_materials_transmission", "KHR_materials_ior", "KHR_materials_emissive_strength"] }
 
 [profile.release]
 opt-level = 3
