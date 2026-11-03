@@ -8,7 +8,8 @@ Pensado para la ficha de Google Play, YouTube, Reels/Shorts o redes, sin pasar p
 
 1. **Graba.** Conecta el móvil por USB (con la depuración USB activada), pulsa **Grabar** y usa tu app con normalidad. rec-ording registra dónde tocas.
    ¿Ya tienes una grabación? Pulsa **Importar** o arrastra el vídeo a la ventana.
-2. **Ajusta.** Elige formato (16:9, 9:16, 1:1, 4:5), marco y color del dispositivo, fondo, margen y sombra.
+2. **Ajusta.** Elige formato (16:9, 9:16, 1:1, 4:5), modelo (redondeado, recto, curvo, tablet o sin marco) y color del dispositivo, fondo, margen y sombra.
+   En **Ángulo 3D** puedes girar e inclinar el móvil (con cantos y reflejos reales), hacer que se enderece al hacer zoom, que flote suavemente o que entre girando al empezar.
    Los zooms se crean solos a partir de los toques; puedes moverlos, alargarlos, cambiar su nivel o elegir dónde enfocan haciendo clic en la vista previa.
 3. **Exporta** en MP4 (H.264 o HEVC) o GIF, a 720p, 1080p o 4K, a 30 o 60 fps, con el sonido del móvil.
 
@@ -57,7 +58,7 @@ Aplicación nativa en Rust con [egui](https://github.com/emilk/egui).
 | --- | --- |
 | `capture.rs` | Graba con scrcpy (o `adb screenrecord`) y lee los toques de la pantalla táctil con `getevent`, sincronizados con el vídeo. |
 | `camera.rs` | Genera los zooms automáticos a partir de los toques y anima la cámara con un muelle amortiguado. |
-| `compositor.rs` | Dibuja cada fotograma: fondo, sombra, marco del móvil, la grabación y los toques. La vista previa y la exportación usan el mismo código. |
+| `compositor.rs` | Dibuja cada fotograma: fondo, sombra, el móvil en 3D (perspectiva, grosor e iluminación), la grabación y los toques. La vista previa y la exportación usan el mismo código. |
 | `media.rs` | Lee vídeos con ffprobe/ffmpeg, crea una copia ligera para que la vista previa sea fluida y genera las miniaturas. |
 | `export.rs` | Decodifica la grabación, compone cada fotograma y codifica el resultado con ffmpeg. |
 | `app.rs`, `theme.rs` | Interfaz. |

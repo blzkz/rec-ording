@@ -96,6 +96,9 @@ pub struct Layout {
     pub screen: Rect2,
     pub screen_r: f32,
     pub bezel: f32,
+    /// Thickness of the device, shown as a lit edge when it is turned.
+    pub depth: f32,
+    pub frame: FrameStyle,
     pub framed: bool,
     pub portrait: bool,
 }
@@ -110,7 +113,14 @@ impl Layout {
         let aspect = (video_w / video_h.max(1.0)).max(0.05);
         let portrait = aspect < 1.0;
         let framed = style.frame != FrameStyle::None;
-        let k = if framed { 0.045 } else { 0.0 };
+        // Bezel, screen corner radius and thickness, in units of the screen's short side.
+        let (k, radius_k, depth_k) = match style.frame {
+            FrameStyle::Rounded => (0.045, 0.105, 0.1),
+            FrameStyle::Flat => (0.035, 0.035, 0.1),
+            FrameStyle::Curved => (0.025, 0.07, 0.1),
+            FrameStyle::Tablet => (0.07, 0.035, 0.045),
+            FrameStyle::None => (0.0, 0.06, 0.0),
+        };
 
         // Sizes in units of the screen's short side.
         let (sw, sh) = if portrait { (1.0, 1.0 / aspect) } else { (aspect, 1.0) };
@@ -120,15 +130,10 @@ impl Layout {
         let screen = Rect2::from_center(cx, cy, sw * unit, sh * unit);
         let bezel = k * unit;
         let body = Rect2::from_center(cx, cy, screen.w() + 2.0 * bezel, screen.h() + 2.0 * bezel);
-        let screen_r = unit
-            * match style.frame {
-                FrameStyle::Rounded => 0.105,
-                FrameStyle::Flat => 0.04,
-                FrameStyle::None => 0.06,
-            };
+        let screen_r = unit * radius_k;
         let body_r = if framed { screen_r + bezel } else { screen_r };
 
-        Self { cw, ch, body, body_r, screen, screen_r, bezel, framed, portrait }
+        Self { cw, ch, body, body_r, screen, screen_r, bezel, depth: depth_k * unit, frame: style.frame, framed, portrait }
     }
 
     /// Scale and translation the camera applies to the scene: `out = c + (q - c) * s + t`.
@@ -175,6 +180,8 @@ pub struct ComposeInput<'a> {
     pub cam: CamState,
     pub touches: &'a [Touch],
     pub time: f32,
+    /// Seconds since the start of the (trimmed) video, for the intro and idle motion.
+    pub since_start: f32,
 }
 
 struct Indicator {
@@ -203,6 +210,22 @@ impl RRect {
         let ox = qx.max(0.0);
         let oy = qy.max(0.0);
         (ox * ox + oy * oy).sqrt() + qx.max(qy).min(0.0) - self.r
+    }
+
+    /// Outward direction of the outline nearest to (x, y).
+    #[inline(always)]
+    fn normal(&self, x: f32, y: f32) -> (f32, f32) {
+        let (dx, dy) = (x - self.cx, y - self.cy);
+        let qx = dx.abs() - self.hx + self.r;
+        let qy = dy.abs() - self.hy + self.r;
+        if qx > 0.0 && qy > 0.0 {
+            let l = (qx * qx + qy * qy).sqrt().max(1e-6);
+            (qx / l * dx.signum(), qy / l * dy.signum())
+        } else if qx > qy {
+            (dx.signum(), 0.0)
+        } else {
+            (0.0, dy.signum())
+        }
     }
 
     fn of(rect: &Rect2, r: f32) -> Self {
@@ -306,6 +329,80 @@ fn indicators(layout: &Layout, style: &Style, touches: &[Touch], time: f32) -> V
     out
 }
 
+type Mat3 = [[f32; 3]; 3];
+
+/// world = Rz(roll) · Rx(tilt) · Ry(turn) · local
+fn rotation(tilt: f32, turn: f32, roll: f32) -> Mat3 {
+    let (sx, cx) = tilt.to_radians().sin_cos();
+    let (sy, cy) = turn.to_radians().sin_cos();
+    let (sz, cz) = roll.to_radians().sin_cos();
+    let rx = [[1.0, 0.0, 0.0], [0.0, cx, -sx], [0.0, sx, cx]];
+    let ry = [[cy, 0.0, sy], [0.0, 1.0, 0.0], [-sy, 0.0, cy]];
+    let rz = [[cz, -sz, 0.0], [sz, cz, 0.0], [0.0, 0.0, 1.0]];
+    matmul(&rz, &matmul(&rx, &ry))
+}
+
+fn matmul(a: &Mat3, b: &Mat3) -> Mat3 {
+    let mut m = [[0.0; 3]; 3];
+    for (i, row) in m.iter_mut().enumerate() {
+        for (j, v) in row.iter_mut().enumerate() {
+            *v = (0..3).map(|k| a[i][k] * b[k][j]).sum();
+        }
+    }
+    m
+}
+
+#[inline(always)]
+fn apply(m: &Mat3, v: [f32; 3]) -> [f32; 3] {
+    [
+        m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
+        m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
+        m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2],
+    ]
+}
+
+#[inline(always)]
+fn apply_t(m: &Mat3, v: [f32; 3]) -> [f32; 3] {
+    [
+        m[0][0] * v[0] + m[1][0] * v[1] + m[2][0] * v[2],
+        m[0][1] * v[0] + m[1][1] * v[1] + m[2][1] * v[2],
+        m[0][2] * v[0] + m[1][2] * v[1] + m[2][2] * v[2],
+    ]
+}
+
+#[inline(always)]
+fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+/// Device angle (tilt, turn, roll) and vertical offset at this instant: the style's angle,
+/// eased flat while zoomed in, plus the optional intro swing and idle sway.
+pub fn device_pose(style: &Style, cam: CamState, since_start: f32, min_dim: f32) -> (f32, f32, f32, f32) {
+    let (mut tilt, mut turn, mut roll) = (style.tilt, style.turn, style.roll);
+    if style.straighten_on_zoom {
+        let k = 1.0 - smoothstep(1.0, 1.4, cam.scale);
+        tilt *= k;
+        turn *= k;
+        roll *= k;
+    }
+    let t = since_start.max(0.0);
+    let mut dy = 0.0;
+    if style.float_motion {
+        tilt += 1.8 * (t * 0.8).sin();
+        turn += 2.6 * (t * 0.55 + 1.0).sin();
+        dy += 0.008 * min_dim * (t * 1.1).sin();
+    }
+    if style.intro {
+        let rest = 1.0 - ease_out(t / 1.4);
+        // Swing in from further along the chosen turn, so the two never cancel out.
+        let side = if style.turn > 0.0 { 1.0 } else { -1.0 };
+        turn += 40.0 * side * rest;
+        tilt += 18.0 * rest;
+        dy += 0.6 * min_dim * rest * rest;
+    }
+    (tilt, turn, roll, dy)
+}
+
 /// Renders the frame into `out` (RGBA8, `ow * oh * 4` bytes).
 pub fn compose(out: &mut [u8], ow: usize, oh: usize, inp: &ComposeInput) {
     if out.len() != ow * oh * 4 || ow == 0 || oh == 0 {
@@ -328,6 +425,36 @@ pub fn compose(out: &mut [u8], ow: usize, oh: usize, inp: &ComposeInput) {
     let half_extent = ((cw * gdx.abs() + ch * gdy.abs()) * 0.5).max(1.0);
     let diag = (cw * cw + ch * ch).sqrt();
 
+    // 3D pose: the device is a slab whose front face sits at z = 0, seen in perspective from
+    // the front. With no angle this reduces exactly to the flat 2D layout.
+    let (tilt, turn, roll, lift) = device_pose(style, inp.cam, inp.since_start, min_dim);
+    let angled = tilt.abs() > 0.01 || turn.abs() > 0.01 || roll.abs() > 0.01;
+    let rot = rotation(tilt, turn, roll);
+    let focal = 1.15 * cw.max(ch);
+    let (lcx, lcy) = (layout.body.cx(), layout.body.cy());
+    // Push the device back so its nearest corner stays at the flat layout's size: turning it
+    // never makes it grow past the margins.
+    let (hx, hy) = (layout.body.w() * 0.5, layout.body.h() * 0.5);
+    let nearest = [(-hx, -hy), (hx, -hy), (-hx, hy), (hx, hy)]
+        .iter()
+        .map(|&(x, y)| apply(&rot, [x, y, 0.0])[2])
+        .fold(0.0f32, f32::max);
+    let eye = apply_t(&rot, [0.0, 0.0, focal + nearest]);
+    let face_n = apply(&rot, [0.0, 0.0, 1.0]);
+    let light = {
+        let l = [-0.45f32, -0.65, 0.6];
+        let n = dot(l, l).sqrt();
+        [l[0] / n, l[1] / n, l[2] / n]
+    };
+    let half_v = {
+        let h = [light[0], light[1], light[2] + 1.0];
+        let n = dot(h, h).sqrt();
+        [h[0] / n, h[1] / n, h[2] / n]
+    };
+    let face_light = if angled { 0.86 + 0.24 * dot(face_n, light) } else { 1.0 };
+    let sheen_amount = ((tilt.abs() + turn.abs()) / 30.0).min(1.0) * 0.07;
+    let depth = layout.depth;
+
     // Device shapes
     let body = RRect::of(&layout.body, layout.body_r);
     let screen = RRect::of(&layout.screen, layout.screen_r);
@@ -339,36 +466,46 @@ pub fn compose(out: &mut [u8], ow: usize, oh: usize, inp: &ComposeInput) {
     let metal = rgbf(style.frame_color.rgb());
     let rim = layout.bezel * 0.34;
     let glass = [9.0, 9.0, 11.0];
+    let tablet = layout.frame == FrameStyle::Tablet;
 
     let buttons: Vec<RRect> = if layout.framed {
         let b = &layout.body;
-        let depth = (layout.bezel * 0.16).max(1.0);
-        let rr = depth;
-        if layout.portrait {
-            let x = b.x1 + depth * 0.4;
+        let bd = (layout.bezel * if tablet { 0.1 } else { 0.16 }).max(1.0);
+        if tablet {
+            let y = b.y0 - bd * 0.4;
             vec![
-                RRect { cx: x, cy: b.y0 + b.h() * 0.255, hx: depth, hy: b.h() * 0.035, r: rr },
-                RRect { cx: x, cy: b.y0 + b.h() * 0.40, hx: depth, hy: b.h() * 0.07, r: rr },
+                RRect { cx: b.x0 + b.w() * 0.8, cy: y, hx: b.w() * 0.045, hy: bd, r: bd },
+                RRect { cx: b.x0 + b.w() * 0.12, cy: y, hx: b.w() * 0.03, hy: bd, r: bd },
+            ]
+        } else if layout.portrait {
+            let x = b.x1 + bd * 0.4;
+            vec![
+                RRect { cx: x, cy: b.y0 + b.h() * 0.255, hx: bd, hy: b.h() * 0.035, r: bd },
+                RRect { cx: x, cy: b.y0 + b.h() * 0.40, hx: bd, hy: b.h() * 0.07, r: bd },
             ]
         } else {
-            let y = b.y0 - depth * 0.4;
+            let y = b.y0 - bd * 0.4;
             vec![
-                RRect { cx: b.x0 + b.w() * 0.255, cy: y, hx: b.w() * 0.035, hy: depth, r: rr },
-                RRect { cx: b.x0 + b.w() * 0.40, cy: y, hx: b.w() * 0.07, hy: depth, r: rr },
+                RRect { cx: b.x0 + b.w() * 0.255, cy: y, hx: b.w() * 0.035, hy: bd, r: bd },
+                RRect { cx: b.x0 + b.w() * 0.40, cy: y, hx: b.w() * 0.07, hy: bd, r: bd },
             ]
         }
     } else {
         Vec::new()
     };
 
-    let hole = if layout.framed {
-        let sc = &layout.screen;
-        let r = sc.w().min(sc.h()) * 0.024;
-        let off = sc.w().min(sc.h()) * 0.05;
-        Some(if layout.portrait { (sc.cx(), sc.y0 + off, r) } else { (sc.x0 + off, sc.cy(), r) })
-    } else {
+    // Front camera: a punch hole in the screen, or a dot in the bezel on tablets.
+    let sc_short = layout.screen.w().min(layout.screen.h());
+    let hole = if !layout.framed {
         None
+    } else if tablet {
+        Some((layout.body.cx(), layout.body.y0 + layout.bezel * 0.5, layout.bezel * 0.14))
+    } else {
+        let sc = &layout.screen;
+        let off = sc_short * 0.05;
+        Some(if layout.portrait { (sc.cx(), sc.y0 + off, sc_short * 0.024) } else { (sc.x0 + off, sc.cy(), sc_short * 0.024) })
     };
+    let curved = layout.frame == FrameStyle::Curved;
 
     let mip = inp.screen.map(|m| {
         let ratio = m.width() as f32 / (layout.screen.w() * s).max(1.0);
@@ -391,10 +528,25 @@ pub fn compose(out: &mut [u8], ow: usize, oh: usize, inp: &ComposeInput) {
             let glow = (1.0 - ((xf * xf + yf * yf).sqrt() / diag)).max(0.0) * 0.07;
             col = mix(col, white, glow);
 
-            // 2. Scene point under this pixel.
-            let qx = (xf - ccx - tx) * inv_s + ccx;
-            let qy = (yf - ccy - ty) * inv_s + ccy;
-            let cov = |d: f32| (0.5 - d * s).clamp(0.0, 1.0);
+            // 2. Point of the device's front face under this pixel (camera zoom, then 3D pose).
+            let sx = (xf - ccx - tx) * inv_s + ccx;
+            let sy = (yf - ccy - ty) * inv_s + ccy - lift;
+            let (qx, qy, inv_s, ray) = if angled {
+                let dir = [sx - lcx, sy - lcy, -focal];
+                let d = apply_t(&rot, dir);
+                if d[2] > -1e-4 {
+                    write_px(row, px, col, py);
+                    continue;
+                }
+                let t = -eye[2] / d[2];
+                let dlen = dot(dir, dir).sqrt();
+                let facing = (dot(face_n, dir) / dlen).abs().max(0.25);
+                let size = inv_s * t * dlen / focal / facing;
+                (lcx + eye[0] + t * d[0], lcy + eye[1] + t * d[1], size, Some(d))
+            } else {
+                (sx, sy, inv_s, None)
+            };
+            let cov = |d: f32| (0.5 - d / inv_s).clamp(0.0, 1.0);
 
             // 3. Shadows
             if shadow_alpha > 0.0 {
@@ -406,9 +558,40 @@ pub fn compose(out: &mut [u8], ow: usize, oh: usize, inp: &ComposeInput) {
                 col = [col[0] * k, col[1] * k, col[2] * k];
             }
 
-            // 4. Device body
+            // 4. Device edge (only visible when the device is turned)
+            let d_body = body.sd(qx, qy);
+            if let Some(d) = ray {
+                if depth > 0.0 && d_body > -inv_s && d_body < depth * 2.0 + 2.0 * inv_s {
+                    // Walk the ray from the front face to the back face and find where it is
+                    // deepest inside the outline: that is the side wall it hits.
+                    let tb = (-depth - eye[2]) / d[2];
+                    let (bx, by) = (lcx + eye[0] + tb * d[0], lcy + eye[1] + tb * d[1]);
+                    let (mut best, mut bp) = (f32::MAX, (qx, qy));
+                    for k in 1..=8 {
+                        let f = k as f32 / 8.0;
+                        let (x, y) = (qx + (bx - qx) * f, qy + (by - qy) * f);
+                        let sd = body.sd(x, y);
+                        if sd < best {
+                            best = sd;
+                            bp = (x, y);
+                        }
+                    }
+                    let c = cov(best);
+                    if c > 0.0 {
+                        let (nx, ny) = body.normal(bp.0, bp.1);
+                        let n = apply(&rot, [nx, ny, 0.0]);
+                        let diffuse = dot(n, light).max(0.0);
+                        let spec = dot(n, half_v).max(0.0).powi(30) * 140.0;
+                        let k = 0.3 + 0.75 * diffuse;
+                        let side = [metal[0] * k + spec, metal[1] * k + spec, metal[2] * k + spec];
+                        col = mix(col, side, c);
+                    }
+                }
+            }
+
+            // 5. Device front
             if layout.framed {
-                let shade = 1.12 - 0.3 * ((qy - body_top) / body_h).clamp(0.0, 1.0);
+                let shade = (1.12 - 0.3 * ((qy - body_top) / body_h).clamp(0.0, 1.0)) * face_light;
                 let metal_px = [metal[0] * shade, metal[1] * shade, metal[2] * shade];
                 for b in &buttons {
                     let c = cov(b.sd(qx, qy));
@@ -416,19 +599,25 @@ pub fn compose(out: &mut [u8], ow: usize, oh: usize, inp: &ComposeInput) {
                         col = mix(col, mix(metal_px, [0.0; 3], 0.12), c);
                     }
                 }
-                let d = body.sd(qx, qy);
-                let c = cov(d);
+                let c = cov(d_body);
                 if c > 0.0 {
-                    let depth = -d;
+                    let inset = -d_body;
                     // Polished edge highlight, then the metal band, then the black glass bezel.
-                    let hl = (1.0 - depth / (rim * 0.4)).clamp(0.0, 1.0) * 0.28;
+                    let hl = (1.0 - inset / (rim * 0.4)).clamp(0.0, 1.0) * 0.28;
                     let band = mix(metal_px, white, hl);
-                    let inner = smoothstep(rim - inv_s, rim + inv_s, depth);
-                    col = mix(col, mix(band, glass, inner), c);
+                    let inner = smoothstep(rim - inv_s, rim + inv_s, inset);
+                    let mut front = mix(band, glass, inner);
+                    if tablet {
+                        if let Some((hx, hy, hr)) = hole {
+                            let dh = ((qx - hx).powi(2) + (qy - hy).powi(2)).sqrt() - hr;
+                            front = mix(front, [28.0, 30.0, 40.0], cov(dh));
+                        }
+                    }
+                    col = mix(col, front, c);
                 }
             }
 
-            // 5. Screen
+            // 6. Screen
             let d = screen.sd(qx, qy);
             let c = cov(d);
             if c > 0.0 {
@@ -438,17 +627,31 @@ pub fn compose(out: &mut [u8], ow: usize, oh: usize, inp: &ComposeInput) {
                     Some(f) => sample(f, u, v),
                     None => [18.0, 18.0, 20.0],
                 };
-                if let Some((hx, hy, hr)) = hole {
-                    let dh = ((qx - hx).powi(2) + (qy - hy).powi(2)).sqrt() - hr;
-                    let ch = cov(dh);
-                    if ch > 0.0 {
-                        sc = mix(sc, [4.0, 4.0, 6.0], ch);
+                if curved {
+                    // Glass curving away along the long edges.
+                    let e = if layout.portrait { u.min(1.0 - u) * layout.screen.w() } else { v.min(1.0 - v) * layout.screen.h() };
+                    let e = e / (sc_short * 0.045);
+                    let dark = (1.0 - smoothstep(0.0, 1.0, e)) * 0.45;
+                    sc = [sc[0] * (1.0 - dark), sc[1] * (1.0 - dark), sc[2] * (1.0 - dark)];
+                    sc = mix(sc, white, (-((e - 0.35) / 0.12).powi(2)).exp() * 0.18);
+                }
+                if !tablet {
+                    if let Some((hx, hy, hr)) = hole {
+                        let dh = ((qx - hx).powi(2) + (qy - hy).powi(2)).sqrt() - hr;
+                        let ch = cov(dh);
+                        if ch > 0.0 {
+                            sc = mix(sc, [4.0, 4.0, 6.0], ch);
+                        }
                     }
+                }
+                if sheen_amount > 0.0 {
+                    let g = u * 0.6 + v * 0.4 - (0.55 - turn / 120.0 + tilt / 160.0);
+                    sc = mix(sc, white, sheen_amount * (-(g / 0.12).powi(2)).exp());
                 }
                 col = mix(col, sc, c);
             }
 
-            // 6. Touch indicators
+            // 7. Touch indicators
             for ind in &inds {
                 if let Some((sx, sy, ta)) = ind.trail {
                     // Distance to the segment from the trail start to the finger.
@@ -482,14 +685,19 @@ pub fn compose(out: &mut [u8], ow: usize, oh: usize, inp: &ComposeInput) {
                 }
             }
 
-            let n = hash(px, py);
-            let i = px * 4;
-            row[i] = (col[0] + 0.5 + n).clamp(0.0, 255.0) as u8;
-            row[i + 1] = (col[1] + 0.5 + n).clamp(0.0, 255.0) as u8;
-            row[i + 2] = (col[2] + 0.5 + n).clamp(0.0, 255.0) as u8;
-            row[i + 3] = 255;
+            write_px(row, px, col, py);
         }
     });
+}
+
+#[inline(always)]
+fn write_px(row: &mut [u8], px: usize, col: [f32; 3], py: usize) {
+    let n = hash(px, py);
+    let i = px * 4;
+    row[i] = (col[0] + 0.5 + n).clamp(0.0, 255.0) as u8;
+    row[i + 1] = (col[1] + 0.5 + n).clamp(0.0, 255.0) as u8;
+    row[i + 2] = (col[2] + 0.5 + n).clamp(0.0, 255.0) as u8;
+    row[i + 3] = 255;
 }
 
 #[cfg(test)]
@@ -512,6 +720,7 @@ mod tests {
             cam: CamState::IDENTITY,
             touches: &[],
             time: 0.0,
+            since_start: 0.0,
         };
         compose(&mut out, w, h, &inp);
         let px = |x: usize, y: usize| &out[(y * w + x) * 4..(y * w + x) * 4 + 4];
@@ -530,5 +739,36 @@ mod tests {
         // Top edge of the zoomed device must not come down into the frame.
         let (_, top) = layout.to_scene(cam, 960.0, 0.0);
         assert!(top >= layout.body.y0 - 0.5, "{top} vs {}", layout.body.y0);
+    }
+}
+
+
+#[cfg(test)]
+mod pose_tests {
+    use super::*;
+    use crate::model::Style;
+
+    #[test]
+    fn straightens_when_zoomed_and_intro_settles() {
+        let style = Style { turn: -28.0, tilt: 6.0, intro: true, ..Style::default() };
+        let zoomed = device_pose(&style, CamState { scale: 1.8, fx: 0.5, fy: 0.5 }, 5.0, 1080.0);
+        assert!(zoomed.0.abs() < 1e-3 && zoomed.1.abs() < 1e-3, "{zoomed:?}");
+        let start = device_pose(&style, CamState::IDENTITY, 0.0, 1080.0);
+        assert!(start.1 < -60.0 && start.3 > 500.0, "swings in from below, turned further: {start:?}");
+        let settled = device_pose(&style, CamState::IDENTITY, 3.0, 1080.0);
+        assert!((settled.1 + 28.0).abs() < 1e-3 && settled.3.abs() < 1e-3, "{settled:?}");
+    }
+
+    #[test]
+    fn angled_device_stays_inside_margins() {
+        let style = Style { tilt: 38.0, ..Style::default() };
+        let (w, h) = (320usize, 180usize);
+        let mut out = vec![0u8; w * h * 4];
+        let inp = ComposeInput { style: &style, screen: None, video_w: 1080.0, video_h: 2400.0, cam: CamState::IDENTITY, touches: &[], time: 0.0, since_start: 5.0 };
+        compose(&mut out, w, h, &inp);
+        // Top and bottom rows are background (no dark device pixels).
+        for y in [0, h - 1] {
+            assert!(out[y * w * 4..(y + 1) * w * 4].chunks(4).all(|p| p[0] > 60), "row {y} touches the device");
+        }
     }
 }

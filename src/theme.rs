@@ -155,6 +155,15 @@ pub fn secondary_button(ui: &mut Ui, text: &str) -> Response {
     ui.add(egui::Button::new(RichText::new(text).color(TEXT)).min_size(Vec2::new(0.0, 28.0)))
 }
 
+/// Rounded pill button for quick presets.
+pub fn chip(ui: &mut Ui, text: &str, selected: bool) -> Response {
+    let btn = egui::Button::new(RichText::new(text).font(regular(12.5)).color(if selected { Color32::WHITE } else { TEXT }))
+        .fill(if selected { ACCENT } else { Color32::from_rgb(62, 62, 67) })
+        .rounding(Rounding::same(12.0))
+        .min_size(Vec2::new(0.0, 24.0));
+    ui.add(btn).on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
 /// iOS-style switch.
 pub fn toggle(ui: &mut Ui, on: &mut bool) -> Response {
     let size = Vec2::new(36.0, 20.0);

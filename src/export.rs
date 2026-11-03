@@ -197,6 +197,7 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
                 cam: track.sample(t),
                 touches: &project.touches,
                 time: t,
+                since_start: t - start,
             },
         );
         if out_tx.send(buf).is_err() {
@@ -248,6 +249,9 @@ mod tests {
         project.export.folder = std::env::temp_dir().to_string_lossy().into_owned();
         project.export.resolution = Resolution::P720;
         project.export.fps = 30;
+        project.style.turn = -28.0;
+        project.style.tilt = 6.0;
+        project.style.intro = true;
         project.zooms.push(ZoomSegment { id: 1, start: 1.0, end: 4.0, scale: 2.0, x: 0.5, y: 0.2, auto: false });
         project.touches.push(Touch { time: 1.5, duration: 0.1, x: 0.5, y: 0.2, end_x: 0.5, end_y: 0.2, kind: TouchKind::Tap });
         let out = output_path(&project);

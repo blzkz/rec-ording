@@ -150,20 +150,41 @@ impl Aspect {
 pub enum FrameStyle {
     Rounded,
     Flat,
+    Curved,
+    Tablet,
     None,
 }
 
 impl FrameStyle {
-    pub const ALL: [FrameStyle; 3] = [FrameStyle::Rounded, FrameStyle::Flat, FrameStyle::None];
+    pub const ALL: [FrameStyle; 5] =
+        [FrameStyle::Rounded, FrameStyle::Flat, FrameStyle::Curved, FrameStyle::Tablet, FrameStyle::None];
 
     pub fn label(self) -> &'static str {
         match self {
             FrameStyle::Rounded => "Redondeado",
             FrameStyle::Flat => "Recto",
+            FrameStyle::Curved => "Curvo",
+            FrameStyle::Tablet => "Tablet",
             FrameStyle::None => "Sin marco",
         }
     }
 }
+
+/// A named device angle (degrees): `tilt` leans the top away, `turn` turns it sideways, `roll` spins it in the frame.
+pub struct AnglePreset {
+    pub name: &'static str,
+    pub tilt: f32,
+    pub turn: f32,
+    pub roll: f32,
+}
+
+pub const ANGLE_PRESETS: &[AnglePreset] = &[
+    AnglePreset { name: "Frente", tilt: 0.0, turn: 0.0, roll: 0.0 },
+    AnglePreset { name: "Izquierda", tilt: 6.0, turn: -28.0, roll: 2.0 },
+    AnglePreset { name: "Derecha", tilt: 6.0, turn: 28.0, roll: -2.0 },
+    AnglePreset { name: "Tumbado", tilt: 38.0, turn: 0.0, roll: 0.0 },
+    AnglePreset { name: "Dinámico", tilt: 18.0, turn: -24.0, roll: 9.0 },
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FrameColor {
@@ -253,6 +274,23 @@ pub struct Style {
     pub touch_size: f32,
     /// Zoom level used when generating automatic zooms.
     pub auto_zoom_scale: f32,
+    /// Device angle in degrees (see `AnglePreset`).
+    pub tilt: f32,
+    pub turn: f32,
+    pub roll: f32,
+    /// Face the camera while zoomed, so the app stays readable.
+    pub straighten_on_zoom: bool,
+    /// Slow idle sway.
+    pub float_motion: bool,
+    /// The device swings into place at the start of the video.
+    pub intro: bool,
+}
+
+impl Style {
+    /// Same look, seen straight on and without motion (used while picking a zoom's focus).
+    pub fn flattened(&self) -> Style {
+        Style { tilt: 0.0, turn: 0.0, roll: 0.0, float_motion: false, intro: false, ..self.clone() }
+    }
 }
 
 impl Default for Style {
@@ -267,6 +305,12 @@ impl Default for Style {
             show_touches: true,
             touch_size: 1.0,
             auto_zoom_scale: 1.8,
+            tilt: 0.0,
+            turn: 0.0,
+            roll: 0.0,
+            straighten_on_zoom: true,
+            float_motion: false,
+            intro: false,
         }
     }
 }

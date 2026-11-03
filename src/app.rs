@@ -969,10 +969,12 @@ impl RecOrdingApp {
 
         let editing = self.editing_zoom();
         let cam = if editing.is_some() { CamState::IDENTITY } else { self.cam_track.sample(self.time) };
+        // While picking a zoom's focus, show the device straight on so clicks land where they look.
+        let style = if editing.is_some() { self.project.style.flattened() } else { self.project.style.clone() };
         let key = RenderKey {
             time: self.time,
             frame: self.shown.as_ref().map(|f| Arc::as_ptr(&f.mips) as usize).unwrap_or(0),
-            style: self.project.style.clone(),
+            style: style.clone(),
             cam: (cam.scale.to_bits(), cam.fx.to_bits(), cam.fy.to_bits()),
             size: (ow, oh),
             touches: self.project.touches.len(),
@@ -984,13 +986,14 @@ impl RecOrdingApp {
                 ow,
                 oh,
                 &ComposeInput {
-                    style: &self.project.style,
+                    style: &style,
                     screen: self.shown.as_ref().map(|f| f.mips.as_ref()),
                     video_w: media.width as f32,
                     video_h: media.height as f32,
                     cam,
                     touches: &self.project.touches,
                     time: self.time,
+                    since_start: self.time - self.project.trim_start,
                 },
             );
             let img = ColorImage::from_rgba_unmultiplied([ow, oh], &self.viewer_buf);
@@ -1169,8 +1172,18 @@ impl RecOrdingApp {
         let style = &mut self.project.style;
 
         section(ui, "Dispositivo", |ui| {
-            let opts: Vec<(FrameStyle, &str)> = FrameStyle::ALL.iter().map(|f| (*f, f.label())).collect();
-            segmented(ui, &mut style.frame, &opts, ui.available_width());
+            let gap = 6.0;
+            let tile_w = ((ui.available_width() - gap * 2.0) / 3.0).floor();
+            for row in FrameStyle::ALL.chunks(3) {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = gap;
+                    for f in row {
+                        if model_tile(ui, *f, style.frame == *f, tile_w).clicked() {
+                            style.frame = *f;
+                        }
+                    }
+                });
+            }
             if style.frame != FrameStyle::None {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
@@ -1190,6 +1203,29 @@ impl RecOrdingApp {
                     ui.label(RichText::new(style.frame_color.label()).color(TEXT_2).font(regular(12.0)));
                 });
             }
+        });
+
+        section(ui, "Ángulo 3D", |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
+                for p in ANGLE_PRESETS {
+                    let on = (style.tilt - p.tilt).abs() < 0.01 && (style.turn - p.turn).abs() < 0.01 && (style.roll - p.roll).abs() < 0.01;
+                    if chip(ui, p.name, on).clicked() {
+                        style.tilt = p.tilt;
+                        style.turn = p.turn;
+                        style.roll = p.roll;
+                    }
+                }
+            });
+            ui.add_space(2.0);
+            let deg = |v: f32| format!("{v:.0}°");
+            slider_row(ui, "Inclinación", &mut style.tilt, -40.0..=40.0, deg);
+            slider_row(ui, "Giro", &mut style.turn, -45.0..=45.0, deg);
+            slider_row(ui, "Rotación", &mut style.roll, -25.0..=25.0, deg);
+            ui.add_space(2.0);
+            toggle_row(ui, "Enderezar al hacer zoom", "Para que la app se lea bien de cerca", &mut style.straighten_on_zoom);
+            toggle_row(ui, "Flotar suavemente", "Un leve balanceo continuo", &mut style.float_motion);
+            toggle_row(ui, "Animación de entrada", "El móvil entra girando al empezar", &mut style.intro);
         });
 
         section(ui, "Fondo", |ui| {
@@ -1983,5 +2019,42 @@ fn device_row(ui: &mut Ui, d: &Device, selected: bool) -> egui::Response {
         p.circle_filled(Pos2::new(rect.right() - 22.0, rect.center().y), 9.0, ACCENT);
         icon_check(p, Pos2::new(rect.right() - 22.0, rect.center().y), 12.0, Color32::WHITE);
     }
+    resp
+}
+
+/// A device model button with a small drawing of its shape.
+fn model_tile(ui: &mut Ui, f: FrameStyle, selected: bool, width: f32) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 66.0), Sense::click());
+    let resp = resp.on_hover_cursor(CursorIcon::PointingHand);
+    let h = ui.ctx().animate_bool(resp.id, resp.hovered());
+    let p = ui.painter();
+    p.rect_filled(rect, Rounding::same(8.0), lerp_color(Color32::from_rgb(56, 56, 61), Color32::from_rgb(68, 68, 74), h));
+    if selected {
+        p.rect_stroke(rect, Rounding::same(8.0), Stroke::new(2.0_f32, ACCENT));
+    }
+    let c = Pos2::new(rect.center().x, rect.top() + 25.0);
+    let line = if selected { TEXT } else { TEXT_2 };
+    let screen = Color32::from_rgb(92, 104, 130);
+    let (size, r, bezel) = match f {
+        FrameStyle::Rounded => (Vec2::new(17.0, 32.0), 5.0, 2.0),
+        FrameStyle::Flat => (Vec2::new(17.0, 32.0), 1.5, 1.8),
+        FrameStyle::Curved => (Vec2::new(17.0, 32.0), 3.5, 1.2),
+        FrameStyle::Tablet => (Vec2::new(36.0, 26.0), 3.0, 3.0),
+        FrameStyle::None => (Vec2::new(15.0, 30.0), 3.0, 0.0),
+    };
+    let body = Rect::from_center_size(c, size);
+    if f == FrameStyle::None {
+        p.rect_filled(body, Rounding::same(r), screen);
+    } else {
+        p.rect_filled(body, Rounding::same(r), Color32::from_rgb(24, 24, 27));
+        p.rect_filled(body.shrink(bezel), Rounding::same((r - bezel).max(0.5)), screen);
+        p.rect_stroke(body, Rounding::same(r), Stroke::new(1.5_f32, line));
+        if f == FrameStyle::Curved {
+            for x in [body.left() + 2.6, body.right() - 2.6] {
+                p.line_segment([Pos2::new(x, body.top() + 4.0), Pos2::new(x, body.bottom() - 4.0)], Stroke::new(1.0_f32, Color32::from_white_alpha(90)));
+            }
+        }
+    }
+    p.text(Pos2::new(rect.center().x, rect.bottom() - 11.0), Align2::CENTER_CENTER, f.label(), regular(11.5), line);
     resp
 }

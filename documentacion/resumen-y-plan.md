@@ -19,8 +19,16 @@ La 0.3.0 se reconstruye alrededor de un flujo de tres pasos (grabar → ajustar 
 
 Se han retirado, de momento, el servidor MCP, el autoactualizador, los subtítulos falsos, las máscaras de privacidad, los títulos y el modo dual PC + móvil.
 
+## v0.4.0: móvil en 3D
+
+- Ángulo 3D con perspectiva real: inclinación, giro y rotación, con accesos rápidos (Frente, Izquierda, Derecha, Tumbado, Dinámico).
+- El móvil tiene grosor: los cantos se ven e iluminan al girarlo, y la pantalla tiene un reflejo sutil.
+- Se endereza solo al hacer zoom, para que la app se lea; opcionalmente flota o entra girando al empezar.
+- Nuevos modelos: Curvo (pantalla con bordes curvados) y Tablet (marco ancho, cámara en el marco).
+
 ## Ideas para siguientes versiones
 
+- Importar modelos 3D (.glb / .gltf) y proyectar la grabación en su pantalla.
 - Títulos y textos animados sobre el vídeo (intro, llamada a la acción).
 - Desenfocar zonas sensibles (correos, tokens).
 - Fondos con imagen propia.
