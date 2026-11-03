@@ -1,25 +1,19 @@
 mod app;
-mod mcp;
+mod camera;
+mod capture;
+mod compositor;
+mod export;
+mod media;
 mod model;
-mod renderer3d;
-mod workers;
-
-use app::RecOrdingApp;
+mod theme;
 
 fn main() -> eframe::Result<()> {
-    let args: Vec<String> = std::env::args().collect();
-    let bin_name = args.first().map(|s| s.as_str()).unwrap_or("");
-
-    if args.iter().any(|a| a == "--mcp") || bin_name.ends_with("rec-ording-mcp") {
-        mcp::run_stdio_mcp_server();
-        return Ok(());
-    }
-
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("rec-ording — Estudio 3D Nativo en Rust + Vulkan + FFmpeg + MCP")
-            .with_inner_size([1560.0, 920.0])
-            .with_min_inner_size([1120.0, 680.0]),
+            .with_title("rec-ording")
+            .with_app_id("rec-ording")
+            .with_inner_size([1440.0, 900.0])
+            .with_min_inner_size([1080.0, 680.0]),
         renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
@@ -27,6 +21,6 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "rec-ording",
         native_options,
-        Box::new(|cc| Ok(Box::new(RecOrdingApp::new(cc)))),
+        Box::new(|cc| Ok(Box::new(app::RecOrdingApp::new(cc)))),
     )
 }

@@ -1,28 +1,21 @@
 # Maintainer: blzkz <sergiobl88@gmail.com>
 pkgname=rec-ording
-pkgver=0.2.0
+pkgver=0.3.0
 pkgrel=1
-pkgdesc="Grabador de pantalla y estudio 3D 100% Rust + Vulkan (egui + wgpu + Rayon multihilo + FFmpeg + ADB + MCP)"
+pkgdesc="Graba tu móvil Android y conviértelo en un vídeo promocional con marco, fondo y zooms automáticos"
 arch=('x86_64')
 url="https://github.com/blzkz/rec-ording"
 license=('MIT')
 depends=('vulkan-icd-loader' 'ffmpeg')
 optdepends=(
-  'android-tools: Captura de pantalla y eventos táctiles por USB (ADB)'
-  'github-cli: Auto-actualización directa desde el repositorio privado de GitHub'
+  'scrcpy: grabar el móvil con sonido y sin límite de tiempo (recomendado)'
+  'android-tools: detectar el móvil por USB y registrar los toques (adb)'
+  'zenity: diálogos para elegir archivos y carpetas'
 )
 options=('!debug' '!strip')
 
 package() {
   local root_dir="${startdir}/../.."
-
-  # Binario principal 100% Rust nativo (egui + Vulkan wgpu + Rayon + MCP integrado)
   install -Dm755 "${root_dir}/target/release/rec-ording" "${pkgdir}/usr/bin/rec-ording"
-
-  # Enlace directo rec-ording-mcp (ejecuta el mismo binario en modo servidor MCP --mcp sin Node.js)
-  install -dm755 "${pkgdir}/usr/bin"
-  ln -sf /usr/bin/rec-ording "${pkgdir}/usr/bin/rec-ording-mcp"
-
-  # Entrada de escritorio (.desktop)
   install -Dm644 "${startdir}/rec-ording.desktop" "${pkgdir}/usr/share/applications/rec-ording.desktop"
 }

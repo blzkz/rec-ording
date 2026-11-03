@@ -1,4 +1,4 @@
-name: Release CachyOS / Arch Linux Package (Pure Rust + Vulkan)
+name: Release Arch Linux package
 
 on:
   push:
@@ -12,14 +12,14 @@ jobs:
     container:
       image: archlinux:base-devel
     steps:
-      - name: Install Arch dependencies (Pure Rust + Vulkan)
+      - name: Install Arch dependencies
         run: |
-          pacman -Syu --noconfirm rust cargo vulkan-icd-loader ffmpeg android-tools git github-cli
+          pacman -Syu --noconfirm rust cargo vulkan-icd-loader ffmpeg git github-cli
 
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Build Pure Rust + Vulkan Binary
+      - name: Build release binary
         run: |
           cargo build --release
 
@@ -36,4 +36,4 @@ jobs:
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
           gh release upload "$TAG" packaging/arch/*.pkg.tar.zst --clobber || \
-          gh release create "$TAG" packaging/arch/*.pkg.tar.zst --title "rec-ording $TAG (100% Rust + Vulkan · Arch / CachyOS)" --notes "Paquete nativo 100% Rust + Vulkan (wgpu) + Rayon multihilo (.pkg.tar.zst) para Arch Linux y CachyOS. Cero Node.js / Cero WebView."
+          gh release create "$TAG" packaging/arch/*.pkg.tar.zst --title "rec-ording $TAG" --notes "Paquete para Arch Linux / CachyOS. Instálalo con: sudo pacman -U rec-ording-*.pkg.tar.zst"

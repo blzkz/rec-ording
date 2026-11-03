@@ -1,11 +1,11 @@
 [Desktop Entry]
 Name=rec-ording
-GenericName=3D Screen Recorder & Video Editor
-Comment=Grabador de pantalla y editor 3D para demos de Android (ADB) y PC con FFmpeg y MCP
+GenericName=Vídeos promocionales de apps
+Comment=Graba tu móvil Android y crea vídeos con marco, fondo y zooms automáticos
 Exec=/usr/bin/rec-ording
 Icon=rec-ording
 Terminal=false
 Type=Application
-Categories=AudioVideo;Video;Recorder;Development;
-Keywords=android;adb;screen;recorder;3d;ffmpeg;playstore;mcp;
+Categories=AudioVideo;Video;Recorder;
+Keywords=android;adb;scrcpy;screen;recorder;mockup;promo;playstore;
 StartupWMClass=rec-ording
