@@ -100,6 +100,8 @@ Se han retirado, de momento, el servidor MCP, el autoactualizador, los subtítul
 
 ## Ideas para siguientes versiones
 
+- **Siguiente sesión:** iluminación con estilos (Estudio, Suave, Dramática, Contraluz…) y postprocesado (desenfoque de movimiento ajustable, antialiasing, vista previa en la tarjeta gráfica). Ver `plan-iluminacion-postproceso.md`.
+
 - Desenfocar zonas sensibles (correos, tokens).
 - Fondos con imagen propia.
 - Recortar y acelerar tramos intermedios (no solo el inicio y el final).
