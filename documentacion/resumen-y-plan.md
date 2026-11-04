@@ -87,6 +87,11 @@ Se han retirado, de momento, el servidor MCP, el autoactualizador, los subtítul
 - Icono propio (SVG y PNG instalados en el tema hicolor, y dentro del .exe en Windows): ya aparece en la barra de tareas y el lanzador.
 - El panel derecho ya no se sale por la derecha: el desplegable de la pantalla del modelo recorta los nombres largos en lugar de ensanchar todo el panel.
 
+## v0.8.3: icono en todos los tamaños y barra de desplazamiento
+
+- El icono se instala en todos los tamaños habituales (16 a 512 px) y en `/usr/share/pixmaps`. Si KDE no lo muestra tras instalar por primera vez, hay que reiniciar Plasma o volver a iniciar sesión: Plasma guarda en memoria que el icono no existía.
+- La barra de desplazamiento del panel derecho tiene su propio carril y ya no tapa los controles.
+
 ## Ideas para siguientes versiones
 
 - Desenfocar zonas sensibles (correos, tokens).

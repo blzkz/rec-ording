@@ -1,6 +1,6 @@
 # Maintainer: blzkz <sergiobl88@gmail.com>
 pkgname=rec-ording
-pkgver=0.8.2
+pkgver=0.8.3
 pkgrel=1
 pkgdesc="Graba tu móvil Android y conviértelo en un vídeo promocional con marco, fondo y zooms automáticos"
 arch=('x86_64')
@@ -22,8 +22,10 @@ package() {
   install -Dm644 "${startdir}/rec-ording.desktop" "${pkgdir}/usr/share/applications/rec-ording.desktop"
   # Icono de la app (lanzador y barra de tareas)
   install -Dm644 "${root_dir}/assets/icons/rec-ording.svg" "${pkgdir}/usr/share/icons/hicolor/scalable/apps/rec-ording.svg"
-  install -Dm644 "${root_dir}/assets/icons/rec-ording-256.png" "${pkgdir}/usr/share/icons/hicolor/256x256/apps/rec-ording.png"
-  install -Dm644 "${root_dir}/assets/icons/rec-ording-512.png" "${pkgdir}/usr/share/icons/hicolor/512x512/apps/rec-ording.png"
+  for size in 16 24 32 48 64 128 256 512; do
+    install -Dm644 "${root_dir}/assets/icons/rec-ording-${size}.png" "${pkgdir}/usr/share/icons/hicolor/${size}x${size}/apps/rec-ording.png"
+  done
+  install -Dm644 "${root_dir}/assets/icons/rec-ording-256.png" "${pkgdir}/usr/share/pixmaps/rec-ording.png"
   # Licencia de la tipografía de los títulos (va dentro del programa)
   install -Dm644 "${root_dir}/assets/fonts/OFL.txt" "${pkgdir}/usr/share/licenses/${pkgname}/Inter-OFL.txt"
 

@@ -11,18 +11,24 @@ impl RecOrdingApp {
             .frame(
                 egui::Frame::none()
                     .fill(SIDEBAR)
-                    .inner_margin(Margin { left: 14.0, right: 14.0, top: 12.0, bottom: 12.0 })
+                    // The scroll bar takes the rest of the right margin (see below).
+                    .inner_margin(Margin { left: 14.0, right: 6.0, top: 12.0, bottom: 12.0 })
                     .stroke(Stroke::new(1.0_f32, Color32::from_rgb(18, 18, 20))),
             )
             .show(ctx, |ui| {
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 8.0;
-                    if self.director_mode {
-                        self.director_inspector(ui);
-                    }
-                    self.selection_inspector(ui);
-                    self.style_inspector(ui);
-                });
+                // A scroll bar with its own lane, so it never covers the controls.
+                ui.spacing_mut().scroll = egui::style::ScrollStyle { dormant_handle_opacity: 0.3, ..egui::style::ScrollStyle::solid() };
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 8.0;
+                        if self.director_mode {
+                            self.director_inspector(ui);
+                        }
+                        self.selection_inspector(ui);
+                        self.style_inspector(ui);
+                    });
             });
     }
 
