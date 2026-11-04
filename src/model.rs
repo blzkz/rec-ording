@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 pub const PROJECT_VERSION: u32 = 4;
 
@@ -681,14 +680,10 @@ impl ExportSettings {
 
 // ---------- Locations ----------
 
-fn home() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()))
-}
-
 pub fn data_dir() -> PathBuf {
     let base = std::env::var("XDG_DATA_HOME")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| home().join(".local/share"));
+        .unwrap_or_else(|_| crate::platform::data_home());
     let dir = base.join("rec-ording");
     let _ = fs::create_dir_all(&dir);
     dir
@@ -697,36 +692,22 @@ pub fn data_dir() -> PathBuf {
 pub fn cache_dir() -> PathBuf {
     let base = std::env::var("XDG_CACHE_HOME")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| home().join(".cache"));
+        .unwrap_or_else(|_| crate::platform::cache_home());
     let dir = base.join("rec-ording");
     let _ = fs::create_dir_all(&dir);
     dir
 }
 
-/// `~/Vídeos/rec-ording` (localized through xdg-user-dir), created on demand.
+/// `~/Vídeos/rec-ording`, created on demand.
 pub fn videos_dir() -> PathBuf {
-    let base = Command::new("xdg-user-dir")
-        .arg("VIDEOS")
-        .output()
-        .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty() && Path::new(s).is_dir())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home().join("Videos"));
-    let dir = base.join("rec-ording");
+    let dir = crate::platform::videos_home().join("rec-ording");
     let _ = fs::create_dir_all(&dir);
     dir
 }
 
 /// Local timestamp suitable for file names, e.g. `2026-11-03 14.32.10`.
 pub fn timestamp_for_filename() -> String {
-    Command::new("date")
-        .arg("+%Y-%m-%d %H.%M.%S")
-        .output()
-        .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| {
+    crate::platform::local_timestamp().unwrap_or_else(|| {
             let secs = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())

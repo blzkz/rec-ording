@@ -69,6 +69,24 @@ cargo build --release
 ./target/release/rec-ording
 ```
 
+### Windows
+
+Descarga `rec-ording-<versión>-windows-x64.zip`, descomprímelo y abre `rec-ording.exe`. Lo genera el workflow **Windows** de GitHub Actions en cada cambio de `main`, y en cada etiqueta `v*` lo añade a la release. Instala las herramientas con:
+
+```powershell
+winget install Gyan.FFmpeg
+winget install Google.PlatformTools
+winget install Genymobile.scrcpy
+```
+
+En Windows las grabaciones se guardan en `.mkv` (scrcpy no se puede detener limpiamente desde otro proceso, y un MKV cortado sigue funcionando). Los proyectos están en `%APPDATA%\rec-ording`.
+
+Para compilarlo desde Linux (necesita `rustup target add x86_64-pc-windows-gnu` y `mingw-w64-gcc`):
+
+```bash
+./packaging/windows/build-local.sh
+```
+
 ## Cómo está hecho
 
 Aplicación nativa en Rust con [egui](https://github.com/emilk/egui).
@@ -84,6 +102,7 @@ Aplicación nativa en Rust con [egui](https://github.com/emilk/egui).
 | `library.rs` | Galería de modelos: los incluidos en `assets/models` y los importados, con miniaturas renderizadas. |
 | `export.rs` | Decodifica la grabación, compone cada fotograma y codifica el resultado con ffmpeg. |
 | `app/`, `theme.rs` | Interfaz: visor, línea de tiempo, inspector y hojas. |
+| `platform.rs` | Lo que cambia entre Linux y Windows: carpetas, diálogos de archivos, abrir archivos y lanzar herramientas sin ventana de consola. |
 
 Tests: `cargo test` (incluye una prueba que monta y exporta un vídeo a través del servidor MCP). Con un vídeo o un móvil reales:
 

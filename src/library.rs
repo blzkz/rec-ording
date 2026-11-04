@@ -38,6 +38,7 @@ fn bundled_dir() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let bin = exe.parent()?;
     [
+        bin.join("models"),
         bin.join("../share/rec-ording/models"),
         bin.join("../../assets/models"),
         PathBuf::from("/usr/share/rec-ording/models"),
@@ -63,8 +64,11 @@ pub fn list() -> Vec<LibraryModel> {
         for e in entries {
             let p = dir.join(&e.file);
             if p.is_file() {
+                let path = p.canonicalize().unwrap_or(p).to_string_lossy().into_owned();
+                // Windows canonical paths start with \\?\, which other tools may not understand.
+                let path = path.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(path);
                 out.push(LibraryModel {
-                    path: p.canonicalize().unwrap_or(p).to_string_lossy().into_owned(),
+                    path,
                     name: e.name,
                     author: e.author,
                     license: e.license,
@@ -154,7 +158,7 @@ pub fn import_any(path: &Path) -> Result<(PathBuf, ModelSource), String> {
     let _ = std::fs::remove_dir_all(&tmp);
     std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
     let result = (|| {
-        let ok = std::process::Command::new("unzip")
+        let ok = crate::platform::command("unzip")
             .args(["-q", "-o"])
             .arg(path)
             .arg("-d")
@@ -162,9 +166,11 @@ pub fn import_any(path: &Path) -> Result<(PathBuf, ModelSource), String> {
             .status()
             .map(|s| s.success())
             .or_else(|_| {
-                std::process::Command::new("bsdtar").arg("-xf").arg(path).arg("-C").arg(&tmp).status().map(|s| s.success())
+                crate::platform::command("bsdtar").arg("-xf").arg(path).arg("-C").arg(&tmp).status().map(|s| s.success())
             })
-            .map_err(|_| "Para importar un .zip hace falta unzip (sudo pacman -S unzip).".to_string())?;
+            // Windows 10 and later ship bsdtar as tar.exe.
+            .or_else(|_| crate::platform::command("tar").arg("-xf").arg(path).arg("-C").arg(&tmp).status().map(|s| s.success()))
+            .map_err(|_| format!("Para importar un .zip hace falta unzip ({}).", crate::platform::install_hint(&["unzip"])))?;
         if !ok {
             return Err("No se pudo descomprimir el .zip".to_string());
         }

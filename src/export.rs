@@ -6,7 +6,8 @@ use crate::model::{ExportFormat, Project, Quality};
 use crossbeam_channel::{bounded, Sender};
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use crate::platform::command;
+use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -105,7 +106,7 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
         .collect::<Result<_, String>>()?;
 
     // Encoder: input 0 is the rendered video, then one audio input per clip.
-    let mut enc = Command::new("ffmpeg");
+    let mut enc = command("ffmpeg");
     enc.args(["-nostdin", "-y", "-loglevel", "error"])
         .args(["-f", "rawvideo", "-pix_fmt", "rgba", "-s", &format!("{ow}x{oh}"), "-r", &fps.to_string(), "-i", "-"]);
     let audio = settings.include_audio && parts.iter().any(|p| p.audio) && settings.format != ExportFormat::Gif;
@@ -184,7 +185,7 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
             if part.frames == 0 {
                 continue;
             }
-            let spawned = Command::new("ffmpeg")
+            let spawned = command("ffmpeg")
                 .args(["-nostdin", "-loglevel", "error", "-ss", &format!("{:.3}", part.from), "-t", &format!("{:.3}", part.len), "-i", &part.path])
                 .args(["-vf", &format!("scale={}:{},fps={fps}", part.w, part.h), "-an", "-f", "rawvideo", "-pix_fmt", "rgba", "-"])
                 .stdin(Stdio::null())

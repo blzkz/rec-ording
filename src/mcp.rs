@@ -14,7 +14,8 @@ use crossbeam_channel::{unbounded, Receiver};
 use serde_json::{json, Value};
 use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use crate::platform::command;
+use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -709,7 +710,7 @@ fn decode_frame(p: &Project, t: f32) -> Result<(Frame, f32, f32), String> {
     let c = timeline::locate(p, t).ok_or("El proyecto no tiene vídeo")?;
     let m = p.media(c.clip.media).ok_or("Falta la grabación")?;
     let (w, h) = media::preview_size(&m.info);
-    let mut child = Command::new("ffmpeg")
+    let mut child = command("ffmpeg")
         .args(["-nostdin", "-loglevel", "error", "-ss", &format!("{:.3}", timeline::source_time(&c, t)), "-i", &m.info.path])
         .args(["-frames:v", "1", "-vf", &format!("scale={w}:{h}"), "-f", "rawvideo", "-pix_fmt", "rgba", "-"])
         .stdin(Stdio::null())
@@ -749,7 +750,7 @@ pub fn render_png(p: &Project, t: f32, width: usize, model: Option<&PreparedMode
             supersample: 2,
         },
     );
-    let mut enc = Command::new("ffmpeg")
+    let mut enc = command("ffmpeg")
         .args(["-nostdin", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", &format!("{ow}x{oh}"), "-i", "-"])
         .args(["-frames:v", "1", "-c:v", "png", "-f", "image2pipe", "-"])
         .stdin(Stdio::piped())

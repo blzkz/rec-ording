@@ -1,0 +1,21 @@
+rec-ording para Windows
+=======================
+
+Descomprime la carpeta donde quieras y abre rec-ording.exe.
+
+Necesitas ffmpeg para importar y exportar vídeos. Para grabar el móvil,
+también necesitas adb y scrcpy. Instálalos desde PowerShell con:
+
+    winget install Gyan.FFmpeg
+    winget install Google.PlatformTools
+    winget install Genymobile.scrcpy
+
+Cierra y vuelve a abrir rec-ording después de instalarlos. Otra opción
+es copiar ffmpeg.exe, ffprobe.exe, adb.exe y scrcpy.exe junto a
+rec-ording.exe.
+
+En Windows las grabaciones se guardan en .mkv, en Vídeos\rec-ording.
+Tus proyectos están en %APPDATA%\rec-ording.
+
+Asistente (MCP): en la app, pulsa «Asistente» para copiar la
+configuración de Claude, Cursor u otros.

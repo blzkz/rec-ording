@@ -19,7 +19,6 @@ use egui::{
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -185,32 +184,14 @@ fn fmt_secs(t: f32) -> String {
     format!("{t:.1} s").replace('.', ",")
 }
 
-fn open_path(path: &std::path::Path) {
-    let _ = Command::new("xdg-open").arg(path).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn();
-}
+use crate::platform::open_path;
 
 fn home_relative(p: &str) -> String {
-    match std::env::var("HOME") {
-        Ok(h) if p.starts_with(&h) => format!("~{}", &p[h.len()..]),
+    let h = crate::platform::home().to_string_lossy().into_owned();
+    match p.strip_prefix(&h) {
+        Some(rest) if !h.is_empty() => format!("~{rest}"),
         _ => p.to_string(),
     }
-}
-
-/// Runs the desktop's file dialog (kdialog on KDE, zenity elsewhere).
-/// `Err` means no dialog tool is available, `Ok(None)` that the user cancelled.
-fn run_picker(zenity: &[&str], kdialog: &[&str]) -> Result<Option<String>, ()> {
-    let kde = std::env::var("XDG_CURRENT_DESKTOP").map(|d| d.to_uppercase().contains("KDE")).unwrap_or(false);
-    let mut tries: Vec<(&str, &[&str])> = vec![("zenity", zenity), ("kdialog", kdialog)];
-    if kde {
-        tries.reverse();
-    }
-    for (cmd, args) in tries {
-        if let Ok(out) = Command::new(cmd).args(args).output() {
-            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            return Ok((out.status.success() && !s.is_empty()).then_some(s));
-        }
-    }
-    Err(())
 }
 
 /// Reads a project and returns it with the in-memory revision (0) plus its revision on disk.
@@ -431,20 +412,11 @@ impl RecOrdingApp {
 
     fn pick_video(&self) {
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
-        let home = std::env::var("HOME").unwrap_or_default();
         thread::spawn(move || {
-            let res = run_picker(
-                &[
-                    "--file-selection",
-                    "--title=Importar vídeo",
-                    "--file-filter=Vídeos | *.mp4 *.MP4 *.mov *.MOV *.mkv *.webm",
-                    "--file-filter=Todos los archivos | *",
-                ],
-                &["--getopenfilename", &home, "Vídeos (*.mp4 *.MP4 *.mov *.MOV *.mkv *.webm)"],
-            );
+            let res = crate::platform::pick_file("Importar vídeo", "Vídeos", &["mp4", "mov", "mkv", "webm"], &videos_dir());
             match res {
                 Ok(Some(p)) => {
-                    let _ = tx.send(AppEvent::ImportPicked(PathBuf::from(p)));
+                    let _ = tx.send(AppEvent::ImportPicked(p));
                 }
                 Ok(None) => {}
                 Err(()) => {
@@ -457,15 +429,11 @@ impl RecOrdingApp {
 
     fn pick_model(&self) {
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
-        let home = std::env::var("HOME").unwrap_or_default();
         thread::spawn(move || {
-            let res = run_picker(
-                &["--file-selection", "--title=Importar modelo 3D", "--file-filter=Modelos 3D | *.glb *.gltf *.GLB *.GLTF *.zip *.ZIP"],
-                &["--getopenfilename", &home, "Modelos 3D (*.glb *.gltf *.zip)"],
-            );
+            let res = crate::platform::pick_file("Importar modelo 3D", "Modelos 3D", &["glb", "gltf", "zip"], &crate::platform::home());
             match res {
                 Ok(Some(p)) => {
-                    let _ = tx.send(AppEvent::ModelPicked(PathBuf::from(p)));
+                    let _ = tx.send(AppEvent::ModelPicked(p));
                 }
                 Ok(None) => {}
                 Err(()) => {
@@ -589,12 +557,8 @@ impl RecOrdingApp {
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
         let current = self.project.export.folder.clone();
         thread::spawn(move || {
-            let res = run_picker(
-                &["--file-selection", "--directory", "--title=Guardar vídeos en", &format!("--filename={current}/")],
-                &["--getexistingdirectory", &current],
-            );
-            if let Ok(Some(p)) = res {
-                let _ = tx.send(AppEvent::FolderPicked(PathBuf::from(p)));
+            if let Ok(Some(p)) = crate::platform::pick_folder("Guardar vídeos en", std::path::Path::new(&current)) {
+                let _ = tx.send(AppEvent::FolderPicked(p));
             }
             ctx.request_repaint();
         });
@@ -1335,7 +1299,7 @@ impl RecOrdingApp {
             if !missing.is_empty() {
                 c.add_space(18.0);
                 c.label(
-                    RichText::new(format!("Para usar todas las funciones instala: sudo pacman -S {}", missing.join(" ")))
+                    RichText::new(format!("Para usar todas las funciones instala:\n{}", crate::platform::install_hint(&missing)))
                         .font(regular(12.5))
                         .color(YELLOW),
                 );
@@ -1893,7 +1857,8 @@ impl RecOrdingApp {
             ui.add_space(10.0);
 
             if !self.tools.adb {
-                info_box(ui, YELLOW, "Para grabar necesitas adb y scrcpy. Instálalos con:\nsudo pacman -S android-tools scrcpy");
+                let hint = crate::platform::install_hint(&["android-tools", "scrcpy"]);
+                info_box(ui, YELLOW, &format!("Para grabar necesitas adb y scrcpy. Instálalos con:\n{hint}"));
             } else {
                 ui.label(RichText::new("Dispositivo").font(medium(12.5)).color(TEXT_2));
                 if self.devices.is_empty() {

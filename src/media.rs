@@ -8,7 +8,8 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use crate::platform::command;
+use std::process::{Child, Stdio};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -17,7 +18,7 @@ pub const PREVIEW_FPS: f32 = 30.0;
 const PREVIEW_MAX_SIDE: f32 = 1280.0;
 
 pub fn probe(path: &str) -> Result<MediaInfo, String> {
-    let out = Command::new("ffprobe")
+    let out = command("ffprobe")
         .args(["-v", "error", "-show_streams", "-show_format", "-of", "json", path])
         .output()
         .map_err(|e| format!("No se pudo ejecutar ffprobe ({e}). ¿Está instalado ffmpeg?"))?;
@@ -109,7 +110,7 @@ pub fn build_proxy(info: &MediaInfo) -> Result<PathBuf, String> {
     }
     let (w, h) = preview_size(info);
     let tmp = path.with_extension("tmp.mp4");
-    let out = Command::new("ffmpeg")
+    let out = command("ffmpeg")
         .args(["-nostdin", "-y", "-loglevel", "error", "-i", &info.path])
         .args(["-vf", &format!("scale={w}:{h},fps={PREVIEW_FPS}")])
         .args(["-an", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "20", "-g", "10"])
@@ -130,7 +131,7 @@ pub fn thumbnails(path: &Path, duration: f32, aspect: f32, count: usize, height:
     let h = height.max(2);
     let w = (((h as f32 * aspect).round() as usize) / 2 * 2).max(2);
     let rate = count as f32 / duration.max(0.1);
-    let out = Command::new("ffmpeg")
+    let out = command("ffmpeg")
         .args(["-nostdin", "-loglevel", "error", "-i"])
         .arg(path)
         .args(["-vf", &format!("fps={rate:.4},scale={w}:{h}"), "-an", "-f", "rawvideo", "-pix_fmt", "rgba", "-"])
@@ -196,7 +197,7 @@ impl PreviewDecoder {
 }
 
 fn spawn_decoder(src: &Source, t: f32, single: bool) -> Option<Child> {
-    let mut cmd = Command::new("ffmpeg");
+    let mut cmd = command("ffmpeg");
     cmd.args(["-nostdin", "-loglevel", "error", "-ss", &format!("{:.3}", t.max(0.0)), "-i", &src.path]);
     if single {
         cmd.args(["-frames:v", "1", "-vf", &format!("scale={}:{}", src.w, src.h)]);

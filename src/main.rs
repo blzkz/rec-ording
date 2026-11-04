@@ -1,3 +1,6 @@
+// No console window behind the app on Windows (`--mcp` still talks over the pipes it is given).
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod app;
 mod capture;
 mod compositor;
@@ -7,6 +10,7 @@ mod mcp;
 mod media;
 mod model;
 mod model3d;
+mod platform;
 mod theme;
 mod timeline;
 

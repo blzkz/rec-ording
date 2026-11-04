@@ -74,8 +74,11 @@ impl RecOrdingApp {
 
     pub(super) fn assistant_sheet(&mut self, ctx: &egui::Context) {
         let exe = std::env::current_exe().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| "/usr/bin/rec-ording".into());
-        let json = format!("{{\n  \"mcpServers\": {{\n    \"rec-ording\": {{\n      \"command\": \"{exe}\",\n      \"args\": [\"--mcp\"]\n    }}\n  }}\n}}");
-        let claude_code = format!("claude mcp add rec-ording -- {exe} --mcp");
+        // Escaped as JSON, since Windows paths have backslashes.
+        let command = serde_json::to_string(&exe).unwrap_or_default();
+        let json = format!("{{\n  \"mcpServers\": {{\n    \"rec-ording\": {{\n      \"command\": {command},\n      \"args\": [\"--mcp\"]\n    }}\n  }}\n}}");
+        let quoted = if exe.contains(char::is_whitespace) { format!("\"{exe}\"") } else { exe.clone() };
+        let claude_code = format!("claude mcp add rec-ording -- {quoted} --mcp");
         let mut close = false;
         let mut copied: Option<&str> = None;
         Self::sheet_window(ctx, "assistant", 480.0, |ui| {

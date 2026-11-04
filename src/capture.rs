@@ -4,6 +4,7 @@
 use crate::model::{timestamp_for_filename, videos_dir, Touch, TouchKind};
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
+use crate::platform::command;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -18,7 +19,7 @@ pub struct Tools {
 }
 
 fn runs(cmd: &str, arg: &str) -> bool {
-    Command::new(cmd)
+    command(cmd)
         .arg(arg)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -45,7 +46,7 @@ pub struct Device {
 }
 
 pub fn list_devices() -> Vec<Device> {
-    let Ok(out) = Command::new("adb").args(["devices", "-l"]).output() else {
+    let Ok(out) = command("adb").args(["devices", "-l"]).output() else {
         return Vec::new();
     };
     String::from_utf8_lossy(&out.stdout)
@@ -118,7 +119,7 @@ pub enum CaptureResult {
 }
 
 fn adb(serial: &str) -> Command {
-    let mut c = Command::new("adb");
+    let mut c = command("adb");
     c.args(["-s", serial]);
     c
 }
@@ -316,7 +317,10 @@ fn pipe_lines<R: std::io::Read + Send + 'static>(
 }
 
 pub fn start(serial: &str, opts: &RecordOptions, tools: Tools) -> Result<Recording, String> {
-    let path = videos_dir().join(format!("Grabación {}.mp4", timestamp_for_filename()));
+    // Windows can't ask scrcpy to stop cleanly (see `finish`), so there it records to MKV, which
+    // stays playable when cut off.
+    let format = if cfg!(windows) { "mkv" } else { "mp4" };
+    let path = videos_dir().join(format!("Grabación {}.{format}", timestamp_for_filename()));
     let base = Instant::now();
     let log = Arc::new(Mutex::new(Vec::new()));
     let rec_started = Arc::new(Mutex::new(None));
@@ -326,15 +330,16 @@ pub fn start(serial: &str, opts: &RecordOptions, tools: Tools) -> Result<Recordi
         // scrcpy logs to stdout, which is block-buffered on a pipe; stdbuf makes it line-buffered
         // so "Recording started" (our sync point for touches) arrives on time.
         let mut cmd = if runs("stdbuf", "--version") {
-            let mut c = Command::new("stdbuf");
+            let mut c = command("stdbuf");
             c.args(["-oL", "-eL", "scrcpy"]);
             c
         } else {
-            Command::new("scrcpy")
+            command("scrcpy")
         };
         cmd.args(["-s", serial])
             .arg(format!("--record={}", path.display()))
-            .args(["--record-format=mp4", "--video-bit-rate=20M", "--max-fps=60", "--stay-awake"]);
+            .arg(format!("--record-format={format}"))
+            .args(["--video-bit-rate=20M", "--max-fps=60", "--stay-awake"]);
         if !opts.audio {
             cmd.arg("--no-audio");
         }
@@ -423,8 +428,13 @@ impl Recording {
         let pid = self.recorder.id().to_string();
         match self.method {
             Method::Scrcpy => {
-                // SIGINT lets scrcpy write the end of the MP4 file properly.
-                let _ = Command::new("kill").args(["-INT", &pid]).status();
+                // SIGINT lets scrcpy write the end of the MP4 file properly. Windows has no
+                // such signal for another process; the MKV it records there survives a kill.
+                if cfg!(windows) {
+                    let _ = self.recorder.kill();
+                } else {
+                    let _ = command("kill").args(["-INT", &pid]).status();
+                }
             }
             Method::ScreenRecord => {
                 let _ = adb(&self.serial).args(["shell", "pkill", "-INT", "screenrecord"]).status();

@@ -8,3 +8,6 @@ packaging/arch/*.pkg.tar.zst
 
 # Modelos descargados para pruebas (licencias de terceros)
 /models/
+
+# Builds para Windows hechos en local
+/rec-ording-*-windows-x64.zip

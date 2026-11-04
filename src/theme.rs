@@ -52,6 +52,7 @@ pub fn install(ctx: &egui::Context) {
         "/usr/share/fonts/TTF/NotoSans-Regular.ttf",
         "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
         "/usr/share/fonts/cantarell/Cantarell-VF.otf",
+        "C:\\Windows\\Fonts\\segoeui.ttf",
     ]);
     let medium_font = read_first(&[
         "/usr/share/fonts/inter/Inter-Medium.otf",
@@ -60,6 +61,7 @@ pub fn install(ctx: &egui::Context) {
         "/usr/share/fonts/TTF/NotoSans-Medium.ttf",
         "/usr/share/fonts/truetype/noto/NotoSans-Medium.ttf",
         "/usr/share/fonts/noto/NotoSans-SemiBold.ttf",
+        "C:\\Windows\\Fonts\\seguisb.ttf",
     ]);
 
     let mut medium_family = base.clone();
@@ -75,6 +77,9 @@ pub fn install(ctx: &egui::Context) {
     fonts.families.insert(FontFamily::Name(MEDIUM.into()), medium_family);
     ctx.set_fonts(fonts);
 
+    // Always dark: following a light system theme (the Windows default) would swap in egui's
+    // plain light style.
+    ctx.set_theme(egui::ThemePreference::Dark);
     ctx.style_mut(|style| {
         style.text_styles = [
             (TextStyle::Small, regular_id(11.0)),
