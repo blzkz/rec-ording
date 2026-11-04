@@ -1,6 +1,6 @@
 [package]
 name = "rec-ording"
-version = "0.8.3"
+version = "0.8.4"
 edition = "2021"
 authors = ["blzkz <sergiobl88@gmail.com>"]
 description = "Graba tu móvil Android y conviértelo en un vídeo promocional con marco, fondo y zooms automáticos"

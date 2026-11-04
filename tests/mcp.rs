@@ -138,6 +138,19 @@ fn an_agent_builds_and_exports_a_video() {
     // Centred on the cut at 4 s.
     let (a, b) = (spin["start"].as_f64().unwrap(), spin["end"].as_f64().unwrap());
     assert!(((a + b) / 2.0 - 4.0).abs() < 0.01, "{a}..{b}");
+    // Turn it the other way, slower, a bit later.
+    let spin_id = spin["id"].as_u64().unwrap();
+    mcp.call("update_device_motion", json!({"clip_id": spin_id, "degrees": -360, "duration": 1.5, "start": 3.5}));
+    let p = mcp.project();
+    let spin = p["device_motion"].as_array().unwrap().iter().find(|d| d["id"] == spin_id).unwrap().clone();
+    assert_eq!(spin["spin"]["degrees"], -360.0);
+    assert!((spin["start"].as_f64().unwrap() - 3.5).abs() < 1e-4 && (spin["end"].as_f64().unwrap() - 5.0).abs() < 1e-4, "{spin}");
+    let hop = p["device_motion"].as_array().unwrap().iter().find(|d| d["spin"].is_null()).unwrap()["id"].as_u64().unwrap();
+    let bad = mcp.request("tools/call", json!({"name": "update_device_motion", "arguments": {"clip_id": hop, "degrees": 360}}));
+    assert_eq!(bad["result"]["isError"], true);
+    let hw: Value = serde_json::from_str(&mcp.text("get_hardware", json!({}))).unwrap();
+    assert!(hw.get("graphics_card").is_some() && hw.get("encoder").is_some(), "{hw}");
+    assert_eq!(p["export"]["hardware"], true);
 
     // Split and undo it.
     mcp.call("split_clip", json!({"time": 1.0}));

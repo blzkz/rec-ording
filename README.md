@@ -58,7 +58,7 @@ Un agente (Claude, Cursor, Codex…) puede montar el vídeo por ti con `rec-ordi
 claude mcp add rec-ording -- /usr/bin/rec-ording --mcp
 ```
 
-Herramientas: proyectos (`get_project`, `create_project`, `open_project`, `undo`…), grabar e importar, editar clips, zooms y fotogramas clave de cámara, Director, dispositivo y modelos 3D, estilo, `render_frame` (devuelve una imagen del resultado) y `export`.
+Herramientas: proyectos (`get_project`, `create_project`, `open_project`, `undo`…), grabar e importar, editar clips, zooms y fotogramas clave de cámara, Director, dispositivo y modelos 3D, movimientos del móvil con giros de 360° (`add_device_motion`, `update_device_motion`), títulos (`add_text`, `update_text`, `delete_text`), estilo, `render_frame` (devuelve una imagen del resultado), `get_hardware` (qué tarjeta gráfica y codificador hay) y `export` (con `hardware` para usar la tarjeta o no).
 
 ## Instalación
 

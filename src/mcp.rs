@@ -473,6 +473,29 @@ impl Server {
                     Ok(format!("Movimiento «{}» añadido de {:.2} a {:.2} s (clip {id})", preset.label(), c.start, c.end()))
                 })
             }
+            "update_device_motion" => {
+                let id = int(a, "clip_id")?;
+                let (start, degrees, secs) = (opt_num(a, "start"), opt_num(a, "degrees"), opt_num(a, "duration"));
+                self.edit(move |p| {
+                    let total = timeline::duration(p);
+                    let c = p.device.iter_mut().find(|c| c.id == id).ok_or(format!("No hay ningún movimiento del dispositivo {id}"))?;
+                    if let Some(d) = degrees {
+                        if timeline::spin_of(c).is_none() {
+                            return Err("degrees solo vale para los giros (full_turn y flip)".into());
+                        }
+                        timeline::set_spin(c, d);
+                    }
+                    if let Some(s) = secs {
+                        timeline::set_device_duration(c, s);
+                    }
+                    if let Some(t) = start {
+                        c.start = t.clamp(0.0, (total - c.duration()).max(0.0));
+                    }
+                    let (a, b) = (c.start, c.end());
+                    p.device.sort_by(|x, y| x.start.total_cmp(&y.start));
+                    Ok(format!("Movimiento actualizado: de {a:.2} a {b:.2} s"))
+                })
+            }
             "delete_device_motion" => {
                 let id = int(a, "clip_id")?;
                 self.edit(|p| timeline::delete_device_clip(p, id).map(|_| "Movimiento eliminado".into()))
@@ -610,6 +633,17 @@ impl Server {
                 export::start(p, cancel.clone(), tx);
                 self.export = Some(ExportJob { rx, cancel, status: "Exportando… 0 %".into(), encoder: String::new(), done: false });
                 Ok(Reply::Text("Exportación iniciada; consulta export_status".into()))
+            }
+            "get_hardware" => {
+                let card = crate::gpu::detect();
+                let enc = crate::hwenc::detect();
+                let v = json!({
+                    "graphics_card": card,
+                    "encoder": enc.as_ref().map(|e| json!({"name": e.name, "h264": e.h264, "hevc": e.hevc})),
+                    "export_uses_it_by_default": true,
+                    "note": "Con la gráfica, la exportación dibuja los fotogramas en ella y codifica con su codificador si lo tiene; export con hardware=false lo hace todo en el procesador.",
+                });
+                Ok(Reply::Text(v.to_string()))
             }
             "export_status" => {
                 let job = self.export.as_mut().ok_or("No se ha iniciado ninguna exportación")?;
@@ -766,7 +800,7 @@ fn summary(p: &Project, path: &Path) -> Value {
             "background": {"a": format!("#{:02x}{:02x}{:02x}", p.style.background.a[0], p.style.background.a[1], p.style.background.a[2]), "b": format!("#{:02x}{:02x}{:02x}", p.style.background.b[0], p.style.background.b[1], p.style.background.b[2]), "angle": p.style.background.angle},
             "padding": p.style.padding, "shadow": p.style.shadow, "show_touches": p.style.show_touches, "video_fit": format!("{:?}", p.style.video_fit).to_lowercase(),
         },
-        "export": {"resolution": p.export.resolution.label(), "fps": p.export.fps, "format": p.export.format.label(), "quality": p.export.quality.label(), "folder": p.export.folder},
+        "export": {"resolution": p.export.resolution.label(), "fps": p.export.fps, "format": p.export.format.label(), "quality": p.export.quality.label(), "folder": p.export.folder, "hardware": p.export.hardware},
     })
 }
 
@@ -985,7 +1019,19 @@ pub fn tools() -> Vec<Value> {
             &["text_id"],
         ),
         tool("delete_text", "Elimina un título.", json!({"text_id": i("Texto")}), &["text_id"]),
+        tool(
+            "update_device_motion",
+            "Cambia un movimiento del dispositivo ya añadido: cuándo empieza, cuánto dura y, en los giros, cuántos grados gira (360, 720, -360 para el otro sentido…).",
+            json!({"clip_id": i("Clip"), "start": n("s"), "duration": n("s"), "degrees": n("Solo giros")}),
+            &["clip_id"],
+        ),
         tool("delete_device_motion", "Elimina un movimiento del dispositivo.", json!({"clip_id": i("Clip")}), &["clip_id"]),
+        tool(
+            "get_hardware",
+            "Qué tarjeta gráfica y qué codificador por hardware usará la exportación en este equipo (si hay).",
+            json!({}),
+            &[],
+        ),
         tool("set_style", "Formato, fondo, margen, sombra y toques.", json!({"aspect": s("16:9, 9:16, 1:1 o 4:5"), "background_preset": s("Medianoche, Aurora, Atardecer, Lavanda, Menta, Océano, Melocotón, Bosque, Grafito o Nube"), "background_a": s("#rrggbb"), "background_b": s("#rrggbb"), "background_angle": n("grados"), "padding": n("0.02..0.25"), "shadow": n("0..1"), "show_touches": b("Mostrar los toques"), "touch_size": n("0.5..2")}), &[]),
         tool("render_frame", "Imagen de cómo queda el vídeo en un momento.", json!({"time": n("s"), "width": i("Ancho en píxeles (por defecto 960)")}), &["time"]),
         tool(

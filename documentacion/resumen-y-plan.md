@@ -92,6 +92,12 @@ Se han retirado, de momento, el servidor MCP, el autoactualizador, los subtítul
 - El icono se instala en todos los tamaños habituales (16 a 512 px) y en `/usr/share/pixmaps`. Si KDE no lo muestra tras instalar por primera vez, hay que reiniciar Plasma o volver a iniciar sesión: Plasma guarda en memoria que el icono no existía.
 - La barra de desplazamiento del panel derecho tiene su propio carril y ya no tapa los controles.
 
+## v0.8.4: más MCP
+
+- `update_device_motion`: cambia un movimiento del móvil ya añadido (inicio, duración y, en los giros, grados y sentido).
+- `get_hardware`: qué tarjeta gráfica dibuja y qué codificador por hardware hay.
+- `get_project` incluye el ajuste `hardware` de la exportación.
+
 ## Ideas para siguientes versiones
 
 - Desenfocar zonas sensibles (correos, tokens).
