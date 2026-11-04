@@ -6,25 +6,25 @@ use rayon::prelude::*;
 use std::sync::Arc;
 
 pub struct Texture {
-    w: usize,
-    h: usize,
-    data: Vec<u8>,
+    pub(crate) w: usize,
+    pub(crate) h: usize,
+    pub(crate) data: Vec<u8>,
 }
 
 pub struct Material {
     pub name: String,
     /// sRGB, 0..255.
-    base: [f32; 3],
-    alpha: f32,
-    texture: Option<usize>,
+    pub(crate) base: [f32; 3],
+    pub(crate) alpha: f32,
+    pub(crate) texture: Option<usize>,
     tex_coord: u32,
     /// KHR_texture_transform, as a 2×3 matrix applied to the texture coordinates.
     uv_xf: Option<[f32; 6]>,
-    metallic: f32,
-    roughness: f32,
-    emissive: [f32; 3],
-    blend: bool,
-    cutoff: Option<f32>,
+    pub(crate) metallic: f32,
+    pub(crate) roughness: f32,
+    pub(crate) emissive: [f32; 3],
+    pub(crate) blend: bool,
+    pub(crate) cutoff: Option<f32>,
 }
 
 /// A selectable piece of the model: a material, or one colour of a palette-textured material
@@ -673,16 +673,16 @@ impl Framing {
 /// A model normalized around its screen and ready to draw.
 pub struct PreparedModel {
     pub meta: ModelMeta,
-    pos: Vec<[f32; 3]>,
-    nrm: Vec<[f32; 3]>,
+    pub(crate) pos: Vec<[f32; 3]>,
+    pub(crate) nrm: Vec<[f32; 3]>,
     /// Where each screen vertex falls on the screen (0..1), from the rest pose.
-    suv: Vec<[f32; 2]>,
-    tri_screen: Vec<bool>,
-    uv: Arc<Vec<[f32; 2]>>,
-    tris: Arc<Vec<[u32; 3]>>,
-    tri_mat: Arc<Vec<u32>>,
-    materials: Arc<Vec<Material>>,
-    textures: Arc<Vec<Texture>>,
+    pub(crate) suv: Vec<[f32; 2]>,
+    pub(crate) tri_screen: Vec<bool>,
+    pub(crate) uv: Arc<Vec<[f32; 2]>>,
+    pub(crate) tris: Arc<Vec<[u32; 3]>>,
+    pub(crate) tri_mat: Arc<Vec<u32>>,
+    pub(crate) materials: Arc<Vec<Material>>,
+    pub(crate) textures: Arc<Vec<Texture>>,
     animations: Arc<Vec<Animation>>,
     rig: Arc<Rig>,
     framing: Framing,
@@ -869,8 +869,8 @@ pub fn prepare(src: &ModelSource, screen_part: usize, quarter_turns: u8) -> Resu
 
 /// Vertex positions and normals (device space) at one instant of an animation.
 pub struct Pose {
-    pos: Vec<[f32; 3]>,
-    nrm: Vec<[f32; 3]>,
+    pub(crate) pos: Vec<[f32; 3]>,
+    pub(crate) nrm: Vec<[f32; 3]>,
 }
 
 impl PreparedModel {

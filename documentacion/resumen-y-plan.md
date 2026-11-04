@@ -70,6 +70,14 @@ Se han retirado, de momento, el servidor MCP, el autoactualizador, los subtítul
 - Codificación con la tarjeta gráfica (NVENC, AMF, Quick Sync, VAAPI), activada por defecto si hay una que funcione, con vuelta al procesador si falla. Ahorra poco tiempo: lo que más cuesta es dibujar los fotogramas, que sigue haciendo el procesador.
 - MCP: `add_text`, `update_text`, `delete_text`; `add_device_motion` acepta `degrees` y `duration`; `export` acepta `hardware`.
 
+## v0.8.1: exportar con la tarjeta gráfica
+
+- Los fotogramas de la exportación se dibujan en la tarjeta gráfica (wgpu: Vulkan, DirectX 12 o Metal) con shaders que portan el compositor paso a paso: fondo, sombras, marco integrado con cantos y trasera, modelo 3D con su iluminación, pantalla, toques y desenfoque de movimiento. Un test compara cada caso con el procesador (diferencia media inferior a 0,01 niveles).
+- Un fotograma 1080p pasa de 8,8 ms a 0,8 ms con el marco integrado y de 28,5 ms a 2,1 ms con un modelo 3D. Una exportación de 16 s a 1080p60 con el S26 pasa de 41 s a 7,5 s (con el marco integrado, de 16 s a 7,5 s).
+- La exportación también descodifica y prepara las mips en su hilo y dibuja los títulos en el del codificador, en paralelo con el dibujo.
+- Si no hay tarjeta (o es un adaptador por software) o falla algo, se exporta con el procesador.
+- Arreglado: con el modelo de canto, algunos píxeles se quedaban sin modelo.
+
 ## Ideas para siguientes versiones
 
 - Desenfocar zonas sensibles (correos, tokens).
@@ -77,6 +85,7 @@ Se han retirado, de momento, el servidor MCP, el autoactualizador, los subtítul
 - Recortar y acelerar tramos intermedios (no solo el inicio y el final).
 - Música de fondo (lo que queda de la fase F7 del plan).
 - Tarjeta final con el icono de la app y la insignia de Google Play.
-- Dibujar los fotogramas en la tarjeta gráfica (wgpu) para exportar mucho más rápido.
+- Exportar aún más rápido: convertir a YUV y dibujar los títulos en la tarjeta (ahora se leen 8 MB por fotograma).
+- Vista previa dibujada en la tarjeta gráfica.
 - Control en vivo por MCP (socket local) en lugar de por archivo.
 - Grabar el escritorio además del móvil.

@@ -230,7 +230,11 @@ pub fn shutter(p: &Project, t: f32, fps: f32) -> Vec<(f32, CameraValue, PoseValu
 // ---------- Titles ----------
 
 pub fn texts_at(p: &Project, t: f32) -> Vec<text::Shown<'_>> {
-    p.texts.iter().filter(|c| t >= c.start && t < c.end()).map(|c| text::Shown { clip: c, local: t - c.start }).collect()
+    texts_in(&p.texts, t)
+}
+
+pub fn texts_in(texts: &[TextClip], t: f32) -> Vec<text::Shown<'_>> {
+    texts.iter().filter(|c| t >= c.start && t < c.end()).map(|c| text::Shown { clip: c, local: t - c.start }).collect()
 }
 
 /// Adds a title at `t`, or right after the one already there: 3 seconds, or up to the next

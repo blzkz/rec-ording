@@ -3,7 +3,7 @@
 
 use crate::timeline::{CameraValue, PoseValue};
 use crate::model::{FrameStyle, Style, Touch, TouchKind, VideoFit};
-use crate::model3d::{Lighting, ModelMeta, PreparedModel};
+use crate::model3d::{Lighting, ModelMeta, Pose, PreparedModel};
 use rayon::prelude::*;
 
 /// 2D camera framing: zoom factor and the point of the recording it centres on (0..1).
@@ -249,22 +249,24 @@ pub struct ComposeInput<'a> {
     pub blur: &'a [(f32, CameraValue, PoseValue)],
 }
 
-struct Indicator {
-    x: f32,
-    y: f32,
-    r: f32,
-    alpha: f32,
-    ring_r: f32,
-    ring_alpha: f32,
-    trail: Option<(f32, f32, f32)>, // start point and alpha
+pub(crate) struct Indicator {
+    pub x: f32,
+    pub y: f32,
+    pub r: f32,
+    pub alpha: f32,
+    pub ring_r: f32,
+    pub ring_alpha: f32,
+    /// Start point and alpha of a swipe's trail.
+    pub trail: Option<(f32, f32, f32)>,
 }
 
-struct RRect {
-    cx: f32,
-    cy: f32,
-    hx: f32,
-    hy: f32,
-    r: f32,
+#[derive(Clone, Copy)]
+pub(crate) struct RRect {
+    pub cx: f32,
+    pub cy: f32,
+    pub hx: f32,
+    pub hy: f32,
+    pub r: f32,
 }
 
 impl RRect {
@@ -394,7 +396,7 @@ fn indicators(layout: &Layout, style: &Style, touches: &[Touch], time: f32) -> V
     out
 }
 
-type Mat3 = [[f32; 3]; 3];
+pub(crate) type Mat3 = [[f32; 3]; 3];
 
 /// world = Rz(roll) · Rx(tilt) · Ry(turn) · local
 fn rotation(tilt: f32, turn: f32, roll: f32) -> Mat3 {
@@ -485,6 +487,12 @@ pub fn device_pose(style: &Style, cam: &CameraValue, pose: &PoseValue, since_sta
 /// Renders the frame into `out` (RGBA8, `ow * oh * 4` bytes): the scene (averaged over the
 /// shutter when it moves fast), then the titles.
 pub fn compose(out: &mut [u8], ow: usize, oh: usize, inp: &ComposeInput) {
+    compose_frame(out, ow, oh, inp);
+    crate::text::draw(out, ow, oh, inp.style, inp.texts);
+}
+
+/// Everything but the titles (the export draws those on its writer thread).
+pub fn compose_frame(out: &mut [u8], ow: usize, oh: usize, inp: &ComposeInput) {
     if out.len() != ow * oh * 4 || ow == 0 || oh == 0 {
         return;
     }
@@ -503,193 +511,316 @@ pub fn compose(out: &mut [u8], ow: usize, oh: usize, inp: &ComposeInput) {
             *o = ((a + n / 2) / n) as u8;
         }
     }
-    crate::text::draw(out, ow, oh, inp.style, inp.texts);
 }
 
-fn compose_scene(out: &mut [u8], ow: usize, oh: usize, inp: &ComposeInput) {
-    let style = inp.style;
-    let (cw, ch) = (ow as f32, oh as f32);
-    let model = inp.model.filter(|_| style.frame == FrameStyle::Custom);
-    let layout = Layout::new(cw, ch, style, inp.video_w, inp.video_h, model.map(|m| &m.meta));
-    let cam = layout.camera(CamState { scale: inp.cam.zoom, fx: inp.cam.x, fy: inp.cam.y });
-    let (s, tx, ty) = cam;
-    let inv_s = 1.0 / s;
-    let (ccx, ccy) = (cw * 0.5, ch * 0.5);
-    let min_dim = cw.min(ch);
+/// Everything about a frame that does not change from pixel to pixel: layout, camera, the
+/// device's pose and lighting, its shapes and the touch indicators. The CPU loop below and the
+/// GPU renderer (`gpu.rs`) both draw from it, so they cannot drift apart.
+pub(crate) struct Scene<'a> {
+    pub layout: Layout,
+    /// Camera: zoom and translation (see `Layout::camera`), and 1 / zoom.
+    pub s: f32,
+    pub tx: f32,
+    pub ty: f32,
+    pub inv_s: f32,
+    pub cw: f32,
+    pub ch: f32,
+    pub ccx: f32,
+    pub ccy: f32,
+    pub bg_a: [f32; 3],
+    pub bg_b: [f32; 3],
+    pub gdx: f32,
+    pub gdy: f32,
+    pub half_extent: f32,
+    pub diag: f32,
+    pub tilt: f32,
+    pub turn: f32,
+    pub dx: f32,
+    pub dy: f32,
+    pub dev_scale: f32,
+    pub angled: bool,
+    pub rot: Mat3,
+    pub focal: f32,
+    pub lcx: f32,
+    pub lcy: f32,
+    pub unit: f32,
+    pub mox: f32,
+    pub moy: f32,
+    pub nearest: f32,
+    pub eye: [f32; 3],
+    pub face_n: [f32; 3],
+    pub light: [f32; 3],
+    pub half_v: [f32; 3],
+    pub face_light: f32,
+    pub sheen_amount: f32,
+    pub depth: f32,
+    pub body: RRect,
+    pub screen: RRect,
+    pub shadow_alpha: f32,
+    pub shadow_blur: f32,
+    pub shadow_body: RRect,
+    pub contact: RRect,
+    pub metal: [f32; 3],
+    pub rim: f32,
+    pub glass: [f32; 3],
+    pub tablet: bool,
+    pub buttons: Vec<RRect>,
+    pub sc_short: f32,
+    pub hole: Option<(f32, f32, f32)>,
+    pub curved: bool,
+    /// The recording at the mip level that suits this zoom.
+    pub mip: Option<&'a Frame>,
+    pub inds: Vec<Indicator>,
+    pub body_top: f32,
+    pub body_h: f32,
+    pub mesh_free: bool,
+    pub camera_bar: Option<RRect>,
+    pub lenses: Vec<(f32, f32, f32)>,
+    pub model: Option<&'a PreparedModel>,
+    /// Animated models: their pose at this instant.
+    pub pose: Option<Pose>,
+}
 
-    // Background gradient
-    let bg_a = rgbf(style.background.a);
-    let bg_b = rgbf(style.background.b);
-    let ang = style.background.angle.to_radians();
-    let (gdx, gdy) = (ang.cos(), ang.sin());
-    let half_extent = ((cw * gdx.abs() + ch * gdy.abs()) * 0.5).max(1.0);
-    let diag = (cw * cw + ch * ch).sqrt();
+impl<'a> Scene<'a> {
+    pub fn new(ow: usize, oh: usize, inp: &ComposeInput<'a>) -> Self {
+        let style = inp.style;
+        let (cw, ch) = (ow as f32, oh as f32);
+        let model = inp.model.filter(|_| style.frame == FrameStyle::Custom);
+        let layout = Layout::new(cw, ch, style, inp.video_w, inp.video_h, model.map(|m| &m.meta));
+        let (s, tx, ty) = layout.camera(CamState { scale: inp.cam.zoom, fx: inp.cam.x, fy: inp.cam.y });
+        let (ccx, ccy) = (cw * 0.5, ch * 0.5);
+        let min_dim = cw.min(ch);
 
-    // 3D pose: the device is a slab whose front face sits at z = 0, seen in perspective from
-    // the front. With no angle this reduces exactly to the flat 2D layout.
-    let DevicePose { tilt, turn, roll, dx, dy, scale: dev_scale } = device_pose(style, &inp.cam, &inp.pose, inp.since_start, min_dim);
-    let angled = tilt.abs() > 0.01 || turn.abs() > 0.01 || roll.abs() > 0.01 || model.is_some();
-    let rot = rotation(tilt, turn, roll);
-    let focal = 1.15 * cw.max(ch);
-    let (lcx, lcy) = (layout.body.cx(), layout.body.cy());
-    // Push the device back so its nearest corner stays at the flat layout's size: turning it
-    // never makes it grow past the margins.
-    let (hx, hy) = (layout.body.w() * 0.5, layout.body.h() * 0.5);
-    let unit = layout.screen.w();
-    // Model points (screen-width units, origin at the screen centre) relative to the device centre.
-    let (mox, moy) = (layout.screen.cx() - lcx, layout.screen.cy() - lcy);
-    let nearest = match model {
-        Some(m) => {
-            let mm = &m.meta;
-            let mut z = f32::MIN;
-            for x in [mm.x0, mm.x1] {
-                for y in [mm.y0, mm.y1] {
-                    for zz in [mm.z0, mm.z1] {
-                        z = z.max(apply(&rot, [mox + x * unit, moy + y * unit, zz * unit])[2]);
+        // Background gradient
+        let ang = style.background.angle.to_radians();
+        let (gdx, gdy) = (ang.cos(), ang.sin());
+        let half_extent = ((cw * gdx.abs() + ch * gdy.abs()) * 0.5).max(1.0);
+
+        // 3D pose: the device is a slab whose front face sits at z = 0, seen in perspective from
+        // the front. With no angle this reduces exactly to the flat 2D layout.
+        let DevicePose { tilt, turn, roll, dx, dy, scale: dev_scale } = device_pose(style, &inp.cam, &inp.pose, inp.since_start, min_dim);
+        let angled = tilt.abs() > 0.01 || turn.abs() > 0.01 || roll.abs() > 0.01 || model.is_some();
+        let rot = rotation(tilt, turn, roll);
+        let focal = 1.15 * cw.max(ch);
+        let (lcx, lcy) = (layout.body.cx(), layout.body.cy());
+        // Push the device back so its nearest corner stays at the flat layout's size: turning it
+        // never makes it grow past the margins.
+        let (hx, hy) = (layout.body.w() * 0.5, layout.body.h() * 0.5);
+        let unit = layout.screen.w();
+        // Model points (screen-width units, origin at the screen centre) relative to the device centre.
+        let (mox, moy) = (layout.screen.cx() - lcx, layout.screen.cy() - lcy);
+        let nearest = match model {
+            Some(m) => {
+                let mm = &m.meta;
+                let mut z = f32::MIN;
+                for x in [mm.x0, mm.x1] {
+                    for y in [mm.y0, mm.y1] {
+                        for zz in [mm.z0, mm.z1] {
+                            z = z.max(apply(&rot, [mox + x * unit, moy + y * unit, zz * unit])[2]);
+                        }
                     }
                 }
+                z.max(0.0)
             }
-            z.max(0.0)
-        }
-        None => [(-hx, -hy), (hx, -hy), (-hx, hy), (hx, hy)]
-            .iter()
-            .map(|&(x, y)| apply(&rot, [x, y, 0.0])[2])
-            .fold(0.0f32, f32::max),
-    };
-    let eye = apply_t(&rot, [0.0, 0.0, focal + nearest]);
-    let face_n = apply(&rot, [0.0, 0.0, 1.0]);
-    let light = {
-        let l = [-0.45f32, -0.65, 0.6];
-        let n = dot(l, l).sqrt();
-        [l[0] / n, l[1] / n, l[2] / n]
-    };
-    let half_v = {
-        let h = [light[0], light[1], light[2] + 1.0];
-        let n = dot(h, h).sqrt();
-        [h[0] / n, h[1] / n, h[2] / n]
-    };
-    let face_light = if angled { 0.86 + 0.24 * dot(face_n, light) } else { 1.0 };
-    let sheen_amount = ((tilt.abs() + turn.abs()) / 30.0).min(1.0) * 0.07;
-    let depth = layout.depth;
+            None => [(-hx, -hy), (hx, -hy), (-hx, hy), (hx, hy)]
+                .iter()
+                .map(|&(x, y)| apply(&rot, [x, y, 0.0])[2])
+                .fold(0.0f32, f32::max),
+        };
+        let eye = apply_t(&rot, [0.0, 0.0, focal + nearest]);
+        let face_n = apply(&rot, [0.0, 0.0, 1.0]);
+        let light = {
+            let l = [-0.45f32, -0.65, 0.6];
+            let n = dot(l, l).sqrt();
+            [l[0] / n, l[1] / n, l[2] / n]
+        };
+        let half_v = {
+            let h = [light[0], light[1], light[2] + 1.0];
+            let n = dot(h, h).sqrt();
+            [h[0] / n, h[1] / n, h[2] / n]
+        };
 
-    // Device shapes
-    let body = RRect::of(&layout.body, layout.body_r);
-    let screen = RRect::of(&layout.screen, layout.screen_r);
-    let shadow_alpha = style.shadow.clamp(0.0, 1.0) * 0.55;
-    let shadow_blur = 0.06 * min_dim;
-    let shadow_body = RRect { cy: body.cy + 0.025 * min_dim, ..RRect::of(&layout.body, layout.body_r) };
-    let contact = RRect { cy: body.cy + 0.006 * min_dim, ..RRect::of(&layout.body, layout.body_r) };
-
-    let metal = rgbf(style.frame_color.rgb());
-    let rim = layout.bezel * 0.34;
-    let glass = [9.0, 9.0, 11.0];
-    let tablet = layout.frame == FrameStyle::Tablet;
-
-    let buttons: Vec<RRect> = if layout.framed {
-        let b = &layout.body;
-        let bd = (layout.bezel * if tablet { 0.1 } else { 0.16 }).max(1.0);
-        if tablet {
-            let y = b.y0 - bd * 0.4;
-            vec![
-                RRect { cx: b.x0 + b.w() * 0.8, cy: y, hx: b.w() * 0.045, hy: bd, r: bd },
-                RRect { cx: b.x0 + b.w() * 0.12, cy: y, hx: b.w() * 0.03, hy: bd, r: bd },
-            ]
-        } else if layout.portrait {
-            let x = b.x1 + bd * 0.4;
-            vec![
-                RRect { cx: x, cy: b.y0 + b.h() * 0.255, hx: bd, hy: b.h() * 0.035, r: bd },
-                RRect { cx: x, cy: b.y0 + b.h() * 0.40, hx: bd, hy: b.h() * 0.07, r: bd },
-            ]
+        let tablet = layout.frame == FrameStyle::Tablet;
+        let buttons: Vec<RRect> = if layout.framed {
+            let b = &layout.body;
+            let bd = (layout.bezel * if tablet { 0.1 } else { 0.16 }).max(1.0);
+            if tablet {
+                let y = b.y0 - bd * 0.4;
+                vec![
+                    RRect { cx: b.x0 + b.w() * 0.8, cy: y, hx: b.w() * 0.045, hy: bd, r: bd },
+                    RRect { cx: b.x0 + b.w() * 0.12, cy: y, hx: b.w() * 0.03, hy: bd, r: bd },
+                ]
+            } else if layout.portrait {
+                let x = b.x1 + bd * 0.4;
+                vec![
+                    RRect { cx: x, cy: b.y0 + b.h() * 0.255, hx: bd, hy: b.h() * 0.035, r: bd },
+                    RRect { cx: x, cy: b.y0 + b.h() * 0.40, hx: bd, hy: b.h() * 0.07, r: bd },
+                ]
+            } else {
+                let y = b.y0 - bd * 0.4;
+                vec![
+                    RRect { cx: b.x0 + b.w() * 0.255, cy: y, hx: b.w() * 0.035, hy: bd, r: bd },
+                    RRect { cx: b.x0 + b.w() * 0.40, cy: y, hx: b.w() * 0.07, hy: bd, r: bd },
+                ]
+            }
         } else {
-            let y = b.y0 - bd * 0.4;
-            vec![
-                RRect { cx: b.x0 + b.w() * 0.255, cy: y, hx: b.w() * 0.035, hy: bd, r: bd },
-                RRect { cx: b.x0 + b.w() * 0.40, cy: y, hx: b.w() * 0.07, hy: bd, r: bd },
-            ]
-        }
-    } else {
-        Vec::new()
-    };
+            Vec::new()
+        };
 
-    // Front camera: a punch hole in the screen, or a dot in the bezel on tablets.
-    let sc_short = layout.screen.w().min(layout.screen.h());
-    let hole = if !layout.framed {
-        None
-    } else if tablet {
-        Some((layout.body.cx(), layout.body.y0 + layout.bezel * 0.5, layout.bezel * 0.14))
-    } else {
-        let sc = &layout.screen;
-        let off = sc_short * 0.05;
-        Some(if layout.portrait { (sc.cx(), sc.y0 + off, sc_short * 0.024) } else { (sc.x0 + off, sc.cy(), sc_short * 0.024) })
-    };
-    let curved = layout.frame == FrameStyle::Curved;
-
-    let mip = inp.screen.map(|m| {
-        let ratio = m.width() as f32 / (layout.video.w() * s).max(1.0);
-        m.level_for(ratio)
-    });
-
-    let inds = indicators(&layout, style, inp.touches, inp.time);
-    let white = [255.0, 255.0, 255.0];
-    let body_top = layout.body.y0;
-    let body_h = layout.body.h().max(1.0);
-
-    // Back of the built-in device: a camera bar across the top with two lenses.
-    let mesh_free = model.is_none();
-    let (camera_bar, lenses) = if layout.framed {
-        let b = &layout.body;
-        if layout.portrait {
-            let (cy, h) = (b.y0 + b.h() * 0.13, b.h() * 0.065);
-            let bar = RRect { cx: b.cx(), cy, hx: b.w() * 0.42, hy: h * 0.5, r: h * 0.5 };
-            (Some(bar), vec![(b.cx() - b.w() * 0.25, cy, h * 0.32), (b.cx() - b.w() * 0.08, cy, h * 0.32)])
+        // Front camera: a punch hole in the screen, or a dot in the bezel on tablets.
+        let sc_short = layout.screen.w().min(layout.screen.h());
+        let hole = if !layout.framed {
+            None
+        } else if tablet {
+            Some((layout.body.cx(), layout.body.y0 + layout.bezel * 0.5, layout.bezel * 0.14))
         } else {
-            let (cx, w) = (b.x0 + b.w() * 0.13, b.w() * 0.065);
-            let bar = RRect { cx, cy: b.cy(), hx: w * 0.5, hy: b.h() * 0.42, r: w * 0.5 };
-            (Some(bar), vec![(cx, b.cy() - b.h() * 0.25, w * 0.32), (cx, b.cy() - b.h() * 0.08, w * 0.32)])
-        }
-    } else {
-        (None, Vec::new())
-    };
+            let sc = &layout.screen;
+            let off = sc_short * 0.05;
+            Some(if layout.portrait { (sc.cx(), sc.y0 + off, sc_short * 0.024) } else { (sc.x0 + off, sc.cy(), sc_short * 0.024) })
+        };
 
-    const BAND: usize = 16;
-    let lighting = Lighting { light, half: half_v };
-    // Animated models: pose for this instant.
-    let pose = model.and_then(|m| {
-        let cm = style.model.as_ref()?;
-        let anim = cm.animation?;
-        let d = m.animation_duration(anim)?.max(1e-3);
-        let t = (inp.time - cm.animation_start).max(0.0);
-        m.pose(anim, if cm.loop_animation { t.rem_euclid(d) } else { t.min(d) })
-    });
-    let projected = model.map(|m| {
-        m.project(
-            pose.as_ref(),
-            |p| {
-                let w = apply(&rot, [mox + p[0] * unit, moy + p[1] * unit, p[2] * unit]);
-                let f = focal / (focal + nearest - w[2]);
-                let (x, y) = (lcx + dx + w[0] * f * dev_scale, lcy + dy + w[1] * f * dev_scale);
-                (ccx + (x - ccx) * s + tx, ccy + (y - ccy) * s + ty, f)
-            },
-            |n| apply(&rot, n),
-            ow,
-            oh,
-            inp.supersample.clamp(1, 3),
-            BAND,
-        )
-    });
-    // Point on the model's screen -> the recording (black outside it, for `VideoFit::Fit`).
-    let (scr, vid) = (layout.screen, layout.video);
-    let screen_color = |u: f32, v: f32| {
+        let mip = inp.screen.map(|m| {
+            let ratio = m.width() as f32 / (layout.video.w() * s).max(1.0);
+            m.level_for(ratio)
+        });
+
+        // Back of the built-in device: a camera bar across the top with two lenses.
+        let (camera_bar, lenses) = if layout.framed {
+            let b = &layout.body;
+            if layout.portrait {
+                let (cy, h) = (b.y0 + b.h() * 0.13, b.h() * 0.065);
+                let bar = RRect { cx: b.cx(), cy, hx: b.w() * 0.42, hy: h * 0.5, r: h * 0.5 };
+                (Some(bar), vec![(b.cx() - b.w() * 0.25, cy, h * 0.32), (b.cx() - b.w() * 0.08, cy, h * 0.32)])
+            } else {
+                let (cx, w) = (b.x0 + b.w() * 0.13, b.w() * 0.065);
+                let bar = RRect { cx, cy: b.cy(), hx: w * 0.5, hy: b.h() * 0.42, r: w * 0.5 };
+                (Some(bar), vec![(cx, b.cy() - b.h() * 0.25, w * 0.32), (cx, b.cy() - b.h() * 0.08, w * 0.32)])
+            }
+        } else {
+            (None, Vec::new())
+        };
+
+        // Animated models: pose for this instant.
+        let pose = model.and_then(|m| {
+            let cm = style.model.as_ref()?;
+            let anim = cm.animation?;
+            let d = m.animation_duration(anim)?.max(1e-3);
+            let t = (inp.time - cm.animation_start).max(0.0);
+            m.pose(anim, if cm.loop_animation { t.rem_euclid(d) } else { t.min(d) })
+        });
+
+        Scene {
+            s,
+            tx,
+            ty,
+            inv_s: 1.0 / s,
+            cw,
+            ch,
+            ccx,
+            ccy,
+            bg_a: rgbf(style.background.a),
+            bg_b: rgbf(style.background.b),
+            gdx,
+            gdy,
+            half_extent,
+            diag: (cw * cw + ch * ch).sqrt(),
+            tilt,
+            turn,
+            dx,
+            dy,
+            dev_scale,
+            angled,
+            rot,
+            focal,
+            lcx,
+            lcy,
+            unit,
+            mox,
+            moy,
+            nearest,
+            eye,
+            face_n,
+            light,
+            half_v,
+            face_light: if angled { 0.86 + 0.24 * dot(face_n, light) } else { 1.0 },
+            sheen_amount: ((tilt.abs() + turn.abs()) / 30.0).min(1.0) * 0.07,
+            depth: layout.depth,
+            body: RRect::of(&layout.body, layout.body_r),
+            screen: RRect::of(&layout.screen, layout.screen_r),
+            shadow_alpha: style.shadow.clamp(0.0, 1.0) * 0.55,
+            shadow_blur: 0.06 * min_dim,
+            shadow_body: RRect { cy: layout.body.cy() + 0.025 * min_dim, ..RRect::of(&layout.body, layout.body_r) },
+            contact: RRect { cy: layout.body.cy() + 0.006 * min_dim, ..RRect::of(&layout.body, layout.body_r) },
+            metal: rgbf(style.frame_color.rgb()),
+            rim: layout.bezel * 0.34,
+            glass: [9.0, 9.0, 11.0],
+            tablet,
+            buttons,
+            sc_short,
+            hole,
+            curved: layout.frame == FrameStyle::Curved,
+            mip,
+            inds: indicators(&layout, style, inp.touches, inp.time),
+            body_top: layout.body.y0,
+            body_h: layout.body.h().max(1.0),
+            mesh_free: model.is_none(),
+            camera_bar,
+            lenses,
+            model,
+            pose,
+            layout,
+        }
+    }
+
+    /// Model point (screen-width units) → (output x, output y, 1 / depth).
+    #[inline(always)]
+    pub fn place(&self, p: [f32; 3]) -> (f32, f32, f32) {
+        let w = apply(&self.rot, [self.mox + p[0] * self.unit, self.moy + p[1] * self.unit, p[2] * self.unit]);
+        let f = self.focal / (self.focal + self.nearest - w[2]);
+        let (x, y) = (self.lcx + self.dx + w[0] * f * self.dev_scale, self.lcy + self.dy + w[1] * f * self.dev_scale);
+        (self.ccx + (x - self.ccx) * self.s + self.tx, self.ccy + (y - self.ccy) * self.s + self.ty, f)
+    }
+
+    pub fn lighting(&self) -> Lighting {
+        Lighting { light: self.light, half: self.half_v }
+    }
+
+    /// Point on the model's screen (u, v in 0..1) → the recording; black outside it (`VideoFit::Fit`).
+    pub fn screen_color(&self, u: f32, v: f32) -> [f32; 3] {
+        let (scr, vid) = (self.layout.screen, self.layout.video);
         let vu = (scr.x0 + u * scr.w() - vid.x0) / vid.w();
         let vv = (scr.y0 + v * scr.h() - vid.y0) / vid.h();
         if !(-0.002..=1.002).contains(&vu) || !(-0.002..=1.002).contains(&vv) {
             return [0.0, 0.0, 0.0];
         }
-        match mip {
+        match self.mip {
             Some(f) => sample(f, vu.clamp(0.0, 1.0), vv.clamp(0.0, 1.0)),
             None => [18.0, 18.0, 20.0],
         }
-    };
+    }
+}
+
+fn compose_scene(out: &mut [u8], ow: usize, oh: usize, inp: &ComposeInput) {
+    let sc = Scene::new(ow, oh, inp);
+    let layout = &sc.layout;
+    let (s, tx, ty, inv_s) = (sc.s, sc.tx, sc.ty, sc.inv_s);
+    let (ccx, ccy) = (sc.ccx, sc.ccy);
+    let (bg_a, bg_b, gdx, gdy, half_extent, diag) = (sc.bg_a, sc.bg_b, sc.gdx, sc.gdy, sc.half_extent, sc.diag);
+    let (tilt, turn, dx, dy, dev_scale, angled) = (sc.tilt, sc.turn, sc.dx, sc.dy, sc.dev_scale, sc.angled);
+    let (rot, focal, lcx, lcy, eye, face_n) = (sc.rot, sc.focal, sc.lcx, sc.lcy, sc.eye, sc.face_n);
+    let (light, half_v, face_light, sheen_amount, depth) = (sc.light, sc.half_v, sc.face_light, sc.sheen_amount, sc.depth);
+    let (body, screen, shadow_body, contact) = (&sc.body, &sc.screen, &sc.shadow_body, &sc.contact);
+    let (shadow_alpha, shadow_blur) = (sc.shadow_alpha, sc.shadow_blur);
+    let (metal, rim, glass, tablet, buttons) = (sc.metal, sc.rim, sc.glass, sc.tablet, &sc.buttons);
+    let (sc_short, hole, curved, mip, inds) = (sc.sc_short, sc.hole, sc.curved, sc.mip, &sc.inds);
+    let (body_top, body_h, mesh_free, camera_bar, lenses) = (sc.body_top, sc.body_h, sc.mesh_free, &sc.camera_bar, &sc.lenses);
+    let white = [255.0, 255.0, 255.0];
+    let _ = s;
+
+    const BAND: usize = 16;
+    let lighting = sc.lighting();
+    let projected = sc.model.map(|m| m.project(sc.pose.as_ref(), |p| sc.place(p), |n| apply(&rot, n), ow, oh, inp.supersample.clamp(1, 3), BAND));
+    let screen_color = |u: f32, v: f32| sc.screen_color(u, v);
 
     out.par_chunks_mut(ow * 4 * BAND).enumerate().for_each(|(band_idx, chunk)| {
         let rows = chunk.len() / (ow * 4);
@@ -719,6 +850,11 @@ fn compose_scene(out: &mut [u8], ow: usize, oh: usize, inp: &ComposeInput) {
                     let plane = if back && mesh_free { -depth } else { 0.0 };
                     let t = (plane - eye[2]) / d[2];
                     if d[2].abs() < 1e-4 || t <= 0.0 {
+                        // The front plane is edge-on here; an imported model can still cover it.
+                        if let Some(m) = &mesh {
+                            let (c, a) = m.pixel(px, ri);
+                            col = [col[0] * (1.0 - a) + c[0], col[1] * (1.0 - a) + c[1], col[2] * (1.0 - a) + c[2]];
+                        }
                         write_px(row, px, col, py);
                         continue;
                     }
@@ -788,7 +924,7 @@ fn compose_scene(out: &mut [u8], ow: usize, oh: usize, inp: &ComposeInput) {
                             let cb = cov(bar.sd(qx, qy));
                             if cb > 0.0 {
                                 back_col = mix(back_col, [22.0, 22.0, 26.0], cb);
-                                for (lx, ly, lr) in &lenses {
+                                for (lx, ly, lr) in lenses {
                                     let dl = ((qx - lx).powi(2) + (qy - ly).powi(2)).sqrt() - lr;
                                     back_col = mix(back_col, [6.0, 8.0, 14.0], cov(dl));
                                     back_col = mix(back_col, [70.0, 80.0, 100.0], cov((dl + lr * 0.35).abs() - lr * 0.06) * 0.6);
@@ -805,7 +941,7 @@ fn compose_scene(out: &mut [u8], ow: usize, oh: usize, inp: &ComposeInput) {
                 if layout.framed && mesh.is_none() {
                     let shade = (1.12 - 0.3 * ((qy - body_top) / body_h).clamp(0.0, 1.0)) * face_light;
                     let metal_px = [metal[0] * shade, metal[1] * shade, metal[2] * shade];
-                    for b in &buttons {
+                    for b in buttons {
                         let c = cov(b.sd(qx, qy));
                         if c > 0.0 {
                             col = mix(col, mix(metal_px, [0.0; 3], 0.12), c);
@@ -864,7 +1000,7 @@ fn compose_scene(out: &mut [u8], ow: usize, oh: usize, inp: &ComposeInput) {
                 }
 
                 // 7. Touch indicators
-                for ind in &inds {
+                for ind in inds {
                     if let Some((sx, sy, ta)) = ind.trail {
                         // Distance to the segment from the trail start to the finger.
                         let (vx, vy) = (ind.x - sx, ind.y - sy);

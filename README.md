@@ -19,7 +19,7 @@ Pensado para la ficha de Google Play, YouTube, Reels/Shorts o redes, sin pasar p
    - **Texto**: títulos al estilo de los anuncios de Apple, junto al móvil (que se aparta para dejarles sitio), arriba, abajo o en el centro. Un titular (una línea por salto de línea) y, si quieres, una línea más pequeña debajo; tamaño grande para cifras («100 / ciudades reales.»). Entran apareciendo, palabra a palabra o línea a línea (las anteriores se atenúan). **+ Texto**, la tecla T o doble clic en la pista.
    El **Director** funciona como en Matte: mueve el cursor a cada momento importante, arrastra sobre la vista previa lo que debe verse y pulsa **Generar planos**. Elige movimiento 3D (ángulos y órbitas) o 2D (zoom plano), su intensidad, y pide **otra toma** de un plano si no te convence.
    Todo se puede deshacer (Ctrl+Z) y rehacer (Ctrl+Mayús+Z). Con **Proyectos** creas y cambias de proyecto.
-4. **Exporta** en MP4 (H.264 o HEVC) o GIF, a 720p, 1080p o 4K, a 30 o 60 fps, con el sonido del móvil. Si tienes una tarjeta gráfica compatible (NVIDIA con NVENC, AMD o Intel con VAAPI en Linux, AMF o Quick Sync en Windows), el vídeo se codifica con ella; si falla, se vuelve a hacer con el procesador. Los fotogramas se siguen dibujando con el procesador.
+4. **Exporta** en MP4 (H.264 o HEVC) o GIF, a 720p, 1080p o 4K, a 30 o 60 fps, con el sonido del móvil. Si tienes una tarjeta gráfica, la exportación la usa para dibujar los fotogramas (Vulkan, DirectX 12 o Metal) y para codificar el vídeo (NVENC en NVIDIA, VAAPI en AMD e Intel en Linux, AMF o Quick Sync en Windows); si algo falla, se vuelve a hacer con el procesador. Un vídeo de 16 s a 1080p60 con un modelo 3D tarda unos 7,5 s en lugar de 41 s. La vista previa se sigue dibujando con el procesador, con el mismo resultado.
 
 ### Atajos
 
@@ -117,6 +117,7 @@ Aplicación nativa en Rust con [egui](https://github.com/emilk/egui).
 | `export.rs` | Decodifica la grabación, compone cada fotograma y codifica el resultado con ffmpeg. |
 | `app/`, `theme.rs` | Interfaz: visor, línea de tiempo, inspector y hojas. |
 | `text.rs` | Títulos: maquetación con Inter Display (incluida en `assets/fonts`, licencia OFL), animaciones de entrada y salida, y el sitio que el móvil les deja. |
+| `gpu/` | El compositor en la tarjeta gráfica (wgpu): los mismos cálculos que `compositor.rs` en shaders WGSL, para exportar mucho más rápido. Un test compara sus fotogramas con los del procesador. |
 | `hwenc.rs` | Codificación con la tarjeta gráfica (NVENC, AMF, Quick Sync, VAAPI): prueba qué funciona en el equipo. |
 | `update.rs` | Busca versiones nuevas en las releases y las instala (pacman en Linux, reemplazando la carpeta en Windows). |
 | `platform.rs` | Lo que cambia entre Linux y Windows: carpetas, diálogos de archivos, abrir archivos y lanzar herramientas sin ventana de consola. |

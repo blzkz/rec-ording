@@ -1,7 +1,8 @@
 //! Final render: decode the recording at full size, compose every frame and encode with ffmpeg.
 
 use crate::timeline;
-use crate::compositor::{compose, ComposeInput, Frame, Mips};
+use crate::compositor::{compose_frame, ComposeInput, Frame, Mips};
+use crate::gpu::GpuCompositor;
 use crate::hwenc::{self, Codec, Encoder};
 use crate::model::{ExportFormat, ExportSettings, Project, Quality};
 use crossbeam_channel::{bounded, Sender};
@@ -16,7 +17,7 @@ use std::time::Instant;
 
 pub enum ExportEvent {
     Progress { fraction: f32, eta_secs: Option<f32> },
-    /// What encodes the video ("AMD (VAAPI)", "Procesador"…).
+    /// Who draws and encodes the video, for people ("Con la tarjeta gráfica (…)").
     Encoder(String),
     Done(PathBuf),
     Failed(String),
@@ -42,11 +43,12 @@ pub fn start(project: Project, cancel: Arc<AtomicBool>, tx: Sender<ExportEvent>)
     thread::spawn(move || {
         let out = output_path(&project);
         let hw = encoder_for(&project.export);
-        let mut result = run(&project, &out, &cancel, &tx, hw.as_ref());
-        if result.is_err() && hw.is_some() && !cancel.load(Ordering::Relaxed) {
+        let card = project.export.hardware;
+        let mut result = run(&project, &out, &cancel, &tx, hw.as_ref(), card);
+        if result.is_err() && (hw.is_some() || card) && !cancel.load(Ordering::Relaxed) {
             // The graphics card failed (driver, size limits…): do it again on the CPU.
             let _ = tx.send(ExportEvent::Progress { fraction: 0.0, eta_secs: None });
-            result = run(&project, &out, &cancel, &tx, None);
+            result = run(&project, &out, &cancel, &tx, None, false);
         }
         let ev = match result {
             Ok(()) => ExportEvent::Done(out),
@@ -90,7 +92,9 @@ pub fn encoder_for(settings: &ExportSettings) -> Option<Encoder> {
     settings.hardware.then(hwenc::detect).flatten().filter(|e| e.supports(codec))
 }
 
-fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<ExportEvent>, hw: Option<&Encoder>) -> Result<(), String> {
+/// Exports `project` to `out`, encoding with `hw` (or x264/x265) and drawing the frames on the
+/// graphics card when `card` is set and there is one.
+fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<ExportEvent>, hw: Option<&Encoder>, card: bool) -> Result<(), String> {
     let clips = timeline::placed(project);
     if clips.is_empty() {
         return Err("No hay ningún vídeo en el proyecto".into());
@@ -130,7 +134,6 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
         .collect::<Result<_, String>>()?;
 
     // Encoder: input 0 is the rendered video, then one audio input per clip.
-    let _ = tx.send(ExportEvent::Encoder(hw.map(|e| e.name.clone()).unwrap_or_else(|| "Procesador".into())));
     let mut enc = command("ffmpeg");
     enc.args(["-nostdin", "-y", "-loglevel", "error"]);
     if let Some(e) = hw {
@@ -207,8 +210,9 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
     let enc_err = collect_stderr(&mut encoder);
 
     // Reader thread: decodes the clips one after another, giving exactly `frames` frames per
-    // clip (repeating the last one if a recording runs a few frames short).
-    let (frame_tx, frame_rx) = bounded::<Frame>(3);
+    // clip (repeating the last one if a recording runs a few frames short), with their mips
+    // built here so that work overlaps with drawing.
+    let (frame_tx, frame_rx) = bounded::<(Arc<Mips>, usize, usize)>(3);
     let dec_err = Arc::new(Mutex::new(String::new()));
     let reader_err = dec_err.clone();
     let stop = Arc::new(AtomicBool::new(false));
@@ -231,18 +235,21 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
             };
             let err = collect_stderr(&mut dec);
             let mut stdout = dec.stdout.take().unwrap();
-            let mut last: Option<Vec<u8>> = None;
+            let size = part.w * part.h * 4;
+            let mut last: Option<Arc<Mips>> = None;
             for _ in 0..part.frames {
                 if reader_stop.load(Ordering::Relaxed) {
                     break;
                 }
-                let mut data = vec![0u8; part.w * part.h * 4];
-                let data = match stdout.read_exact(&mut data) {
-                    Ok(()) => {
-                        last = Some(data.clone());
-                        data
+                let mut data = Vec::with_capacity(size);
+                let read = (&mut stdout).take(size as u64).read_to_end(&mut data);
+                let mips = match read {
+                    Ok(n) if n == size => {
+                        let m = Arc::new(Mips::build(Frame { w: part.w, h: part.h, data }));
+                        last = Some(m.clone());
+                        m
                     }
-                    Err(_) => match &last {
+                    _ => match &last {
                         Some(l) => l.clone(),
                         None => {
                             *reader_err.lock().unwrap() = format!("No se pudo leer {}: {}", part.path, err.lock().unwrap().trim());
@@ -251,7 +258,7 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
                         }
                     },
                 };
-                if frame_tx.send(Frame { w: part.w, h: part.h, data }).is_err() {
+                if frame_tx.send((mips, part.w, part.h)).is_err() {
                     let _ = dec.kill();
                     return;
                 }
@@ -261,10 +268,14 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
         }
     });
 
-    let (out_tx, out_rx) = bounded::<Vec<u8>>(3);
+    // Writer thread: adds the titles to each frame (overlapping with drawing the next one) and
+    // feeds the encoder.
+    let (out_tx, out_rx) = bounded::<(Vec<u8>, f32)>(3);
     let mut enc_in = encoder.stdin.take().ok_or("ffmpeg sin entrada")?;
+    let (texts, style) = (project.texts.clone(), project.style.clone());
     let writer = thread::spawn(move || -> bool {
-        for buf in out_rx {
+        for (mut buf, t) in out_rx {
+            crate::text::draw(&mut buf, ow, oh, &style, &timeline::texts_in(&texts, t));
             if enc_in.write_all(&buf).is_err() {
                 return false;
             }
@@ -280,10 +291,18 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
         }
         _ => None,
     };
+    let mut gpu = if card { GpuCompositor::new(ow, oh, 2, model.as_ref()).ok() } else { None };
+    let how = match (&gpu, hw) {
+        (Some(g), Some(_)) => format!("Con la tarjeta gráfica ({})", g.name),
+        (Some(g), None) => format!("Dibuja la tarjeta gráfica ({}) y codifica el procesador", g.name),
+        (None, Some(e)) => format!("Dibuja el procesador y codifica la tarjeta gráfica ({})", e.name),
+        (None, None) => "Con el procesador".to_string(),
+    };
+    let _ = tx.send(ExportEvent::Encoder(how));
     let touches = timeline::timeline_touches(project);
     let began = Instant::now();
     let mut written = 0usize;
-    let mut last: Option<(Mips, usize, usize)> = None;
+    let mut last: Option<(Arc<Mips>, usize, usize)> = None;
     let mut failed = None;
 
     for i in 0..total {
@@ -292,8 +311,7 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
             break;
         }
         if let Ok(f) = frame_rx.recv() {
-            let (w, h) = (f.w, f.h);
-            last = Some((Mips::build(f), w, h));
+            last = Some(f);
         }
         let Some((mips, vw, vh)) = last.as_ref() else {
             let e = dec_err.lock().unwrap().clone();
@@ -302,29 +320,32 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
         };
         let t = i as f32 / fps as f32;
         let mut buf = vec![0u8; ow * oh * 4];
-        let texts = timeline::texts_at(project, t);
         let blur = timeline::shutter(project, t, fps as f32);
-        compose(
-            &mut buf,
-            ow,
-            oh,
-            &ComposeInput {
-                style: &project.style,
-                screen: Some(mips),
-                video_w: *vw as f32,
-                video_h: *vh as f32,
-                cam: timeline::camera_at(project, t),
-                pose: timeline::pose_at(project, t),
-                touches: &touches,
-                time: t,
-                since_start: t,
-                model: model.as_ref(),
-                supersample: 2,
-                texts: &texts,
-                blur: &blur,
-            },
-        );
-        if out_tx.send(buf).is_err() {
+        let inp = ComposeInput {
+            style: &project.style,
+            screen: Some(mips),
+            video_w: *vw as f32,
+            video_h: *vh as f32,
+            cam: timeline::camera_at(project, t),
+            pose: timeline::pose_at(project, t),
+            touches: &touches,
+            time: t,
+            since_start: t,
+            model: model.as_ref(),
+            supersample: 2,
+            texts: &[],
+            blur: &blur,
+        };
+        match gpu.as_mut() {
+            Some(g) => {
+                if let Err(e) = g.compose_frame(&mut buf, &inp) {
+                    failed = Some(e);
+                    break;
+                }
+            }
+            None => compose_frame(&mut buf, ow, oh, &inp),
+        }
+        if out_tx.send((buf, t)).is_err() {
             break;
         }
         written += 1;
@@ -394,7 +415,7 @@ mod tests {
         timeline::add_device_preset(&mut project, timeline::DevicePreset::FullTurn, 9.0);
         let out = output_path(&project);
         let (tx, _rx) = crossbeam_channel::unbounded();
-        run(&project, &out, &AtomicBool::new(false), &tx, encoder_for(&project.export).as_ref()).expect("export");
+        run(&project, &out, &AtomicBool::new(false), &tx, encoder_for(&project.export).as_ref(), true).expect("export");
         let probed = crate::media::probe(&out.to_string_lossy()).expect("output readable");
         assert_eq!((probed.width, probed.height), (1280, 720));
         assert!(probed.has_audio);

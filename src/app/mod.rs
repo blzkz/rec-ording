@@ -294,6 +294,7 @@ impl RecOrdingApp {
         // Find the graphics card encoder now, so exporting does not wait for it.
         let ctx = cc.egui_ctx.clone();
         thread::spawn(move || {
+            crate::gpu::detect();
             crate::hwenc::detect();
             ctx.request_repaint();
         });
@@ -2045,9 +2046,8 @@ impl RecOrdingApp {
         Self::sheet_window(ctx, "export", 460.0, |ui| match &self.export_ui {
             ExportUi::Running { fraction, eta, encoder, .. } => {
                 ui.label(RichText::new("Exportando…").font(medium(20.0)).color(TEXT));
-                if let Some(name) = encoder {
-                    let by = if name == "Procesador" { "Codificando con el procesador".to_string() } else { format!("Codificando con la gráfica · {name}") };
-                    ui.label(RichText::new(by).color(TEXT_3).font(regular(12.0)));
+                if let Some(how) = encoder {
+                    ui.label(RichText::new(how.as_str()).color(TEXT_3).font(regular(12.0)));
                 }
                 ui.add_space(10.0);
                 let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 6.0), Sense::hover());
@@ -2141,21 +2141,24 @@ impl RecOrdingApp {
                     });
                 }
                 if s.format != ExportFormat::Gif {
-                    form_row(ui, "Gráfica", |ui| match crate::hwenc::detected() {
-                        None => {
+                    form_row(ui, "Gráfica", |ui| match (crate::gpu::detected(), crate::hwenc::detected()) {
+                        (None, _) | (_, None) => {
                             ui.add(egui::Spinner::new().size(14.0).color(TEXT_3));
                             ui.label(RichText::new("Buscando la tarjeta gráfica…").color(TEXT_3).font(regular(12.0)));
                         }
-                        Some(None) => {
+                        (Some(None), Some(None)) => {
                             ui.label(RichText::new("No hay ninguna compatible; se usa el procesador").color(TEXT_3).font(regular(12.0)));
                         }
-                        Some(Some(e)) => {
+                        (Some(card), Some(enc)) => {
                             toggle(ui, &mut s.hardware);
                             let codec = if s.format == ExportFormat::Hevc { crate::hwenc::Codec::Hevc } else { crate::hwenc::Codec::H264 };
-                            let note = match (s.hardware, e.supports(codec)) {
-                                (false, _) => "Desactivada: codifica el procesador".to_string(),
-                                (true, true) => format!("Codifica {}", e.name),
-                                (true, false) => format!("{} no admite HEVC; se usa el procesador", e.name),
+                            let encodes = enc.as_ref().filter(|e| e.supports(codec));
+                            let note = match (s.hardware, card, encodes) {
+                                (false, ..) => "Desactivada: lo hace todo el procesador".to_string(),
+                                (true, Some(c), Some(_)) => format!("{c} · dibuja y codifica"),
+                                (true, Some(c), None) => format!("{c} · dibuja; codifica el procesador"),
+                                (true, None, Some(e)) => format!("{} · codifica; dibuja el procesador", e.name),
+                                (true, None, None) => "Se usa el procesador".to_string(),
                             };
                             ui.label(RichText::new(note).color(TEXT_3).font(regular(12.0)));
                         }

@@ -5,6 +5,7 @@ mod app;
 mod capture;
 mod compositor;
 mod export;
+mod gpu;
 mod hwenc;
 mod library;
 mod mcp;
