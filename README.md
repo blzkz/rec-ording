@@ -19,7 +19,7 @@ Pensado para la ficha de Google Play, YouTube, Reels/Shorts o redes, sin pasar p
    - **Texto**: títulos al estilo de los anuncios de Apple, junto al móvil (que se aparta para dejarles sitio), arriba, abajo o en el centro. Un titular (una línea por salto de línea) y, si quieres, una línea más pequeña debajo; tamaño grande para cifras («100 / ciudades reales.»). Entran apareciendo, palabra a palabra o línea a línea (las anteriores se atenúan). **+ Texto**, la tecla T o doble clic en la pista.
    El **Director** funciona como en Matte: mueve el cursor a cada momento importante, arrastra sobre la vista previa lo que debe verse y pulsa **Generar planos**. Elige movimiento 3D (ángulos y órbitas) o 2D (zoom plano), su intensidad, y pide **otra toma** de un plano si no te convence.
    Todo se puede deshacer (Ctrl+Z) y rehacer (Ctrl+Mayús+Z). Con **Proyectos** creas y cambias de proyecto.
-4. **Exporta** en MP4 (H.264 o HEVC) o GIF, a 720p, 1080p o 4K, a 30 o 60 fps, con el sonido del móvil. Si tienes una tarjeta gráfica, la exportación la usa para dibujar los fotogramas (Vulkan, DirectX 12 o Metal) y para codificar el vídeo (NVENC en NVIDIA, VAAPI en AMD e Intel en Linux, AMF o Quick Sync en Windows); si algo falla, se vuelve a hacer con el procesador. Un vídeo de 16 s a 1080p60 con un modelo 3D tarda unos 7,5 s en lugar de 41 s. La vista previa se sigue dibujando con el procesador, con el mismo resultado.
+4. **Exporta** en MP4 (H.264 o HEVC) o GIF, a 720p, 1080p o 4K, a 30 o 60 fps, con el sonido del móvil. Si tienes una tarjeta gráfica, la exportación la usa para dibujar los fotogramas (Vulkan, DirectX 12 o Metal) y para codificar el vídeo (NVENC en NVIDIA, VAAPI en AMD e Intel en Linux, AMF o Quick Sync en Windows); si algo falla, se vuelve a hacer con el procesador. Un vídeo de 16 s a 1080p60 con un modelo 3D tarda unos 6 s en lugar de 40 s. Todas las exportaciones salen en BT.709 (rango TV) y etiquetadas, se hagan con la tarjeta o con el procesador. La vista previa se sigue dibujando con el procesador, con el mismo resultado.
 
 ### Atajos
 
@@ -85,7 +85,7 @@ Para publicar una versión, sube una etiqueta `vX.Y.Z` (con la versión de `Carg
 
 ### Windows
 
-Descarga `rec-ording-<versión>-windows-x64.zip`, descomprímelo y abre `rec-ording.exe`. Lo genera el workflow **Windows** de GitHub Actions en cada cambio de `main`, y en cada etiqueta `v*` lo añade a la release. Instala las herramientas con:
+Descarga `rec-ording-<versión>-windows-x64.zip`, descomprímelo y abre `rec-ording.exe`. Lo genera el workflow **Windows** de GitHub Actions al subir una etiqueta `v*` (también se puede lanzar a mano desde la pestaña Actions); los dos workflows solo corren entonces, para no gastar los minutos de Actions del repositorio privado. Instala las herramientas con:
 
 ```powershell
 winget install Gyan.FFmpeg

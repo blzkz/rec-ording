@@ -259,6 +259,95 @@ fn animate(c: &TextClip, word: &Word, words: usize, groups: usize, local: f32) -
 
 /// Draws the titles on screen into `out` (RGBA8, `w`×`h`).
 pub fn draw(out: &mut [u8], w: usize, h: usize, style: &Style, shown: &[Shown]) {
+    for l in layers(w, h, style, shown) {
+        l.blend(out, w);
+    }
+}
+
+/// The titles on screen as one premultiplied RGBA layer over the region they cover, for the
+/// GPU to put over the frame. `None` when nothing shows.
+pub struct Overlay {
+    pub x: usize,
+    pub y: usize,
+    pub w: usize,
+    pub h: usize,
+    pub data: Vec<u8>,
+}
+
+pub fn overlay(w: usize, h: usize, style: &Style, shown: &[Shown]) -> Option<Overlay> {
+    let layers = layers(w, h, style, shown);
+    let x0 = layers.iter().map(|l| l.x0).min()?;
+    let y0 = layers.iter().map(|l| l.y0).min()?;
+    let x1 = layers.iter().map(|l| l.x0 + l.w).max()?;
+    let y1 = layers.iter().map(|l| l.y0 + l.h).max()?;
+    let (ow, oh) = (x1 - x0, y1 - y0);
+    // Premultiplied colour and coverage; each layer goes over the ones before.
+    let mut acc = vec![[0.0f32; 4]; ow * oh];
+    for l in &layers {
+        for y in 0..l.h {
+            for x in 0..l.w {
+                let (g, a) = l.at(x, y);
+                if g < 0.002 && a < 0.002 {
+                    continue;
+                }
+                // Halo then glyph, as `blend` does: d → d·(1-g)(1-a) + halo·g·(1-a) + col·a.
+                let keep = (1.0 - g) * (1.0 - a);
+                let o = &mut acc[(y + l.y0 - y0) * ow + x + l.x0 - x0];
+                for k in 0..3 {
+                    o[k] = o[k] * keep + l.halo[k] * g * (1.0 - a) + l.col[k] * a;
+                }
+                o[3] = o[3] * keep + (1.0 - keep);
+            }
+        }
+    }
+    // Colour is already 0..255 (premultiplied); coverage goes from 0..1 to 0..255.
+    let q = |v: f32| v.round().clamp(0.0, 255.0) as u8;
+    let data = acc.iter().flat_map(|o| [q(o[0]), q(o[1]), q(o[2]), q(o[3] * 255.0)]).collect();
+    Some(Overlay { x: x0, y: y0, w: ow, h: oh, data })
+}
+
+/// One title's ink: glyph coverage and the soft halo around it, over a region of the frame.
+struct Layer {
+    x0: usize,
+    y0: usize,
+    w: usize,
+    h: usize,
+    mask: Vec<f32>,
+    glow: Vec<f32>,
+    col: [f32; 3],
+    halo: [f32; 3],
+}
+
+impl Layer {
+    /// Halo and glyph opacity at a point of the region.
+    #[inline(always)]
+    fn at(&self, x: usize, y: usize) -> (f32, f32) {
+        let i = y * self.w + x;
+        ((self.glow[i] * 1.8).min(1.0) * 0.55, self.mask[i])
+    }
+
+    /// Paints the glyphs in `col` over a soft glow of the opposite tone, which only shows where
+    /// the text crosses something of its own colour (the recording, during a zoom).
+    fn blend(&self, out: &mut [u8], w: usize) {
+        for y in 0..self.h {
+            for x in 0..self.w {
+                let (g, a) = self.at(x, y);
+                if g < 0.002 && a < 0.002 {
+                    continue;
+                }
+                let i = ((y + self.y0) * w + x + self.x0) * 4;
+                for k in 0..3 {
+                    let d = out[i + k] as f32;
+                    let d = d + (self.halo[k] - d) * g;
+                    out[i + k] = (d + (self.col[k] - d) * a).round().clamp(0.0, 255.0) as u8;
+                }
+            }
+        }
+    }
+}
+
+fn layers(w: usize, h: usize, style: &Style, shown: &[Shown]) -> Vec<Layer> {
+    let mut out = Vec::new();
     for s in shown {
         let c = s.clip;
         if is_blank(c) || s.local < 0.0 || s.local > c.duration {
@@ -275,8 +364,9 @@ pub fn draw(out: &mut [u8], w: usize, h: usize, style: &Style, shown: &[Shown]) 
             }
         }
         let biggest = words.iter().map(|w| w.face.size).fold(0.0, f32::max);
-        paint(out, w, h, &glyphs, col, (0.12 * biggest).max(1.0) as usize);
+        out.extend(layer(w, h, &glyphs, col, (0.12 * biggest).max(1.0) as usize));
     }
+    out
 }
 
 fn outline_word(word: &Word, baseline: f32, alpha: f32, glyphs: &mut Vec<(ab_glyph::OutlinedGlyph, f32)>) {
@@ -321,22 +411,18 @@ fn box_pass(from: &[f32], to: &mut [f32], n: usize, stride: usize, lines: usize,
     }
 }
 
-/// Paints the glyphs in `col` over a soft glow of the opposite tone, which only shows where the
-/// text crosses something of its own colour (the recording, during a zoom).
-fn paint(out: &mut [u8], w: usize, h: usize, glyphs: &[(ab_glyph::OutlinedGlyph, f32)], col: [f32; 3], r: usize) {
-    let Some(bounds) = glyphs.iter().map(|(g, _)| g.px_bounds()).reduce(|a, b| ab_glyph::Rect {
+fn layer(w: usize, h: usize, glyphs: &[(ab_glyph::OutlinedGlyph, f32)], col: [f32; 3], r: usize) -> Option<Layer> {
+    let bounds = glyphs.iter().map(|(g, _)| g.px_bounds()).reduce(|a, b| ab_glyph::Rect {
         min: point(a.min.x.min(b.min.x), a.min.y.min(b.min.y)),
         max: point(a.max.x.max(b.max.x), a.max.y.max(b.max.y)),
-    }) else {
-        return;
-    };
+    })?;
     let pad = 3 * r as i64;
     let x0 = (bounds.min.x as i64 - pad).max(0);
     let y0 = (bounds.min.y as i64 - pad).max(0);
     let x1 = (bounds.max.x as i64 + pad).min(w as i64);
     let y1 = (bounds.max.y as i64 + pad).min(h as i64);
     if x1 <= x0 || y1 <= y0 {
-        return;
+        return None;
     }
     let (mw, mh) = ((x1 - x0) as usize, (y1 - y0) as usize);
     let mut mask = vec![0.0f32; mw * mh];
@@ -354,20 +440,7 @@ fn paint(out: &mut [u8], w: usize, h: usize, glyphs: &[(ab_glyph::OutlinedGlyph,
     blur(&mut glow, mw, mh, r);
     let light = col[0] + col[1] + col[2] > 384.0;
     let halo = if light { [0.0, 0.0, 0.0] } else { [255.0, 255.0, 255.0] };
-    for y in 0..mh {
-        for x in 0..mw {
-            let (g, a) = ((glow[y * mw + x] * 1.8).min(1.0) * 0.55, mask[y * mw + x]);
-            if g < 0.002 && a < 0.002 {
-                continue;
-            }
-            let i = ((y + y0 as usize) * w + x + x0 as usize) * 4;
-            for k in 0..3 {
-                let d = out[i + k] as f32;
-                let d = d + (halo[k] - d) * g;
-                out[i + k] = (d + (col[k] - d) * a).round().clamp(0.0, 255.0) as u8;
-            }
-        }
-    }
+    Some(Layer { x0: x0 as usize, y0: y0 as usize, w: mw, h: mh, mask, glow, col, halo })
 }
 
 #[cfg(test)]
@@ -425,6 +498,31 @@ mod tests {
         let c = clip("Una frase bastante larga que no cabe en una sola línea junto al móvil", "", TextReveal::Fade);
         let (x0, _, x1, _, _) = ink(&c, 2.0);
         assert!(x1 - x0 <= (0.37 * 640.0) as usize + 4, "{x0}..{x1}");
+    }
+
+    #[test]
+    fn the_overlay_matches_drawing_on_the_frame() {
+        let (w, h) = (640, 360);
+        let a = TextClip { title: "Dos títulos".into(), subtitle: "a la vez".into(), color: TextColor::Light, ..TextClip::default() };
+        let b = TextClip { title: "Abajo".into(), place: TextPlace::Bottom, color: TextColor::Dark, ..TextClip::default() };
+        let shown = [Shown { clip: &a, local: 1.5 }, Shown { clip: &b, local: 1.5 }];
+        let base: Vec<u8> = (0..w * h * 4).map(|i| ((i / 4) % 251) as u8).collect();
+        let mut drawn = base.clone();
+        draw(&mut drawn, w, h, &Style::default(), &shown);
+        let o = overlay(w, h, &Style::default(), &shown).expect("overlay");
+        let mut composed = base.clone();
+        for y in 0..o.h {
+            for x in 0..o.w {
+                let s = &o.data[(y * o.w + x) * 4..][..4];
+                let i = ((y + o.y) * w + x + o.x) * 4;
+                for k in 0..3 {
+                    composed[i + k] = (s[k] as f32 + composed[i + k] as f32 * (1.0 - s[3] as f32 / 255.0)).round().min(255.0) as u8;
+                }
+            }
+        }
+        let worst = drawn.iter().zip(&composed).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap();
+        assert!(worst <= 2, "{worst}");
+        assert!(overlay(w, h, &Style::default(), &[]).is_none());
     }
 
     #[test]

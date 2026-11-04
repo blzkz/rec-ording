@@ -49,42 +49,44 @@ impl Encoder {
     }
 
     /// Video encoding options for the output, at a quality comparable to x264's `crf`.
-    pub fn output_args(&self, codec: Codec, crf: u32) -> Vec<String> {
+    /// `yuv`: the input is already YUV 4:2:0 BT.709 (from the GPU compositor), not RGBA.
+    pub fn output_args(&self, codec: Codec, crf: u32, yuv: bool) -> Vec<String> {
         let q = crf.to_string();
         let name = |base: &str| {
             let c = if codec == Codec::H264 { "h264" } else { "hevc" };
             format!("{c}_{base}")
         };
-        let mut a: Vec<String> = match self.api {
-            Api::Nvenc => vec!["-c:v", &name("nvenc"), "-preset", "p5", "-tune", "hq", "-rc", "vbr", "-cq", &q, "-b:v", "0", "-pix_fmt", "yuv420p"]
-                .into_iter()
-                .map(String::from)
-                .collect(),
-            Api::Amf => vec!["-c:v", &name("amf"), "-quality", "quality", "-rc", "cqp", "-qp_i", &q, "-qp_p", &q, "-pix_fmt", "yuv420p"]
-                .into_iter()
-                .map(String::from)
-                .collect(),
-            Api::Qsv => vec!["-c:v", &name("qsv"), "-preset", "medium", "-global_quality", &q, "-pix_fmt", "nv12"].into_iter().map(String::from).collect(),
-            // Upload the RGBA frames and convert them on the card too.
-            Api::Vaapi => vec![
-                "-filter:v",
-                "format=rgba,hwupload,scale_vaapi=format=nv12:out_range=tv:out_color_matrix=bt709",
-                "-c:v",
-                &name("vaapi"),
-                "-rc_mode",
-                "CQP",
-                "-qp",
-                &q,
-            ]
-            .into_iter()
-            .map(String::from)
-            .collect(),
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<String>>();
+        let mut a = match self.api {
+            Api::Nvenc => s(&["-c:v", &name("nvenc"), "-preset", "p5", "-tune", "hq", "-rc", "vbr", "-cq", &q, "-b:v", "0"]),
+            Api::Amf => s(&["-c:v", &name("amf"), "-quality", "quality", "-rc", "cqp", "-qp_i", &q, "-qp_p", &q]),
+            Api::Qsv => s(&["-c:v", &name("qsv"), "-preset", "medium", "-global_quality", &q]),
+            Api::Vaapi => s(&["-c:v", &name("vaapi"), "-rc_mode", "CQP", "-qp", &q]),
         };
+        let pix = if self.api == Api::Qsv { "nv12" } else { "yuv420p" };
+        a.extend(match (self.api, yuv) {
+            (Api::Vaapi, true) => s(&["-filter:v", "format=nv12,hwupload"]),
+            // Upload the RGBA frames and convert them on the card too.
+            (Api::Vaapi, false) => s(&["-filter:v", "format=rgba,hwupload,scale_vaapi=format=nv12:out_range=tv:out_color_matrix=bt709"]),
+            (_, true) => s(&["-pix_fmt", pix]),
+            (_, false) => to_yuv(pix),
+        });
         if codec == Codec::Hevc {
             a.extend(["-tag:v".to_string(), "hvc1".to_string()]);
         }
         a
     }
+}
+
+/// Converts RGBA input to `pix` with BT.709 colours, TV range.
+pub fn to_yuv(pix: &str) -> Vec<String> {
+    let tags = "setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv";
+    vec!["-filter:v".into(), format!("scale=out_color_matrix=bt709:out_range=tv,format={pix},{tags}"), "-pix_fmt".into(), pix.into()]
+}
+
+/// Tags the output as BT.709, TV range (what every path produces), so players show the right colours.
+pub fn color_tags() -> Vec<String> {
+    ["-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv"].iter().map(|x| x.to_string()).collect()
 }
 
 /// Encodes a short test clip with `enc`.
@@ -93,7 +95,7 @@ fn works(enc: &Encoder, codec: Codec) -> bool {
         .args(["-nostdin", "-loglevel", "error", "-y"])
         .args(enc.input_args())
         .args(["-f", "lavfi", "-i", "testsrc2=s=640x480:r=30:d=0.2,format=rgba"])
-        .args(enc.output_args(codec, 23))
+        .args(enc.output_args(codec, 23, false))
         .args(["-f", "null", "-"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -165,11 +167,14 @@ mod tests {
     fn builds_arguments_for_every_card() {
         let vaapi = Encoder { api: Api::Vaapi, device: Some("/dev/dri/renderD128".into()), h264: true, hevc: true, name: "AMD (VAAPI)".into() };
         assert_eq!(vaapi.input_args(), ["-vaapi_device", "/dev/dri/renderD128"]);
-        let a = vaapi.output_args(Codec::Hevc, 21).join(" ");
-        assert!(a.contains("hevc_vaapi") && a.contains("-qp 21") && a.contains("hvc1") && a.contains("hwupload"), "{a}");
+        let a = vaapi.output_args(Codec::Hevc, 21, false).join(" ");
+        assert!(a.contains("hevc_vaapi") && a.contains("-qp 21") && a.contains("hvc1") && a.contains("scale_vaapi"), "{a}");
+        assert!(vaapi.output_args(Codec::H264, 21, true).join(" ").contains("format=nv12,hwupload"));
         let nv = Encoder { api: Api::Nvenc, device: None, ..vaapi.clone() };
         assert!(nv.input_args().is_empty());
-        assert!(nv.output_args(Codec::H264, 18).join(" ").contains("h264_nvenc -preset p5"));
+        assert!(nv.output_args(Codec::H264, 18, false).join(" ").contains("h264_nvenc -preset p5"));
+        assert!(nv.output_args(Codec::H264, 18, false).join(" ").contains("out_color_matrix=bt709"));
+        assert!(nv.output_args(Codec::H264, 18, true).join(" ").ends_with("-pix_fmt yuv420p"));
     }
 
     /// Needs ffmpeg and a graphics card: cargo test finds_a_card -- --ignored --nocapture

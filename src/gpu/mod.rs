@@ -84,8 +84,9 @@ fn fullscreen_pipeline(
     module: &wgpu::ShaderModule,
     layout: &wgpu::BindGroupLayout,
     fragment: &str,
-    format: wgpu::TextureFormat,
+    formats: &[wgpu::TextureFormat],
 ) -> wgpu::RenderPipeline {
+    let targets: Vec<Option<wgpu::ColorTargetState>> = formats.iter().map(|&format| Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })).collect();
     let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[layout], push_constant_ranges: &[] });
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(fragment),
@@ -98,7 +99,7 @@ fn fullscreen_pipeline(
             module,
             entry_point: Some(fragment),
             compilation_options: Default::default(),
-            targets: &[Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+            targets: &targets,
         }),
         multiview: None,
         cache: None,
@@ -175,6 +176,16 @@ pub struct GpuCompositor {
     model: Option<GpuModel>,
     readback: wgpu::Buffer,
     padded_row: usize,
+    /// Titles drawn on the CPU, put over the frame before converting it to YUV.
+    overlay: Target,
+    finish: wgpu::Buffer,
+    finish_group: wgpu::BindGroup,
+    luma_pipeline: wgpu::RenderPipeline,
+    chroma_pipeline: wgpu::RenderPipeline,
+    /// Y, U and V planes, and their padded rows when read back.
+    planes: [Target; 3],
+    plane_rows: [usize; 2],
+    yuv_readback: wgpu::Buffer,
 }
 
 impl GpuCompositor {
@@ -221,7 +232,7 @@ impl GpuCompositor {
         let model_layer = target(&device, "model layer", mw, mh, wgpu::TextureFormat::Rgba16Float, render);
         let depth = model.map(|_| target(&device, "depth", mw, mh, wgpu::TextureFormat::Depth32Float, U::RENDER_ATTACHMENT));
         let sub = target(&device, "subframe", w, h, wgpu::TextureFormat::Rgba8Unorm, render);
-        let out = target(&device, "output", w, h, wgpu::TextureFormat::Rgba8Unorm, U::RENDER_ATTACHMENT | U::COPY_SRC);
+        let out = target(&device, "output", w, h, wgpu::TextureFormat::Rgba8Unorm, render | U::COPY_SRC);
         let acc = [
             target(&device, "blur a", w, h, wgpu::TextureFormat::Rgba32Uint, render),
             target(&device, "blur b", w, h, wgpu::TextureFormat::Rgba32Uint, render),
@@ -243,7 +254,7 @@ impl GpuCompositor {
                 texture(4, UNFILTERED),
             ],
         });
-        let compose_pipeline = fullscreen_pipeline(&device, &compose_module, &compose_layout, "fs", wgpu::TextureFormat::Rgba8Unorm);
+        let compose_pipeline = fullscreen_pipeline(&device, &compose_module, &compose_layout, "fs", &[wgpu::TextureFormat::Rgba8Unorm]);
 
         let blur_module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("blur"), source: wgpu::ShaderSource::Wgsl(include_str!("blur.wgsl").into()) });
         let blur_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -264,8 +275,8 @@ impl GpuCompositor {
             })
         };
         let blur_groups = [blur_group(0), blur_group(1)];
-        let accumulate_pipeline = fullscreen_pipeline(&device, &blur_module, &blur_layout, "accumulate", wgpu::TextureFormat::Rgba32Uint);
-        let resolve_pipeline = fullscreen_pipeline(&device, &blur_module, &blur_layout, "resolve", wgpu::TextureFormat::Rgba8Unorm);
+        let accumulate_pipeline = fullscreen_pipeline(&device, &blur_module, &blur_layout, "accumulate", &[wgpu::TextureFormat::Rgba32Uint]);
+        let resolve_pipeline = fullscreen_pipeline(&device, &blur_module, &blur_layout, "resolve", &[wgpu::TextureFormat::Rgba8Unorm]);
 
         let model = model.map(|m| GpuModel::new(&device, &queue, m, &video, &video_sampler));
         let compose_group = Self::compose_group(&device, &compose_layout, &scene, &inds, &video, &video_sampler, &model_layer);
@@ -274,6 +285,39 @@ impl GpuCompositor {
         let readback = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("readback"),
             size: (padded_row * oh) as u64,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        // YUV for the encoder.
+        let overlay = target(&device, "titles", w, h, wgpu::TextureFormat::Rgba8Unorm, U::TEXTURE_BINDING | U::COPY_DST);
+        let finish_module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("finish"), source: wgpu::ShaderSource::Wgsl(include_str!("finish.wgsl").into()) });
+        let finish_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("finish"),
+            entries: &[texture(0, UNFILTERED), texture(1, UNFILTERED), uniform(2, wgpu::ShaderStages::FRAGMENT)],
+        });
+        let finish = device.create_buffer(&wgpu::BufferDescriptor { label: Some("finish"), size: 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let finish_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("finish"),
+            layout: &finish_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&out.view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&overlay.view) },
+                wgpu::BindGroupEntry { binding: 2, resource: finish.as_entire_binding() },
+            ],
+        });
+        let r8 = wgpu::TextureFormat::R8Unorm;
+        let luma_pipeline = fullscreen_pipeline(&device, &finish_module, &finish_layout, "luma", &[r8]);
+        let chroma_pipeline = fullscreen_pipeline(&device, &finish_module, &finish_layout, "chroma", &[r8, r8]);
+        let planes = [
+            target(&device, "y", w, h, r8, U::RENDER_ATTACHMENT | U::COPY_SRC),
+            target(&device, "u", w / 2, h / 2, r8, U::RENDER_ATTACHMENT | U::COPY_SRC),
+            target(&device, "v", w / 2, h / 2, r8, U::RENDER_ATTACHMENT | U::COPY_SRC),
+        ];
+        let plane_rows = [ow.div_ceil(256) * 256, (ow / 2).div_ceil(256) * 256];
+        let yuv_readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("yuv readback"),
+            size: (plane_rows[0] * oh + 2 * plane_rows[1] * (oh / 2)) as u64,
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -306,6 +350,14 @@ impl GpuCompositor {
             model,
             readback,
             padded_row,
+            overlay,
+            finish,
+            finish_group,
+            luma_pipeline,
+            chroma_pipeline,
+            planes,
+            plane_rows,
+            yuv_readback,
         };
         gpu.check()?;
         Ok(gpu)
@@ -422,6 +474,92 @@ impl GpuCompositor {
         if out.len() != ow * oh * 4 {
             return Err("Tamaño de imagen inesperado".into());
         }
+        self.render(inp);
+        let mut enc = self.device.create_command_encoder(&Default::default());
+        enc.copy_texture_to_buffer(
+            wgpu::ImageCopyTexture { texture: &self.out.tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::ImageCopyBuffer {
+                buffer: &self.readback,
+                layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(self.padded_row as u32), rows_per_image: Some(oh as u32) },
+            },
+            wgpu::Extent3d { width: ow as u32, height: oh as u32, depth_or_array_layers: 1 },
+        );
+        self.queue.submit([enc.finish()]);
+        let row = self.padded_row;
+        self.download(&self.readback, |data| unpad(data, row, ow * 4, oh, out))
+    }
+
+    /// The finished frame for the encoder: everything plus the titles (`overlay`), as YUV 4:2:0
+    /// (BT.709, TV range) in `out` (`ow * oh * 3 / 2` bytes: Y, then U, then V).
+    pub fn compose_yuv(&mut self, out: &mut [u8], inp: &ComposeInput, overlay: Option<&crate::text::Overlay>) -> Result<(), String> {
+        let (ow, oh) = (self.ow, self.oh);
+        if out.len() != ow * oh * 3 / 2 {
+            return Err("Tamaño de imagen inesperado".into());
+        }
+        self.render(inp);
+        let rect = match overlay {
+            Some(o) => {
+                self.queue.write_texture(
+                    wgpu::ImageCopyTexture { texture: &self.overlay.tex, mip_level: 0, origin: wgpu::Origin3d { x: o.x as u32, y: o.y as u32, z: 0 }, aspect: wgpu::TextureAspect::All },
+                    &o.data,
+                    wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(o.w as u32 * 4), rows_per_image: Some(o.h as u32) },
+                    wgpu::Extent3d { width: o.w as u32, height: o.h as u32, depth_or_array_layers: 1 },
+                );
+                [o.x as f32, o.y as f32, (o.x + o.w) as f32, (o.y + o.h) as f32]
+            }
+            None => [0.0; 4],
+        };
+        self.queue.write_buffer(&self.finish, 0, bytes(&[rect]));
+        let mut enc = self.device.create_command_encoder(&Default::default());
+        {
+            let mut p = pass(&mut enc, &self.planes[0].view, None);
+            p.set_pipeline(&self.luma_pipeline);
+            p.set_bind_group(0, &self.finish_group, &[]);
+            p.draw(0..3, 0..1);
+        }
+        {
+            let attachment = |view| {
+                Some(wgpu::RenderPassColorAttachment { view, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store } })
+            };
+            let mut p = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("chroma"),
+                color_attachments: &[attachment(&self.planes[1].view), attachment(&self.planes[2].view)],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            p.set_pipeline(&self.chroma_pipeline);
+            p.set_bind_group(0, &self.finish_group, &[]);
+            p.draw(0..3, 0..1);
+        }
+        let [yr, cr] = self.plane_rows;
+        let offsets = [0, yr * oh, yr * oh + cr * (oh / 2)];
+        for (k, plane) in self.planes.iter().enumerate() {
+            let (w, h, row) = if k == 0 { (ow, oh, yr) } else { (ow / 2, oh / 2, cr) };
+            enc.copy_texture_to_buffer(
+                wgpu::ImageCopyTexture { texture: &plane.tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                wgpu::ImageCopyBuffer {
+                    buffer: &self.yuv_readback,
+                    layout: wgpu::ImageDataLayout { offset: offsets[k] as u64, bytes_per_row: Some(row as u32), rows_per_image: Some(h as u32) },
+                },
+                wgpu::Extent3d { width: w as u32, height: h as u32, depth_or_array_layers: 1 },
+            );
+        }
+        self.queue.submit([enc.finish()]);
+        let ysize = ow * oh;
+        let csize = (ow / 2) * (oh / 2);
+        self.download(&self.yuv_readback, |data| {
+            let (y, rest) = out.split_at_mut(ysize);
+            let (u, v) = rest.split_at_mut(csize);
+            unpad(&data[offsets[0]..], yr, ow, oh, y);
+            unpad(&data[offsets[1]..], cr, ow / 2, oh / 2, u);
+            unpad(&data[offsets[2]..], cr, ow / 2, oh / 2, v);
+        })
+    }
+
+    /// Draws the frame (all subframes, for motion blur) into `out`.
+    fn render(&mut self, inp: &ComposeInput) {
+        let (ow, oh) = (self.ow, self.oh);
         let subs: Vec<ComposeInput> = if inp.blur.len() < 2 {
             vec![*inp]
         } else {
@@ -433,67 +571,57 @@ impl GpuCompositor {
             let mut enc = self.device.create_command_encoder(&Default::default());
             self.draw(&mut enc, &sc, true);
             self.queue.submit([enc.finish()]);
-        } else {
-            self.queue.write_buffer(&self.blur_n, 0, bytemuck::cast_slice(&[n as u32, 0, 0, 0]));
-            for (i, sub) in subs.iter().enumerate() {
-                let sc = Scene::new(ow, oh, sub);
-                let mut enc = self.device.create_command_encoder(&Default::default());
-                if i == 0 {
-                    drop(pass(&mut enc, &self.acc[0].view, None));
-                }
-                self.draw(&mut enc, &sc, false);
-                // Add the subframe: read the sums from acc[i % 2], write them to the other one.
-                let (src, dst) = (i % 2, (i + 1) % 2);
-                let mut p = pass(&mut enc, &self.acc[dst].view, None);
-                p.set_pipeline(&self.accumulate_pipeline);
-                p.set_bind_group(0, &self.blur_groups[src], &[]);
-                p.draw(0..3, 0..1);
-                drop(p);
-                self.queue.submit([enc.finish()]);
-            }
+            return;
+        }
+        self.queue.write_buffer(&self.blur_n, 0, bytemuck::cast_slice(&[n as u32, 0, 0, 0]));
+        for (i, sub) in subs.iter().enumerate() {
+            let sc = Scene::new(ow, oh, sub);
             let mut enc = self.device.create_command_encoder(&Default::default());
-            let mut p = pass(&mut enc, &self.out.view, None);
-            p.set_pipeline(&self.resolve_pipeline);
-            p.set_bind_group(0, &self.blur_groups[n % 2], &[]);
+            if i == 0 {
+                drop(pass(&mut enc, &self.acc[0].view, None));
+            }
+            self.draw(&mut enc, &sc, false);
+            // Add the subframe: read the sums from acc[i % 2], write them to the other one.
+            let (src, dst) = (i % 2, (i + 1) % 2);
+            let mut p = pass(&mut enc, &self.acc[dst].view, None);
+            p.set_pipeline(&self.accumulate_pipeline);
+            p.set_bind_group(0, &self.blur_groups[src], &[]);
             p.draw(0..3, 0..1);
             drop(p);
             self.queue.submit([enc.finish()]);
         }
-        self.read(out)
+        let mut enc = self.device.create_command_encoder(&Default::default());
+        let mut p = pass(&mut enc, &self.out.view, None);
+        p.set_pipeline(&self.resolve_pipeline);
+        p.set_bind_group(0, &self.blur_groups[n % 2], &[]);
+        p.draw(0..3, 0..1);
+        drop(p);
+        self.queue.submit([enc.finish()]);
     }
 
-    fn read(&mut self, out: &mut [u8]) -> Result<(), String> {
-        let (ow, oh) = (self.ow, self.oh);
-        let mut enc = self.device.create_command_encoder(&Default::default());
-        enc.copy_texture_to_buffer(
-            wgpu::ImageCopyTexture { texture: &self.out.tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-            wgpu::ImageCopyBuffer {
-                buffer: &self.readback,
-                layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(self.padded_row as u32), rows_per_image: Some(oh as u32) },
-            },
-            wgpu::Extent3d { width: ow as u32, height: oh as u32, depth_or_array_layers: 1 },
-        );
-        self.queue.submit([enc.finish()]);
-        let slice = self.readback.slice(..);
+    /// Waits for `buf` (filled by the last submission) and hands its bytes to `f`.
+    fn download(&self, buf: &wgpu::Buffer, f: impl FnOnce(&[u8])) -> Result<(), String> {
+        let slice = buf.slice(..);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = tx.send(r);
         });
         self.device.poll(wgpu::Maintain::Wait);
         rx.recv().map_err(|e| e.to_string())?.map_err(|e| format!("No se pudo leer la imagen de la tarjeta: {e}"))?;
-        {
-            let data = slice.get_mapped_range();
-            let row = self.padded_row;
-            if row == ow * 4 {
-                out.copy_from_slice(&data[..ow * oh * 4]);
-            } else {
-                for (y, dst) in out.chunks_mut(ow * 4).enumerate() {
-                    dst.copy_from_slice(&data[y * row..y * row + ow * 4]);
-                }
-            }
-        }
-        self.readback.unmap();
+        f(&slice.get_mapped_range());
+        buf.unmap();
         self.check()
+    }
+}
+
+/// Copies `rows` rows of `width` bytes, `stride` apart in `src`, into `dst`.
+fn unpad(src: &[u8], stride: usize, width: usize, rows: usize, dst: &mut [u8]) {
+    if stride == width {
+        dst[..width * rows].copy_from_slice(&src[..width * rows]);
+    } else {
+        for (y, d) in dst.chunks_mut(width).take(rows).enumerate() {
+            d.copy_from_slice(&src[y * stride..y * stride + width]);
+        }
     }
 }
 
@@ -957,6 +1085,63 @@ mod tests {
         let mut zoomed = input(&custom, &mips, &[], Some(&model));
         zoomed.cam = CameraValue { zoom: 1.8, x: 0.5, y: 0.25, ..CameraValue::REST };
         check(&mut gpu, "model-zoom", &zoomed, w, h);
+    }
+
+    /// BT.709 TV-range 4:2:0 of an RGBA frame, as finish.wgsl computes it.
+    fn yuv(rgba: &[u8], w: usize, h: usize) -> Vec<u8> {
+        let px = |x: usize, y: usize| {
+            let i = (y * w + x) * 4;
+            [rgba[i] as f32, rgba[i + 1] as f32, rgba[i + 2] as f32]
+        };
+        let luma = |c: [f32; 3]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+        let q = |v: f32| v.round().clamp(0.0, 255.0) as u8;
+        let mut out: Vec<u8> = (0..w * h).map(|i| q(16.0 + luma(px(i % w, i / w)) * 219.0 / 255.0)).collect();
+        let (mut u, mut v) = (Vec::new(), Vec::new());
+        for y in 0..h / 2 {
+            for x in 0..w / 2 {
+                let c = [px(2 * x, 2 * y), px(2 * x + 1, 2 * y), px(2 * x, 2 * y + 1), px(2 * x + 1, 2 * y + 1)];
+                let m = [0, 1, 2].map(|k| c.iter().map(|p| p[k]).sum::<f32>() / 4.0);
+                let l = luma(m);
+                u.push(q(128.0 + (m[2] - l) / 1.8556 * 224.0 / 255.0));
+                v.push(q(128.0 + (m[0] - l) / 1.5748 * 224.0 / 255.0));
+            }
+        }
+        out.extend(u);
+        out.extend(v);
+        out
+    }
+
+    /// The encoder's YUV, titles included, matches the CPU frame converted the same way.
+    #[test]
+    fn yuv_with_titles_matches_the_cpu() {
+        use crate::model::{TextClip, TextColor, TextPlace};
+        let (w, h) = (640, 360);
+        let mut gpu = match GpuCompositor::new(w, h, 2, None) {
+            Ok(g) => g,
+            Err(e) => return eprintln!("sin tarjeta gráfica, se omite: {e}"),
+        };
+        let mips = recording(540, 1200);
+        let style = Style { turn: 20.0, straighten_on_zoom: false, ..Style::default() };
+        let a = TextClip { title: "Camina.".into(), subtitle: "Tus pasos te mueven.".into(), color: TextColor::Light, ..TextClip::default() };
+        let b = TextClip { title: "Sobre la grabación".into(), place: TextPlace::Center, color: TextColor::Dark, ..TextClip::default() };
+        let shown = [crate::text::Shown { clip: &a, local: 1.5 }, crate::text::Shown { clip: &b, local: 1.5 }];
+        let blur: Vec<(f32, CameraValue, PoseValue)> = (0..4).map(|i| (2.0, CameraValue::REST, PoseValue { turn: 10.0 + i as f32 * 4.0, ..PoseValue::REST })).collect();
+        for (name, texts, blur) in [("plain", &[][..], &[][..]), ("titles", &shown[..], &[][..]), ("titles-blur", &shown[..], &blur[..])] {
+            let mut inp = input(&style, &mips, &[], None);
+            inp.texts = texts;
+            inp.blur = blur;
+            let mut cpu = vec![0u8; w * h * 4];
+            compose(&mut cpu, w, h, &inp);
+            let expected = yuv(&cpu, w, h);
+            let mut got = vec![0u8; w * h * 3 / 2];
+            let overlay = crate::text::overlay(w, h, &style, texts);
+            gpu.compose_yuv(&mut got, &inp, overlay.as_ref()).unwrap();
+            let diffs: Vec<u32> = expected.iter().zip(&got).map(|(a, b)| (*a as i32 - *b as i32).unsigned_abs()).collect();
+            let mean = diffs.iter().map(|&d| d as f64).sum::<f64>() / diffs.len() as f64;
+            let big = diffs.iter().filter(|&&d| d > 4).count() as f64 / diffs.len() as f64;
+            println!("{name}: mean {mean:.3}, off by > 4: {:.3} %", big * 100.0);
+            assert!(mean < 0.3 && big < 0.002, "{name}: mean {mean}, {:.2} % off by > 4", big * 100.0);
+        }
     }
 
     /// Time per 1080p frame, CPU against GPU: cargo test gpu_speed -- --ignored --nocapture

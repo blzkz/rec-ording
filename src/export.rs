@@ -133,13 +133,38 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
         })
         .collect::<Result<_, String>>()?;
 
+    let model = match (&project.style.frame, &project.style.model) {
+        (crate::model::FrameStyle::Custom, Some(cm)) => {
+            let src = crate::model3d::load(&cm.path)?;
+            let part = cm.screen(src.guess, src.parts.len()).ok_or("No se encontró la pantalla del modelo: elígela en «Pantalla»")?;
+            Some(crate::model3d::prepare(&src, part, cm.quarter_turns)?)
+        }
+        _ => None,
+    };
+    let mut gpu = if card { GpuCompositor::new(ow, oh, 2, model.as_ref()).ok() } else { None };
+    let how = match (&gpu, hw) {
+        (Some(g), Some(_)) => format!("Con la tarjeta gráfica ({})", g.name),
+        (Some(g), None) => format!("Dibuja la tarjeta gráfica ({}) y codifica el procesador", g.name),
+        (None, Some(e)) => format!("Dibuja el procesador y codifica la tarjeta gráfica ({})", e.name),
+        (None, None) => "Con el procesador".to_string(),
+    };
+    let _ = tx.send(ExportEvent::Encoder(how));
+    // With the graphics card the frames arrive as YUV with the titles on (less to read back
+    // and pipe); otherwise as RGBA, titles added by the writer.
+    let yuv = gpu.is_some() && settings.format != ExportFormat::Gif;
+
     // Encoder: input 0 is the rendered video, then one audio input per clip.
     let mut enc = command("ffmpeg");
     enc.args(["-nostdin", "-y", "-loglevel", "error"]);
     if let Some(e) = hw {
         enc.args(e.input_args());
     }
-    enc.args(["-f", "rawvideo", "-pix_fmt", "rgba", "-s", &format!("{ow}x{oh}"), "-r", &fps.to_string(), "-i", "-"]);
+    let pix = if yuv { "yuv420p" } else { "rgba" };
+    enc.args(["-f", "rawvideo", "-pix_fmt", pix, "-s", &format!("{ow}x{oh}"), "-r", &fps.to_string()]);
+    if yuv {
+        enc.args(hwenc::color_tags());
+    }
+    enc.args(["-i", "-"]);
     let audio = settings.include_audio && parts.iter().any(|p| p.audio) && settings.format != ExportFormat::Gif;
     if audio {
         let mut filter = String::new();
@@ -171,16 +196,16 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
     };
     match (settings.format, hw) {
         (ExportFormat::H264, Some(e)) => {
-            enc.args(e.output_args(Codec::H264, crf(18)));
+            enc.args(e.output_args(Codec::H264, crf(18), yuv));
         }
         (ExportFormat::Hevc, Some(e)) => {
-            enc.args(e.output_args(Codec::Hevc, crf(21)));
+            enc.args(e.output_args(Codec::Hevc, crf(21), yuv));
         }
         (ExportFormat::H264, None) => {
-            enc.args(["-c:v", "libx264", "-preset", "medium", "-crf", &crf(18).to_string(), "-pix_fmt", "yuv420p"]);
+            enc.args(["-c:v", "libx264", "-preset", "medium", "-crf", &crf(18).to_string()]);
         }
         (ExportFormat::Hevc, None) => {
-            enc.args(["-c:v", "libx265", "-preset", "medium", "-crf", &crf(21).to_string(), "-pix_fmt", "yuv420p", "-tag:v", "hvc1"]);
+            enc.args(["-c:v", "libx265", "-preset", "medium", "-crf", &crf(21).to_string(), "-tag:v", "hvc1"]);
         }
         (ExportFormat::Gif, _) => {
             let width = ow.min(800);
@@ -198,6 +223,10 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
         enc.args(["-c:a", "aac", "-b:a", "192k", "-shortest"]);
     }
     if settings.format != ExportFormat::Gif {
+        if hw.is_none() {
+            enc.args(if yuv { vec!["-pix_fmt".to_string(), "yuv420p".to_string()] } else { hwenc::to_yuv("yuv420p") });
+        }
+        enc.args(hwenc::color_tags());
         enc.args(["-movflags", "+faststart"]);
     }
     let mut encoder = enc
@@ -212,7 +241,8 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
     // Reader thread: decodes the clips one after another, giving exactly `frames` frames per
     // clip (repeating the last one if a recording runs a few frames short), with their mips
     // built here so that work overlaps with drawing.
-    let (frame_tx, frame_rx) = bounded::<(Arc<Mips>, usize, usize)>(3);
+    // `None` repeats the previous frame (a recording that runs a few frames short).
+    let (raw_tx, raw_rx) = bounded::<Option<Frame>>(3);
     let dec_err = Arc::new(Mutex::new(String::new()));
     let reader_err = dec_err.clone();
     let stop = Arc::new(AtomicBool::new(false));
@@ -236,29 +266,26 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
             let err = collect_stderr(&mut dec);
             let mut stdout = dec.stdout.take().unwrap();
             let size = part.w * part.h * 4;
-            let mut last: Option<Arc<Mips>> = None;
+            let mut got_one = false;
             for _ in 0..part.frames {
                 if reader_stop.load(Ordering::Relaxed) {
                     break;
                 }
                 let mut data = Vec::with_capacity(size);
                 let read = (&mut stdout).take(size as u64).read_to_end(&mut data);
-                let mips = match read {
+                let frame = match read {
                     Ok(n) if n == size => {
-                        let m = Arc::new(Mips::build(Frame { w: part.w, h: part.h, data }));
-                        last = Some(m.clone());
-                        m
+                        got_one = true;
+                        Some(Frame { w: part.w, h: part.h, data })
                     }
-                    _ => match &last {
-                        Some(l) => l.clone(),
-                        None => {
-                            *reader_err.lock().unwrap() = format!("No se pudo leer {}: {}", part.path, err.lock().unwrap().trim());
-                            let _ = dec.kill();
-                            return;
-                        }
-                    },
+                    _ if got_one => None,
+                    _ => {
+                        *reader_err.lock().unwrap() = format!("No se pudo leer {}: {}", part.path, err.lock().unwrap().trim());
+                        let _ = dec.kill();
+                        return;
+                    }
                 };
-                if frame_tx.send((mips, part.w, part.h)).is_err() {
+                if raw_tx.send(frame).is_err() {
                     let _ = dec.kill();
                     return;
                 }
@@ -267,38 +294,55 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
             let _ = dec.wait();
         }
     });
+    // Mips thread: prepares each frame for drawing, in parallel with decoding the next.
+    let (frame_tx, frame_rx) = bounded::<(Arc<Mips>, usize, usize)>(2);
+    thread::spawn(move || {
+        let mut last: Option<(Arc<Mips>, usize, usize)> = None;
+        for frame in raw_rx {
+            if let Some(f) = frame {
+                let (w, h) = (f.w, f.h);
+                last = Some((Arc::new(Mips::build(f)), w, h));
+            }
+            if let Some(l) = &last {
+                if frame_tx.send(l.clone()).is_err() {
+                    return;
+                }
+            }
+        }
+    });
 
-    // Writer thread: adds the titles to each frame (overlapping with drawing the next one) and
-    // feeds the encoder.
+    // Writer thread: adds the titles to RGBA frames (overlapping with drawing the next one)
+    // and feeds the encoder.
     let (out_tx, out_rx) = bounded::<(Vec<u8>, f32)>(3);
     let mut enc_in = encoder.stdin.take().ok_or("ffmpeg sin entrada")?;
     let (texts, style) = (project.texts.clone(), project.style.clone());
     let writer = thread::spawn(move || -> bool {
         for (mut buf, t) in out_rx {
-            crate::text::draw(&mut buf, ow, oh, &style, &timeline::texts_in(&texts, t));
+            if !yuv {
+                crate::text::draw(&mut buf, ow, oh, &style, &timeline::texts_in(&texts, t));
+            }
             if enc_in.write_all(&buf).is_err() {
                 return false;
             }
         }
         true
     });
+    // With YUV output the titles go to the card as an overlay, prepared ahead on this thread.
+    let (overlay_tx, overlay_rx) = bounded::<Option<crate::text::Overlay>>(4);
+    if yuv {
+        let (texts, style) = (project.texts.clone(), project.style.clone());
+        thread::spawn(move || {
+            for i in 0..total {
+                let t = i as f32 / fps as f32;
+                if overlay_tx.send(crate::text::overlay(ow, oh, &style, &timeline::texts_in(&texts, t))).is_err() {
+                    return;
+                }
+            }
+        });
+    } else {
+        drop(overlay_tx);
+    }
 
-    let model = match (&project.style.frame, &project.style.model) {
-        (crate::model::FrameStyle::Custom, Some(cm)) => {
-            let src = crate::model3d::load(&cm.path)?;
-            let part = cm.screen(src.guess, src.parts.len()).ok_or("No se encontró la pantalla del modelo: elígela en «Pantalla»")?;
-            Some(crate::model3d::prepare(&src, part, cm.quarter_turns)?)
-        }
-        _ => None,
-    };
-    let mut gpu = if card { GpuCompositor::new(ow, oh, 2, model.as_ref()).ok() } else { None };
-    let how = match (&gpu, hw) {
-        (Some(g), Some(_)) => format!("Con la tarjeta gráfica ({})", g.name),
-        (Some(g), None) => format!("Dibuja la tarjeta gráfica ({}) y codifica el procesador", g.name),
-        (None, Some(e)) => format!("Dibuja el procesador y codifica la tarjeta gráfica ({})", e.name),
-        (None, None) => "Con el procesador".to_string(),
-    };
-    let _ = tx.send(ExportEvent::Encoder(how));
     let touches = timeline::timeline_touches(project);
     let began = Instant::now();
     let mut written = 0usize;
@@ -319,7 +363,7 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
             break;
         };
         let t = i as f32 / fps as f32;
-        let mut buf = vec![0u8; ow * oh * 4];
+        let mut buf = vec![0u8; if yuv { ow * oh * 3 / 2 } else { ow * oh * 4 }];
         let blur = timeline::shutter(project, t, fps as f32);
         let inp = ComposeInput {
             style: &project.style,
@@ -338,7 +382,13 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
         };
         match gpu.as_mut() {
             Some(g) => {
-                if let Err(e) = g.compose_frame(&mut buf, &inp) {
+                let done = if yuv {
+                    let overlay = overlay_rx.recv().ok().flatten();
+                    g.compose_yuv(&mut buf, &inp, overlay.as_ref())
+                } else {
+                    g.compose_frame(&mut buf, &inp)
+                };
+                if let Err(e) = done {
                     failed = Some(e);
                     break;
                 }

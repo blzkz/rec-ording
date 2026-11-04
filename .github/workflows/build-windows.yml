@@ -1,11 +1,11 @@
 name: Windows
 
+# Only for releases (a `v*` tag) or when launched by hand: Windows minutes count double
+# against the private repository's monthly allowance.
 on:
   push:
-    branches: [main]
     tags:
       - 'v*'
-  pull_request:
   workflow_dispatch:
 
 permissions:

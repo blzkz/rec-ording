@@ -73,10 +73,13 @@ Se han retirado, de momento, el servidor MCP, el autoactualizador, los subtítul
 ## v0.8.1: exportar con la tarjeta gráfica
 
 - Los fotogramas de la exportación se dibujan en la tarjeta gráfica (wgpu: Vulkan, DirectX 12 o Metal) con shaders que portan el compositor paso a paso: fondo, sombras, marco integrado con cantos y trasera, modelo 3D con su iluminación, pantalla, toques y desenfoque de movimiento. Un test compara cada caso con el procesador (diferencia media inferior a 0,01 niveles).
-- Un fotograma 1080p pasa de 8,8 ms a 0,8 ms con el marco integrado y de 28,5 ms a 2,1 ms con un modelo 3D. Una exportación de 16 s a 1080p60 con el S26 pasa de 41 s a 7,5 s (con el marco integrado, de 16 s a 7,5 s).
-- La exportación también descodifica y prepara las mips en su hilo y dibuja los títulos en el del codificador, en paralelo con el dibujo.
+- Un fotograma 1080p pasa de 8,8 ms a 0,8 ms con el marco integrado y de 28,5 ms a 2,1 ms con un modelo 3D. Una exportación de 16 s a 1080p60 con el S26 pasa de 41 s a unos 6 s (con el marco integrado, de 16 s a 6 s).
+- Con la tarjeta, los títulos se ponen encima en la propia tarjeta (se preparan en otro hilo) y el fotograma sale ya convertido a YUV 4:2:0: se leen 3 MB por fotograma en lugar de 8 y ffmpeg no tiene que convertir. Descodificar, preparar las mips, dibujar y codificar van en hilos distintos, en paralelo. La exportación de 16 s con el S26 queda en unos 6 s.
+- Colores: todas las rutas exportan en BT.709, rango TV, con las etiquetas correspondientes (antes x264 convertía con BT.601 sin etiquetar).
 - Si no hay tarjeta (o es un adaptador por software) o falla algo, se exporta con el procesador.
 - Arreglado: con el modelo de canto, algunos píxeles se quedaban sin modelo.
+
+- Los workflows de GitHub Actions solo se lanzan al subir una etiqueta `v*` o a mano, para no gastar minutos del repositorio privado.
 
 ## Ideas para siguientes versiones
 
@@ -85,7 +88,7 @@ Se han retirado, de momento, el servidor MCP, el autoactualizador, los subtítul
 - Recortar y acelerar tramos intermedios (no solo el inicio y el final).
 - Música de fondo (lo que queda de la fase F7 del plan).
 - Tarjeta final con el icono de la app y la insignia de Google Play.
-- Exportar aún más rápido: convertir a YUV y dibujar los títulos en la tarjeta (ahora se leen 8 MB por fotograma).
+- Exportar aún más rápido: solapar el trabajo de la tarjeta de un fotograma con la preparación del siguiente.
 - Vista previa dibujada en la tarjeta gráfica.
 - Control en vivo por MCP (socket local) en lugar de por archivo.
 - Grabar el escritorio además del móvil.
