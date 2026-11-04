@@ -1495,25 +1495,30 @@ impl RecOrdingApp {
         section(ui, "Ajustes del modelo", |ui| {
             ui.horizontal(|ui| {
                 fixed_label(ui, 78.0, RichText::new("Pantalla").color(TEXT), Align::Min);
-                let detected = src.guess.and_then(|g| src.parts.get(g)).map(|p| p.name.clone());
-                let current = match cm.screen_part.and_then(|i| src.parts.get(i)) {
-                    Some(p) => p.name.clone(),
-                    None => match &detected {
-                        Some(d) => format!("Automática ({d})"),
-                        None => "Elige una pieza".to_string(),
-                    },
+                // The detected screen is the default: it is listed first, tagged, and stands for
+                // "automatic" (no manual choice saved).
+                let recommended = src.guess.and_then(|g| src.parts.get(g).map(|p| (g, p.name.clone())));
+                if cm.screen_part.is_some() && cm.screen_part == src.guess {
+                    cm.screen_part = None;
+                }
+                let current = match (cm.screen_part.and_then(|i| src.parts.get(i)), &recommended) {
+                    (Some(p), _) => part_label(&p.name, false),
+                    (None, Some((_, name))) => part_label(name, true),
+                    (None, None) => part_label("Elige una pieza", false),
                 };
                 egui::ComboBox::from_id_salt("model-screen")
                     .selected_text(current)
                     .width(ui.available_width() - 8.0)
                     .show_ui(ui, |ui| {
-                        if src.guess.is_some() {
-                            ui.selectable_value(&mut cm.screen_part, None, "Automática (recomendada)");
+                        if let Some((_, name)) = &recommended {
+                            ui.selectable_value(&mut cm.screen_part, None, part_label(name, true));
                             ui.separator();
                         }
                         for (i, p) in src.parts.iter().enumerate() {
-                            let label = if Some(i) == src.guess { format!("{} · detectada", p.name) } else { p.name.clone() };
-                            ui.selectable_value(&mut cm.screen_part, Some(i), label);
+                            if recommended.as_ref().is_some_and(|(g, _)| *g == i) {
+                                continue;
+                            }
+                            ui.selectable_value(&mut cm.screen_part, Some(i), part_label(&p.name, false));
                         }
                     });
             })
@@ -1522,7 +1527,7 @@ impl RecOrdingApp {
             if cm.screen_part.is_some() && src.guess.is_some() {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("Elegida a mano.").color(YELLOW).font(regular(11.5)));
-                    if ui.link(RichText::new("Volver a automática").font(regular(11.5))).clicked() {
+                    if ui.link(RichText::new("Volver a la recomendada").font(regular(11.5))).clicked() {
                         cm.screen_part = None;
                     }
                 });
@@ -2682,4 +2687,19 @@ fn import_tile(ui: &mut Ui, width: f32, busy: bool) -> egui::Response {
     }
     p.text(Pos2::new(rect.center().x, rect.bottom() - 9.0), Align2::CENTER_CENTER, "Importar", regular(11.5), TEXT_2);
     resp
+}
+
+/// A model part's name, with a "RECOMENDADA" tag for the detected screen.
+fn part_label(name: &str, recommended: bool) -> egui::text::LayoutJob {
+    use egui::text::{LayoutJob, TextFormat};
+    let mut job = LayoutJob::default();
+    job.append(name, 0.0, TextFormat { font_id: regular(13.0), color: TEXT, ..Default::default() });
+    if recommended {
+        job.append(
+            " RECOMENDADA ",
+            8.0,
+            TextFormat { font_id: medium(9.5), color: Color32::WHITE, background: ACCENT, valign: Align::Center, ..Default::default() },
+        );
+    }
+    job
 }

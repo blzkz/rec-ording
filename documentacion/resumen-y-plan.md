@@ -51,7 +51,7 @@ Se han retirado, de momento, el servidor MCP, el autoactualizador, los subtítul
 
 ## v0.6.3: pantalla automática
 
-- La pieza que hace de pantalla es «Automática» por defecto y sigue a la detección; elegir otra a mano queda indicado, con un enlace para volver a automática. Las elecciones guardadas por versiones anteriores se descartan (numeraban las piezas de otra forma).
+- La pieza detectada como pantalla es la opción por defecto: aparece la primera del desplegable con la etiqueta «RECOMENDADA» y es la que se usa al elegir un modelo. Elegir otra a mano queda indicado, con un enlace para volver a la recomendada. Las elecciones guardadas por versiones anteriores se descartan (numeraban las piezas de otra forma).
 
 ## Ideas para siguientes versiones
 
