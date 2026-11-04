@@ -69,6 +69,18 @@ cargo build --release
 ./target/release/rec-ording
 ```
 
+### Actualizaciones
+
+Al abrirse, la app mira si hay una versión nueva en las releases de [blzkz/rec-ording-releases](https://github.com/blzkz/rec-ording-releases), un repositorio público solo para los paquetes (el del código es privado). Si la hay, aparece el botón **Actualización** en la barra:
+
+- en Linux instala el paquete con `pkexec pacman -U` (pide tu contraseña);
+- en Windows reemplaza los archivos de la carpeta de rec-ording;
+- en una copia compilada a mano, abre la página de descarga.
+
+Después basta con reiniciar. Las descargas se comprueban con la suma SHA-256 que publica GitHub.
+
+Para publicar una versión, sube una etiqueta `vX.Y.Z` (con la versión de `Cargo.toml` y del `PKGBUILD`). Los workflows publican el paquete de Arch y el .zip de Windows en el repositorio de releases, usando como notas el mensaje del commit. Necesitan el secret `RELEASES_TOKEN`: un token con permiso *Contents: read and write* sobre `blzkz/rec-ording-releases`.
+
 ### Windows
 
 Descarga `rec-ording-<versión>-windows-x64.zip`, descomprímelo y abre `rec-ording.exe`. Lo genera el workflow **Windows** de GitHub Actions en cada cambio de `main`, y en cada etiqueta `v*` lo añade a la release. Instala las herramientas con:
@@ -102,6 +114,7 @@ Aplicación nativa en Rust con [egui](https://github.com/emilk/egui).
 | `library.rs` | Galería de modelos: los incluidos en `assets/models` y los importados, con miniaturas renderizadas. |
 | `export.rs` | Decodifica la grabación, compone cada fotograma y codifica el resultado con ffmpeg. |
 | `app/`, `theme.rs` | Interfaz: visor, línea de tiempo, inspector y hojas. |
+| `update.rs` | Busca versiones nuevas en las releases y las instala (pacman en Linux, reemplazando la carpeta en Windows). |
 | `platform.rs` | Lo que cambia entre Linux y Windows: carpetas, diálogos de archivos, abrir archivos y lanzar herramientas sin ventana de consola. |
 
 Tests: `cargo test` (incluye una prueba que monta y exporta un vídeo a través del servidor MCP). Con un vídeo o un móvil reales:

@@ -6,12 +6,13 @@ pkgdesc="Graba tu móvil Android y conviértelo en un vídeo promocional con mar
 arch=('x86_64')
 url="https://github.com/blzkz/rec-ording"
 license=('MIT')
-depends=('vulkan-icd-loader' 'ffmpeg')
+depends=('vulkan-icd-loader' 'ffmpeg' 'curl')
 optdepends=(
   'scrcpy: grabar el móvil con sonido y sin límite de tiempo (recomendado)'
   'android-tools: detectar el móvil por USB y registrar los toques (adb)'
   'zenity: diálogos para elegir archivos y carpetas'
   'unzip: importar modelos 3D directamente desde el .zip de la descarga'
+  'polkit: instalar las actualizaciones desde la app (pkexec)'
 )
 options=('!debug' '!strip')
 

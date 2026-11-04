@@ -12,6 +12,7 @@ use crate::model::*;
 use crate::model3d::{self, ModelSource, PreparedModel};
 use crate::theme::{self, *};
 use crate::timeline::{self, CameraValue, DevicePreset, PoseValue};
+use crate::update;
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use egui::{
     Align, Align2, Color32, ColorImage, CursorIcon, Id, Key, Margin, Order, Pos2, Rect, RichText, Rounding, Sense,
@@ -38,6 +39,8 @@ enum AppEvent {
     ModelLoaded { path: String, result: Result<Arc<ModelSource>, String> },
     ModelThumb { path: String, src: Option<Arc<ModelSource>>, size: (usize, usize), rgba: Option<Vec<u8>> },
     ModelImported(Result<(String, Arc<ModelSource>), String>),
+    UpdateFound(update::Release),
+    UpdateInstalled(Result<(), String>),
 }
 
 #[derive(PartialEq, Eq, Clone, Copy)]
@@ -49,6 +52,14 @@ enum Sheet {
     DeleteModel,
     Projects,
     Assistant,
+    Update,
+}
+
+enum UpdateUi {
+    Idle,
+    Installing,
+    Installed,
+    Failed(String),
 }
 
 /// An imported model being renamed or deleted.
@@ -169,6 +180,8 @@ pub struct RecOrdingApp {
     export_rx: Option<Receiver<ExportEvent>>,
     projects: Vec<ProjectEntry>,
     new_project_name: String,
+    update: Option<update::Release>,
+    update_ui: UpdateUi,
 
     toast: Option<(String, Instant)>,
 }
@@ -265,11 +278,40 @@ impl RecOrdingApp {
             export_rx: None,
             projects: Vec::new(),
             new_project_name: String::new(),
+            update: None,
+            update_ui: UpdateUi::Idle,
             toast: None,
         };
         app.project_opened();
         app.refresh_library();
+        app.check_for_update();
         app
+    }
+
+    /// Looks for a newer release in the background; a button appears in the toolbar if there is one.
+    fn check_for_update(&self) {
+        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        thread::spawn(move || {
+            if let Ok(Some(r)) = update::check() {
+                if update::skipped().as_deref() != Some(r.version.as_str()) {
+                    let _ = tx.send(AppEvent::UpdateFound(r));
+                    ctx.request_repaint();
+                }
+            }
+        });
+    }
+
+    fn install_update(&mut self) {
+        let Some(r) = self.update.clone() else {
+            return;
+        };
+        self.update_ui = UpdateUi::Installing;
+        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        thread::spawn(move || {
+            let res = update::install(&r, &update::method());
+            let _ = tx.send(AppEvent::UpdateInstalled(res));
+            ctx.request_repaint();
+        });
     }
 
     fn toast(&mut self, msg: impl Into<String>) {
@@ -648,6 +690,13 @@ impl RecOrdingApp {
                         let _ = tx.send(AppEvent::ModelImported(res));
                         ctx.request_repaint();
                     });
+                }
+                AppEvent::UpdateFound(r) => self.update = Some(r),
+                AppEvent::UpdateInstalled(res) => {
+                    self.update_ui = match res {
+                        Ok(()) => UpdateUi::Installed,
+                        Err(e) => UpdateUi::Failed(e),
+                    };
                 }
                 AppEvent::ModelImported(res) => {
                     self.importing = false;
@@ -1121,6 +1170,7 @@ impl eframe::App for RecOrdingApp {
             Sheet::RenameModel | Sheet::DeleteModel => self.model_edit_sheet(ctx),
             Sheet::Projects => self.projects_sheet(ctx),
             Sheet::Assistant => self.assistant_sheet(ctx),
+            Sheet::Update => self.update_sheet(ctx),
             Sheet::None => {}
         }
         if self.sheet == Sheet::Record && self.recording.is_none() {
@@ -1231,6 +1281,22 @@ impl RecOrdingApp {
                     .clicked()
                 {
                     self.sheet = Sheet::Assistant;
+                }
+                if let Some(r) = &self.update {
+                    let tip = format!("rec-ording {} está disponible", r.version);
+                    right.add_space(6.0);
+                    if self
+                        .toolbar_button(&mut right, "Actualización", |p, c, _| {
+                            p.circle_filled(c, 6.5, ACCENT);
+                            p.line_segment([c + Vec2::new(0.0, 3.2), c + Vec2::new(0.0, -3.2)], Stroke::new(1.5_f32, Color32::WHITE));
+                            p.line_segment([c + Vec2::new(-2.6, -0.6), c + Vec2::new(0.0, -3.2)], Stroke::new(1.5_f32, Color32::WHITE));
+                            p.line_segment([c + Vec2::new(2.6, -0.6), c + Vec2::new(0.0, -3.2)], Stroke::new(1.5_f32, Color32::WHITE));
+                        })
+                        .on_hover_text(tip)
+                        .clicked()
+                    {
+                        self.sheet = Sheet::Update;
+                    }
                 }
             });
     }

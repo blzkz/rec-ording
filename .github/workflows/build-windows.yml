@@ -51,15 +51,18 @@ jobs:
           name: ${{ env.NAME }}
           path: dist/${{ env.NAME }}
 
-      - name: Upload Release Asset
+      # The app updates itself from the public releases repository (this one is private).
+      - name: Publish to the releases repository
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          REPO: blzkz/rec-ording-releases
         run: |
           ZIP="dist/$NAME.zip"
           TAG="${GITHUB_REF#refs/tags/}"
+          git log -1 --format=%B > notes.md
           # The Arch workflow may create the same release at the same time; retry the upload.
-          gh release upload "$TAG" "$ZIP" --clobber || \
-          gh release create "$TAG" "$ZIP" --title "rec-ording $TAG" --notes "Descarga el .zip para Windows o el paquete para Arch Linux / CachyOS." || \
-          (sleep 20 && gh release upload "$TAG" "$ZIP" --clobber)
+          gh release upload "$TAG" "$ZIP" --clobber -R "$REPO" || \
+          gh release create "$TAG" "$ZIP" -R "$REPO" --title "rec-ording $TAG" --notes-file notes.md || \
+          (sleep 20 && gh release upload "$TAG" "$ZIP" --clobber -R "$REPO")

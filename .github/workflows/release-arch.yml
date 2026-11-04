@@ -29,11 +29,17 @@ jobs:
           chown -R builder:builder .
           su builder -c "cd packaging/arch && makepkg -f --nodeps"
 
-      - name: Upload Release Asset
+      # The app updates itself from the public releases repository (this one is private).
+      - name: Publish to the releases repository
         if: startsWith(github.ref, 'refs/tags/')
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          REPO: blzkz/rec-ording-releases
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
-          gh release upload "$TAG" packaging/arch/*.pkg.tar.zst --clobber || \
-          gh release create "$TAG" packaging/arch/*.pkg.tar.zst --title "rec-ording $TAG" --notes "Paquete para Arch Linux / CachyOS. Instálalo con: sudo pacman -U rec-ording-*.pkg.tar.zst"
+          git config --global --add safe.directory "$PWD"
+          git log -1 --format=%B > notes.md
+          # The Windows workflow may create the same release at the same time; retry the upload.
+          gh release upload "$TAG" packaging/arch/*.pkg.tar.zst --clobber -R "$REPO" || \
+          gh release create "$TAG" packaging/arch/*.pkg.tar.zst -R "$REPO" --title "rec-ording $TAG" --notes-file notes.md || \
+          (sleep 20 && gh release upload "$TAG" packaging/arch/*.pkg.tar.zst --clobber -R "$REPO")

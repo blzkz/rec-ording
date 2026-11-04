@@ -13,12 +13,14 @@ mod model3d;
 mod platform;
 mod theme;
 mod timeline;
+mod update;
 
 fn main() -> eframe::Result<()> {
     if std::env::args().any(|a| a == "--mcp") {
         mcp::run();
         return Ok(());
     }
+    update::cleanup();
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("rec-ording")
