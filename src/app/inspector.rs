@@ -17,7 +17,12 @@ impl RecOrdingApp {
             )
             .show(ctx, |ui| {
                 // A scroll bar with its own lane, so it never covers the controls.
-                ui.spacing_mut().scroll = egui::style::ScrollStyle { dormant_handle_opacity: 0.3, ..egui::style::ScrollStyle::solid() };
+                ui.spacing_mut().scroll = egui::style::ScrollStyle {
+                    bar_width: 9.0,
+                    bar_inner_margin: 9.0,
+                    dormant_handle_opacity: 0.3,
+                    ..egui::style::ScrollStyle::solid()
+                };
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
