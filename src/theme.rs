@@ -29,6 +29,9 @@ pub const CLIP: Color32 = Color32::from_rgb(56, 96, 178);
 
 pub const MEDIUM: &str = "medium";
 
+/// The app's name as people see it; the dot is red, like a camera's recording light.
+pub const APP_NAME: &str = "rec·ording";
+
 pub fn medium(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name(MEDIUM.into()))
 }
@@ -377,4 +380,39 @@ pub fn icon_check(p: &egui::Painter, c: Pos2, s: f32, col: Color32) {
     let d = Pos2::new(c.x + s * 0.3, c.y - s * 0.2);
     p.line_segment([a, b], st);
     p.line_segment([b, d], st);
+}
+
+/// "rec·ording" with its red dot drawn as a recording light, for the toolbar.
+pub fn wordmark(ui: &mut Ui, size: f32) -> Response {
+    let font = medium(size);
+    let rec = ui.painter().layout_no_wrap("rec".into(), font.clone(), TEXT);
+    let ording = ui.painter().layout_no_wrap("ording".into(), font, TEXT);
+    let dot_r = (size * 0.16).max(2.0);
+    let space = size * 0.22;
+    let (rec_w, h) = (rec.size().x, rec.size().y.max(ording.size().y));
+    let w = rec_w + space + 2.0 * dot_r + space + ording.size().x;
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, h), Sense::hover());
+    let p = ui.painter();
+    p.galley(rect.left_top(), rec, TEXT);
+    // The dot sits at the middle of the lowercase letters, with a faint glow.
+    let c = Pos2::new(rect.left() + rec_w + space + dot_r, rect.top() + h * 0.58);
+    p.circle_filled(c, dot_r + 1.5, RED.linear_multiply(0.25));
+    p.circle_filled(c, dot_r, RED);
+    p.galley(Pos2::new(c.x + dot_r + space, rect.top()), ording, TEXT);
+    resp
+}
+
+/// `text` with every "·" of the app's name in red, for sentences that mention it.
+pub fn with_name(text: &str, font: FontId, color: Color32) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+    let format = |c: Color32| egui::TextFormat { font_id: font.clone(), color: c, ..Default::default() };
+    let mut rest = text;
+    while let Some(i) = rest.find(APP_NAME) {
+        let dot = i + "rec".len();
+        job.append(&rest[..dot], 0.0, format(color));
+        job.append("·", 0.0, format(RED));
+        rest = &rest[dot + "·".len()..];
+    }
+    job.append(rest, 0.0, format(color));
+    job
 }

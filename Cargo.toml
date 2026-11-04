@@ -1,6 +1,6 @@
 [package]
 name = "rec-ording"
-version = "0.8.1"
+version = "0.8.2"
 edition = "2021"
 authors = ["blzkz <sergiobl88@gmail.com>"]
 description = "Graba tu móvil Android y conviértelo en un vídeo promocional con marco, fondo y zooms automáticos"
@@ -30,6 +30,10 @@ rfd = { version = "0.15", default-features = false }
 # DirectX 12 for the window, where Vulkan drivers are missing or poor.
 wgpu = { version = "23", default-features = false, features = ["dx12"] }
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_SystemInformation"] }
+
+[build-dependencies]
+# Icon and name of the Windows .exe.
+winresource = "0.1"
 
 [profile.release]
 opt-level = 3

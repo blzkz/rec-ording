@@ -1,5 +1,5 @@
 [Desktop Entry]
-Name=rec-ording
+Name=rec·ording
 GenericName=Vídeos promocionales de apps
 Comment=Graba tu móvil Android y crea vídeos con marco, fondo y zooms automáticos
 Exec=/usr/bin/rec-ording

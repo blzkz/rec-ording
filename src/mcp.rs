@@ -643,7 +643,7 @@ impl Server {
     }
 }
 
-const INSTRUCTIONS: &str = "rec-ording crea vídeos promocionales de apps Android: grabaciones del móvil dentro de un marco o modelo 3D, sobre un fondo, con zooms y movimientos de cámara. Los tiempos son segundos de la línea de tiempo (los clips de vídeo se reproducen seguidos). Las coordenadas x/y son de la grabación, de 0 a 1 (0,0 arriba a la izquierda). Empieza con get_project; usa render_frame para ver el resultado. Cada cambio se guarda en el proyecto abierto en la app y se puede deshacer con undo.";
+const INSTRUCTIONS: &str = "rec·ording crea vídeos promocionales de apps Android: grabaciones del móvil dentro de un marco o modelo 3D, sobre un fondo, con zooms y movimientos de cámara. Los tiempos son segundos de la línea de tiempo (los clips de vídeo se reproducen seguidos). Las coordenadas x/y son de la grabación, de 0 a 1 (0,0 arriba a la izquierda). Empieza con get_project; usa render_frame para ver el resultado. Cada cambio se guarda en el proyecto abierto en la app y se puede deshacer con undo.";
 
 const FRAME_KEYS: &[(&str, FrameStyle)] = &[
     ("rounded", FrameStyle::Rounded),

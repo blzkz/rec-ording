@@ -81,6 +81,12 @@ Se han retirado, de momento, el servidor MCP, el autoactualizador, los subtítul
 
 - Los workflows de GitHub Actions solo se lanzan al subir una etiqueta `v*` o a mano, para no gastar minutos del repositorio privado.
 
+## v0.8.2: nombre, icono y márgenes
+
+- La app se llama rec·ording, con el punto en rojo como la luz de una cámara grabando (el paquete y el ejecutable siguen siendo `rec-ording`).
+- Icono propio (SVG y PNG instalados en el tema hicolor, y dentro del .exe en Windows): ya aparece en la barra de tareas y el lanzador.
+- El panel derecho ya no se sale por la derecha: el desplegable de la pantalla del modelo recorta los nombres largos en lugar de ensanchar todo el panel.
+
 ## Ideas para siguientes versiones
 
 - Desenfocar zonas sensibles (correos, tokens).

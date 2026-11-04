@@ -1,4 +1,4 @@
-rec-ording para Windows
+rec·ording para Windows
 =======================
 
 Descomprime la carpeta donde quieras y abre rec-ording.exe.

@@ -1,4 +1,6 @@
-# rec-ording
+# rec·ording
+
+(El paquete y el ejecutable se llaman `rec-ording`.)
 
 Graba tu móvil Android por USB y conviértelo en un vídeo promocional listo para publicar: tu app dentro de un marco de móvil, sobre un fondo cuidado, con zooms suaves que siguen cada toque.
 

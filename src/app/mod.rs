@@ -1256,7 +1256,8 @@ impl RecOrdingApp {
                 let (logo, _) = left.allocate_exact_size(Vec2::splat(22.0), Sense::hover());
                 fill_gradient(left.painter(), &rounded_rect_points(logo, 6.0), Color32::from_rgb(255, 95, 80), PURPLE, 135.0);
                 left.painter().circle_filled(logo.center(), 4.5, Color32::WHITE);
-                left.label(RichText::new("rec-ording").font(medium(14.0)).color(TEXT));
+                left.add_space(2.0);
+                wordmark(&mut left, 14.0);
                 left.add_space(18.0);
                 let busy = self.recording.is_some() || self.saving_recording;
                 if self.toolbar_button(&mut left, "Grabar", |p, c, col| {
@@ -1326,7 +1327,7 @@ impl RecOrdingApp {
                     self.sheet = Sheet::Assistant;
                 }
                 if let Some(r) = &self.update {
-                    let tip = format!("rec-ording {} está disponible", r.version);
+                    let tip = format!("{APP_NAME} {} está disponible", r.version);
                     right.add_space(6.0);
                     if self
                         .toolbar_button(&mut right, "Actualización", |p, c, _| {
@@ -1363,11 +1364,7 @@ impl RecOrdingApp {
             c.label(RichText::new("Crea el vídeo de tu app").font(medium(30.0)).color(TEXT));
             c.add_space(2.0);
             c.label(RichText::new("Graba tu móvil Android por USB o importa una grabación.").font(regular(15.0)).color(TEXT_2));
-            c.label(
-                RichText::new("rec-ording le pone un marco, un fondo y zooms suaves en cada toque.")
-                    .font(regular(15.0))
-                    .color(TEXT_2),
-            );
+            c.label(with_name("rec·ording le pone un marco, un fondo y zooms suaves en cada toque.", regular(15.0), TEXT_2));
             c.add_space(30.0);
 
             let (row, _) = c.allocate_exact_size(Vec2::new(640.0, 190.0), Sense::hover());
@@ -1525,12 +1522,15 @@ impl RecOrdingApp {
                 }
                 let current = match (cm.screen_part.and_then(|i| src.parts.get(i)), &recommended) {
                     (Some(p), _) => part_label(&p.name, false),
-                    (None, Some((_, name))) => part_label(name, true),
+                    // Tag first, so a long name is what gets cut short.
+                    (None, Some((_, name))) => part_label_tag_first(name),
                     (None, None) => part_label("Elige una pieza", false),
                 };
                 egui::ComboBox::from_id_salt("model-screen")
                     .selected_text(current)
                     .width(ui.available_width() - 8.0)
+                    // Long part names are cut short instead of widening the whole panel.
+                    .truncate()
                     .show_ui(ui, |ui| {
                         if let Some((_, name)) = &recommended {
                             ui.selectable_value(&mut cm.screen_part, None, part_label(name, true));
@@ -1588,6 +1588,8 @@ impl RecOrdingApp {
                     egui::ComboBox::from_id_salt("model-anim")
                         .selected_text(name(cm.animation))
                         .width(ui.available_width() - 8.0)
+                        // Long animation names are cut short instead of widening the whole panel.
+                        .truncate()
                         .show_ui(ui, |ui| {
                             ui.selectable_value(&mut cm.animation, None, "Sin animación");
                             for (i, a) in src.animations.iter().enumerate() {
@@ -2429,6 +2431,14 @@ fn import_tile(ui: &mut Ui, width: f32, busy: bool) -> egui::Response {
 }
 
 /// A model part's name, with a "RECOMENDADA" tag for the detected screen.
+fn part_label_tag_first(name: &str) -> egui::text::LayoutJob {
+    use egui::text::{LayoutJob, TextFormat};
+    let mut job = LayoutJob::default();
+    job.append(" RECOMENDADA ", 0.0, TextFormat { font_id: medium(9.5), color: Color32::WHITE, background: ACCENT, valign: Align::Center, ..Default::default() });
+    job.append(name, 8.0, TextFormat { font_id: regular(13.0), color: TEXT, ..Default::default() });
+    job
+}
+
 fn part_label(name: &str, recommended: bool) -> egui::text::LayoutJob {
     use egui::text::{LayoutJob, TextFormat};
     let mut job = LayoutJob::default();

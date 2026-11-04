@@ -139,7 +139,7 @@ impl RecOrdingApp {
         let busy = self.recording.is_some() || self.saving_recording || matches!(self.export_ui, ExportUi::Running { .. });
         let mut act: Option<Act> = None;
         Self::sheet_window(ctx, "update", 440.0, |ui| {
-            ui.label(RichText::new(format!("rec-ording {}", r.version)).font(medium(20.0)).color(TEXT));
+            ui.label(with_name(&format!("{APP_NAME} {}", r.version), medium(20.0), TEXT));
             ui.label(RichText::new(format!("Hay una versión nueva. Tienes la {}.", update::CURRENT)).color(TEXT_2));
             if !r.notes.is_empty() {
                 ui.add_space(8.0);
@@ -156,7 +156,7 @@ impl RecOrdingApp {
                     let note = match (&how, r.asset.is_some()) {
                         (_, false) => "Esta versión no tiene paquete para tu sistema. Puedes descargarla desde su página.",
                         (update::Method::Pacman, true) => "Se instalará el paquete y el sistema te pedirá tu contraseña.",
-                        (update::Method::Folder(_), true) => "Se reemplazarán los archivos de la carpeta de rec-ording.",
+                        (update::Method::Folder(_), true) => "Se reemplazarán los archivos de la carpeta de rec·ording.",
                         (update::Method::Manual, true) => "Esta copia no se instaló con el paquete. Descarga la versión nueva desde su página.",
                     };
                     ui.label(RichText::new(note).color(TEXT_3).font(regular(11.5)));
@@ -187,7 +187,7 @@ impl RecOrdingApp {
                     });
                 }
                 UpdateUi::Installed => {
-                    ui.label(RichText::new("Listo. Reinicia rec-ording para usar la versión nueva.").color(GREEN));
+                    ui.label(RichText::new("Listo. Reinicia rec·ording para usar la versión nueva.").color(GREEN));
                     if busy {
                         ui.label(RichText::new("Termina la grabación o la exportación antes de reiniciar.").color(TEXT_3).font(regular(11.5)));
                     }

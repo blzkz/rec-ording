@@ -344,7 +344,7 @@ pub fn start(serial: &str, opts: &RecordOptions, tools: Tools) -> Result<Recordi
             cmd.arg("--no-audio");
         }
         if opts.mirror {
-            cmd.arg("--window-title=rec-ording · Grabando");
+            cmd.arg("--window-title=rec·ording — grabando");
         } else {
             cmd.arg("--no-window");
         }
