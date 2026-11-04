@@ -121,6 +121,24 @@ fn an_agent_builds_and_exports_a_video() {
     assert_eq!(p["style"]["frame"], "model");
     assert_eq!(p["device_motion"].as_array().unwrap().len(), 1);
 
+    // Titles beside the device, and a double spin that hides the cut between the clips.
+    let added = mcp.text("add_text", json!({"time": 0.3, "title": "Camina.", "subtitle": "Tus pasos te mueven.", "duration": 2.5}));
+    let text_id: u64 = added.rsplit("texto ").next().unwrap().trim_end_matches(')').parse().unwrap();
+    mcp.call("update_text", json!({"text_id": text_id, "place": "right", "reveal": "words"}));
+    let bad = mcp.request("tools/call", json!({"name": "update_text", "arguments": {"text_id": text_id, "place": "fuera"}}));
+    assert_eq!(bad["result"]["isError"], true);
+    mcp.call("add_text", json!({"time": 5.0, "title": "100", "subtitle": "ciudades reales.", "size": "large", "reveal": "lines"}));
+    mcp.call("add_device_motion", json!({"preset": "full_turn", "time": 3.8, "degrees": 720}));
+    let p = mcp.project();
+    let texts = p["texts"].as_array().unwrap();
+    assert_eq!(texts.len(), 2);
+    assert_eq!((texts[0]["place"].as_str(), texts[0]["reveal"].as_str()), (Some("right"), Some("words")));
+    let spin = p["device_motion"].as_array().unwrap().iter().find(|d| !d["spin"].is_null()).unwrap().clone();
+    assert_eq!(spin["spin"]["degrees"], 720.0);
+    // Centred on the cut at 4 s.
+    let (a, b) = (spin["start"].as_f64().unwrap(), spin["end"].as_f64().unwrap());
+    assert!(((a + b) / 2.0 - 4.0).abs() < 0.01, "{a}..{b}");
+
     // Split and undo it.
     mcp.call("split_clip", json!({"time": 1.0}));
     assert_eq!(mcp.project()["clips"].as_array().unwrap().len(), 3);

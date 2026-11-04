@@ -1,6 +1,6 @@
 # Plan: Director, varias pistas y servidor MCP
 
-Apuntado el 2026-11-04 e **implementado en la v0.7.0** (fases F1–F6; F7, música y títulos, queda pendiente). Decisiones tomadas: MCP por archivo (opción A, la app recarga los cambios en menos de un segundo), varios clips seguidos en una pista (sin vídeos simultáneos), Director 3D moderado con control de intensidad.
+Apuntado el 2026-11-04 e **implementado en la v0.7.0** (fases F1–F6; los títulos de F7 llegaron en la v0.8.0, la música sigue pendiente). Decisiones tomadas: MCP por archivo (opción A, la app recarga los cambios en menos de un segundo), varios clips seguidos en una pista (sin vídeos simultáneos), Director 3D moderado con control de intensidad.
 
 ## Punto de partida (v0.6.4, rama `modelos-3d`)
 

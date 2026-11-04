@@ -110,6 +110,7 @@ impl RecOrdingApp {
             Selection::Clip(id) => self.clip_inspector(ui, id),
             Selection::Camera { id, key } => self.camera_inspector(ui, id, key),
             Selection::Device { id, key } => self.device_inspector(ui, id, key),
+            Selection::Text(id) => self.text_inspector(ui, id),
             Selection::Target(id) => self.target_inspector(ui, id),
         }
     }
@@ -264,6 +265,43 @@ impl RecOrdingApp {
         let mut seek_to = None;
         section(ui, &format!("Móvil · {}", c.name), |ui| {
             ui.label(RichText::new(format!("De {} a {}", fmt_time(c.start), fmt_time(c.end()))).color(TEXT_2).font(regular(12.0)));
+            {
+                let dc = self.project.device.iter_mut().find(|x| x.id == id).unwrap();
+                let mut secs = dc.duration();
+                if slider_row(ui, "Duración", &mut secs, 0.3..=6.0, fmt_secs) {
+                    timeline::set_device_duration(dc, secs);
+                }
+                if let Some((axis, degrees)) = timeline::spin_of(dc) {
+                    let turns = (degrees.abs() / 360.0).round().max(1.0) as u32;
+                    let sign = degrees.signum();
+                    let mut new_spin = None;
+                    ui.horizontal(|ui| {
+                        fixed_label(ui, 78.0, RichText::new("Vueltas").color(TEXT), Align::Min);
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        for n in 1..=3u32 {
+                            if chip(ui, &n.to_string(), n == turns).clicked() {
+                                new_spin = Some(sign * 360.0 * n as f32);
+                            }
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        fixed_label(ui, 78.0, RichText::new("Sentido").color(TEXT), Align::Min);
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        let (a, b) = if axis == 1 { ("Hacia atrás", "Hacia delante") } else { ("Izquierda", "Derecha") };
+                        if chip(ui, a, sign < 0.0).clicked() {
+                            new_spin = Some(-degrees.abs());
+                        }
+                        if chip(ui, b, sign > 0.0).clicked() {
+                            new_spin = Some(degrees.abs());
+                        }
+                    });
+                    if let Some(d) = new_spin {
+                        timeline::set_spin(dc, d);
+                    }
+                    let axis = ["sobre su eje vertical", "sobre su eje horizontal", "en el plano"][axis];
+                    ui.label(RichText::new(format!("Gira {axis}. Junto a un cambio de clip, el corte queda oculto mientras se ve la trasera.")).color(TEXT_3).font(regular(11.5)));
+                }
+            }
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = Vec2::new(4.0, 4.0);
                 for i in 0..c.keys.len() {
@@ -280,9 +318,9 @@ impl RecOrdingApp {
                 slider_row(ui, "Horizontal", &mut k.dx, -1.0..=1.0, pct);
                 slider_row(ui, "Vertical", &mut k.dy, -1.0..=1.0, pct);
                 slider_row(ui, "Escala", &mut k.scale, 0.3..=2.0, pct);
-                slider_row(ui, "Inclinación", &mut k.tilt, -60.0..=60.0, deg);
-                slider_row(ui, "Giro", &mut k.turn, -360.0..=360.0, deg);
-                slider_row(ui, "Rotación", &mut k.roll, -45.0..=45.0, deg);
+                slider_row(ui, "Inclinación", &mut k.tilt, -360.0..=360.0, deg);
+                slider_row(ui, "Giro", &mut k.turn, -1080.0..=1080.0, deg);
+                slider_row(ui, "Rotación", &mut k.roll, -360.0..=360.0, deg);
                 ui.horizontal(|ui| {
                     fixed_label(ui, 78.0, RichText::new("Llegada").color(TEXT), Align::Min);
                     let opts: Vec<(Ease, &str)> = Ease::ALL.iter().map(|e| (*e, e.label())).collect();
@@ -301,6 +339,67 @@ impl RecOrdingApp {
         }
         if delete {
             let _ = timeline::delete_device_clip(&mut self.project, id);
+            self.selection = Selection::None;
+        }
+        ui.add_space(6.0);
+    }
+
+    fn text_inspector(&mut self, ui: &mut Ui, id: u64) {
+        let Some(c) = self.project.texts.iter().find(|c| c.id == id).cloned() else {
+            self.selection = Selection::None;
+            return;
+        };
+        let mut delete = false;
+        let mut place: Option<(f32, f32)> = None;
+        let focus = std::mem::take(&mut self.focus_title);
+        section(ui, "Texto", |ui| {
+            ui.label(RichText::new(format!("De {} a {}", fmt_time(c.start), fmt_time(c.end()))).color(TEXT_2).font(regular(12.0)));
+            let tc = self.project.texts.iter_mut().find(|x| x.id == id).unwrap();
+            ui.label(RichText::new("Titular").color(TEXT));
+            let title = ui.add(
+                egui::TextEdit::multiline(&mut tc.title)
+                    .hint_text("Camina.\n(una línea por salto de línea)")
+                    .desired_rows(2)
+                    .desired_width(f32::INFINITY),
+            );
+            if focus {
+                title.request_focus();
+            }
+            ui.label(RichText::new("Debajo, más pequeño").color(TEXT));
+            ui.add(egui::TextEdit::singleline(&mut tc.subtitle).hint_text("Opcional").desired_width(f32::INFINITY));
+            ui.add_space(4.0);
+            fn chips<T: PartialEq + Copy>(ui: &mut Ui, label: &str, value: &mut T, all: &[T], name: impl Fn(T) -> &'static str) {
+                ui.label(RichText::new(label).color(TEXT_2).font(regular(11.5)));
+                ui.add_space(-4.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = Vec2::new(4.0, 4.0);
+                    for &v in all {
+                        if chip(ui, name(v), *value == v).clicked() {
+                            *value = v;
+                        }
+                    }
+                });
+            }
+            chips(ui, "Posición", &mut tc.place, &TextPlace::ALL, TextPlace::label);
+            chips(ui, "Tamaño", &mut tc.size, &TextSize::ALL, TextSize::label);
+            chips(ui, "Entrada", &mut tc.reveal, &TextReveal::ALL, TextReveal::label);
+            chips(ui, "Color", &mut tc.color, &TextColor::ALL, TextColor::label);
+            if tc.place != TextPlace::Center {
+                toggle_row(ui, "Apartar el móvil", "Le deja sitio al texto mientras se ve", &mut tc.make_room);
+            }
+            let mut secs = tc.duration;
+            if slider_row(ui, "Duración", &mut secs, 0.8..=10.0, fmt_secs) {
+                place = Some((tc.start, tc.start + secs));
+            }
+            if ui.add(egui::Button::new(RichText::new("Eliminar texto").color(RED)).min_size(Vec2::new(0.0, 28.0))).clicked() {
+                delete = true;
+            }
+        });
+        if let Some((a, b)) = place {
+            let _ = timeline::place_text(&mut self.project, id, a, b);
+        }
+        if delete {
+            let _ = timeline::delete_text(&mut self.project, id);
             self.selection = Selection::None;
         }
         ui.add_space(6.0);

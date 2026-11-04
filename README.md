@@ -12,13 +12,14 @@ Pensado para la ficha de Google Play, YouTube, Reels/Shorts o redes, sin pasar p
    En **Modelos 3D** tienes una galería de móviles en 3D (cinco incluidos, gratuitos) y puedes **importar** los tuyos en `.glb`, `.gltf` o directamente el `.zip` de la descarga (las texturas y `.bin` sueltos se copian a tu galería con el modelo; si el modelo no se puede usar, no se añade). Con clic derecho sobre un modelo importado puedes renombrarlo o eliminarlo: rec-ording busca la pantalla, endereza el modelo y proyecta tu grabación en ella. En «Ajustes del modelo» eliges la pieza que hace de pantalla, cómo encaja el vídeo (**Rellenar** recortando, **Encajar** con bandas negras o **Estirar**) y, si el modelo trae animaciones, cuál reproducir y si se repite. Los modelos con licencia CC BY piden mencionar a su autor al publicar el vídeo (ver `assets/models/CREDITS.md`).
    En **Ángulo 3D** puedes girar e inclinar el móvil (con cantos y reflejos reales), hacer que se enderece al hacer zoom, que flote suavemente o que entre girando al empezar.
    Los zooms se crean solos a partir de los toques; puedes moverlos, alargarlos, cambiar su nivel o elegir dónde enfocan haciendo clic en la vista previa.
-3. **Monta.** La línea de tiempo tiene tres pistas:
+3. **Monta.** La línea de tiempo tiene cuatro pistas:
    - **Vídeo**: varias grabaciones seguidas. Arrastra los bordes de un clip para recortarlo, el clip para cambiarlo de orden, y **Dividir** (Ctrl+B) para cortarlo en el cursor. **Añadir vídeo** pone otro al final.
    - **Cámara**: zooms, **movimientos** con fotogramas clave (zoom, encuadre, inclinación, giro y rotación, con llegada en muelle, suave, lineal o corte) y planos del **Director**. Así puedes girar el móvil a mitad del vídeo.
-   - **Móvil**: movimientos del dispositivo (entrada girando, giro completo, asomarse desde abajo, saltito, salida), editables también por fotogramas clave.
+   - **Móvil**: movimientos del dispositivo: **giro 360°** sobre el eje vertical, **voltereta 360°** sobre el horizontal, entrada girando, caída desde arriba, asomarse desde abajo, saltito y salida. En los giros eliges vueltas, sentido y duración; si los pones junto a un cambio de clip, se centran en él y el corte ocurre mientras se ve la parte de atrás del móvil. Los movimientos rápidos llevan desenfoque de movimiento.
+   - **Texto**: títulos al estilo de los anuncios de Apple, junto al móvil (que se aparta para dejarles sitio), arriba, abajo o en el centro. Un titular (una línea por salto de línea) y, si quieres, una línea más pequeña debajo; tamaño grande para cifras («100 / ciudades reales.»). Entran apareciendo, palabra a palabra o línea a línea (las anteriores se atenúan). **+ Texto**, la tecla T o doble clic en la pista.
    El **Director** funciona como en Matte: mueve el cursor a cada momento importante, arrastra sobre la vista previa lo que debe verse y pulsa **Generar planos**. Elige movimiento 3D (ángulos y órbitas) o 2D (zoom plano), su intensidad, y pide **otra toma** de un plano si no te convence.
    Todo se puede deshacer (Ctrl+Z) y rehacer (Ctrl+Mayús+Z). Con **Proyectos** creas y cambias de proyecto.
-4. **Exporta** en MP4 (H.264 o HEVC) o GIF, a 720p, 1080p o 4K, a 30 o 60 fps, con el sonido del móvil.
+4. **Exporta** en MP4 (H.264 o HEVC) o GIF, a 720p, 1080p o 4K, a 30 o 60 fps, con el sonido del móvil. Si tienes una tarjeta gráfica compatible (NVIDIA con NVENC, AMD o Intel con VAAPI en Linux, AMF o Quick Sync en Windows), el vídeo se codifica con ella; si falla, se vuelve a hacer con el procesador. Los fotogramas se siguen dibujando con el procesador.
 
 ### Atajos
 
@@ -26,9 +27,10 @@ Pensado para la ficha de Google Play, YouTube, Reels/Shorts o redes, sin pasar p
 | --- | --- |
 | Espacio | Reproducir / pausar |
 | Z | Añadir un zoom en el cursor |
+| T | Añadir un texto en el cursor |
 | Ctrl+B | Dividir el clip en el cursor |
 | Ctrl+Z / Ctrl+Mayús+Z | Deshacer / rehacer |
-| Supr / Retroceso | Eliminar lo seleccionado (clip, movimiento, fotograma clave u objetivo) |
+| Supr / Retroceso | Eliminar lo seleccionado (clip, movimiento, texto, fotograma clave u objetivo) |
 | Esc | Quitar la selección (ver el resultado) o salir del Director |
 | ← / → | Fotograma anterior / siguiente (con Mayús: 1 segundo) |
 | Inicio / Fin | Ir al principio / al final |
@@ -114,6 +116,8 @@ Aplicación nativa en Rust con [egui](https://github.com/emilk/egui).
 | `library.rs` | Galería de modelos: los incluidos en `assets/models` y los importados, con miniaturas renderizadas. |
 | `export.rs` | Decodifica la grabación, compone cada fotograma y codifica el resultado con ffmpeg. |
 | `app/`, `theme.rs` | Interfaz: visor, línea de tiempo, inspector y hojas. |
+| `text.rs` | Títulos: maquetación con Inter Display (incluida en `assets/fonts`, licencia OFL), animaciones de entrada y salida, y el sitio que el móvil les deja. |
+| `hwenc.rs` | Codificación con la tarjeta gráfica (NVENC, AMF, Quick Sync, VAAPI): prueba qué funciona en el equipo. |
 | `update.rs` | Busca versiones nuevas en las releases y las instala (pacman en Linux, reemplazando la carpeta en Windows). |
 | `platform.rs` | Lo que cambia entre Linux y Windows: carpetas, diálogos de archivos, abrir archivos y lanzar herramientas sin ventana de consola. |
 

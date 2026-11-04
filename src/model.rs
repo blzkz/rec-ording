@@ -19,6 +19,8 @@ pub struct Project {
     pub camera: Vec<CameraClip>,
     /// Device motion clips; overlapping ones add up.
     pub device: Vec<DeviceClip>,
+    /// Titles shown over the video.
+    pub texts: Vec<TextClip>,
     pub director: Director,
     pub style: Style,
     pub export: ExportSettings,
@@ -34,6 +36,7 @@ impl Default for Project {
             clips: Vec::new(),
             camera: Vec::new(),
             device: Vec::new(),
+            texts: Vec::new(),
             director: Director::default(),
             style: Style::default(),
             export: ExportSettings::default(),
@@ -51,6 +54,7 @@ impl Project {
             .chain(self.clips.iter().map(|c| c.id))
             .chain(self.camera.iter().map(|c| c.id))
             .chain(self.device.iter().map(|c| c.id))
+            .chain(self.texts.iter().map(|c| c.id))
             .chain(self.director.targets.iter().map(|t| t.id));
         ids.max().unwrap_or(0) + 1
     }
@@ -207,6 +211,137 @@ impl DeviceClip {
     }
     pub fn end(&self) -> f32 {
         self.start + self.duration()
+    }
+}
+
+/// Where a title sits; beside the device it pushes the device to the other side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum TextPlace {
+    #[default]
+    Left,
+    Right,
+    Top,
+    Bottom,
+    Center,
+}
+
+impl TextPlace {
+    pub const ALL: [TextPlace; 5] = [TextPlace::Left, TextPlace::Right, TextPlace::Top, TextPlace::Bottom, TextPlace::Center];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            TextPlace::Left => "Izquierda",
+            TextPlace::Right => "Derecha",
+            TextPlace::Top => "Arriba",
+            TextPlace::Bottom => "Abajo",
+            TextPlace::Center => "Centro",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum TextSize {
+    Small,
+    #[default]
+    Medium,
+    /// A big headline or figure ("100") over a smaller line.
+    Large,
+}
+
+impl TextSize {
+    pub const ALL: [TextSize; 3] = [TextSize::Small, TextSize::Medium, TextSize::Large];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            TextSize::Small => "Pequeño",
+            TextSize::Medium => "Mediano",
+            TextSize::Large => "Grande",
+        }
+    }
+}
+
+/// How a title comes in (it always fades out at the end).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum TextReveal {
+    /// Fades in while rising slightly.
+    #[default]
+    Fade,
+    /// Word by word.
+    Words,
+    /// One line after another; earlier lines dim as the next one arrives.
+    Lines,
+}
+
+impl TextReveal {
+    pub const ALL: [TextReveal; 3] = [TextReveal::Fade, TextReveal::Words, TextReveal::Lines];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            TextReveal::Fade => "Aparecer",
+            TextReveal::Words => "Por palabras",
+            TextReveal::Lines => "Por líneas",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum TextColor {
+    /// White on dark backgrounds, near-black on light ones.
+    #[default]
+    Auto,
+    Light,
+    Dark,
+}
+
+impl TextColor {
+    pub const ALL: [TextColor; 3] = [TextColor::Auto, TextColor::Light, TextColor::Dark];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            TextColor::Auto => "Automático",
+            TextColor::Light => "Blanco",
+            TextColor::Dark => "Negro",
+        }
+    }
+}
+
+/// A title on the timeline: a headline (one line per line break) and an optional smaller line.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TextClip {
+    pub id: u64,
+    pub start: f32,
+    pub duration: f32,
+    pub title: String,
+    pub subtitle: String,
+    pub place: TextPlace,
+    pub size: TextSize,
+    pub reveal: TextReveal,
+    pub color: TextColor,
+    /// Moves the device aside while the title is on screen.
+    pub make_room: bool,
+}
+
+impl Default for TextClip {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            start: 0.0,
+            duration: 3.0,
+            title: String::new(),
+            subtitle: String::new(),
+            place: TextPlace::Left,
+            size: TextSize::Medium,
+            reveal: TextReveal::Fade,
+            color: TextColor::Auto,
+            make_room: true,
+        }
+    }
+}
+
+impl TextClip {
+    pub fn end(&self) -> f32 {
+        self.start + self.duration
     }
 }
 
@@ -652,6 +787,8 @@ pub struct ExportSettings {
     pub quality: Quality,
     pub include_audio: bool,
     pub folder: String,
+    /// Encode on the graphics card when there is one that can.
+    pub hardware: bool,
 }
 
 impl Default for ExportSettings {
@@ -663,6 +800,7 @@ impl Default for ExportSettings {
             quality: Quality::High,
             include_audio: true,
             folder: videos_dir().to_string_lossy().into_owned(),
+            hardware: true,
         }
     }
 }

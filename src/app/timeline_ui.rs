@@ -1,5 +1,5 @@
 //! The timeline: video clips (trim, reorder, split), camera clips with keyframes, device
-//! motion, Director markers and the playhead.
+//! motion, titles, Director markers and the playhead.
 
 use super::*;
 
@@ -7,6 +7,7 @@ const LABEL_W: f32 = 64.0;
 const MOVE_COLOR: Color32 = Color32::from_rgb(255, 159, 10);
 const DIRECTOR_COLOR: Color32 = Color32::from_rgb(90, 200, 250);
 const DEVICE_COLOR: Color32 = Color32::from_rgb(52, 170, 90);
+const TEXT_COLOR: Color32 = Color32::from_rgb(235, 68, 120);
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(super) enum Drag {
@@ -19,6 +20,9 @@ pub(super) enum Drag {
     CamEnd { id: u64, start: f32 },
     CamKey { id: u64, index: usize },
     DevMove { id: u64, grab: f32 },
+    TextMove { id: u64, grab: f32 },
+    TextStart { id: u64, end: f32 },
+    TextEnd { id: u64, start: f32 },
     Marker { id: u64 },
 }
 
@@ -38,6 +42,10 @@ enum Hit {
     DevKey(u64, usize),
     DevBody(u64, f32),
     DevEmpty,
+    TextStart(u64),
+    TextEnd(u64),
+    TextBody(u64, f32),
+    TextEmpty,
     None,
 }
 
@@ -50,6 +58,7 @@ struct Tl {
     video: Rect,
     camera: Rect,
     device: Rect,
+    text: Rect,
 }
 
 impl Tl {
@@ -77,7 +86,7 @@ fn diamond(p: &egui::Painter, c: Pos2, r: f32, fill: Color32, stroke: Color32) {
 impl RecOrdingApp {
     pub(super) fn timeline(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::bottom("timeline")
-            .exact_height(226.0)
+            .exact_height(256.0)
             .frame(
                 egui::Frame::none()
                     .fill(WINDOW)
@@ -104,8 +113,12 @@ impl RecOrdingApp {
                     Err(e) => self.toast(e),
                 }
             }
+            if secondary_button(ui, "+ Texto").on_hover_text("Un título junto al móvil, en el cursor (T)").clicked() {
+                self.add_text_at(self.time);
+            }
             ui.menu_button(RichText::new("Móvil…").color(TEXT), |ui| {
                 ui.label(RichText::new("Movimiento del móvil en el cursor").color(TEXT_3).font(regular(11.5)));
+                ui.label(RichText::new("Los giros junto a un cambio de clip se centran en él").color(TEXT_3).font(regular(11.5)));
                 for preset in DevicePreset::ALL {
                     if ui.button(preset.label()).clicked() {
                         let id = timeline::add_device_preset(&mut self.project, preset, self.time);
@@ -212,6 +225,24 @@ impl RecOrdingApp {
             }
             return Hit::DevEmpty;
         }
+        if tl.text.expand2(Vec2::new(0.0, 2.0)).contains(pos) {
+            for c in self.project.texts.iter().rev() {
+                let (a, b) = (tl.x(c.start), tl.x(c.end()));
+                if pos.x < a - EDGE || pos.x > b + EDGE {
+                    continue;
+                }
+                if (pos.x - b).abs() <= EDGE && b - a > 3.0 * EDGE {
+                    return Hit::TextEnd(c.id);
+                }
+                if (pos.x - a).abs() <= EDGE && b - a > 3.0 * EDGE {
+                    return Hit::TextStart(c.id);
+                }
+                if pos.x >= a && pos.x <= b {
+                    return Hit::TextBody(c.id, tl.t(pos.x) - c.start);
+                }
+            }
+            return Hit::TextEmpty;
+        }
         Hit::None
     }
 
@@ -221,20 +252,25 @@ impl RecOrdingApp {
         let video = Rect::from_min_size(Pos2::new(body.left(), ruler.bottom() + 6.0), Vec2::new(body.width(), 58.0));
         let camera = Rect::from_min_size(Pos2::new(body.left(), video.bottom() + 8.0), Vec2::new(body.width(), 30.0));
         let device = Rect::from_min_size(Pos2::new(body.left(), camera.bottom() + 6.0), Vec2::new(body.width(), 24.0));
-        let tl = Tl { x0: body.left() + LABEL_W, x1: body.right() - 2.0, dur, ruler, video, camera, device };
+        let text = Rect::from_min_size(Pos2::new(body.left(), device.bottom() + 6.0), Vec2::new(body.width(), 24.0));
+        let tl = Tl { x0: body.left() + LABEL_W, x1: body.right() - 2.0, dur, ruler, video, camera, device, text };
 
-        let resp = ui.interact(Rect::from_min_max(ruler.min, device.max), Id::new("timeline"), Sense::click_and_drag());
+        let resp = ui.interact(Rect::from_min_max(ruler.min, text.max), Id::new("timeline"), Sense::click_and_drag());
         let hover_hit = resp.hover_pos().map(|p| self.hit(&tl, p)).unwrap_or(Hit::None);
         match self.drag {
-            Some(Drag::TrimIn { .. } | Drag::TrimOut { .. } | Drag::CamStart { .. } | Drag::CamEnd { .. }) => {
+            Some(Drag::TrimIn { .. } | Drag::TrimOut { .. } | Drag::CamStart { .. } | Drag::CamEnd { .. } | Drag::TextStart { .. } | Drag::TextEnd { .. }) => {
                 ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal)
             }
-            Some(Drag::CamMove { .. } | Drag::DevMove { .. } | Drag::ClipMove { .. } | Drag::CamKey { .. } | Drag::Marker { .. }) => {
+            Some(Drag::CamMove { .. } | Drag::DevMove { .. } | Drag::TextMove { .. } | Drag::ClipMove { .. } | Drag::CamKey { .. } | Drag::Marker { .. }) => {
                 ui.ctx().set_cursor_icon(CursorIcon::Grabbing)
             }
             _ => match hover_hit {
-                Hit::ClipIn(_) | Hit::ClipOut(_) | Hit::CamStart(_) | Hit::CamEnd(_) => ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal),
-                Hit::CamBody(..) | Hit::DevBody(..) | Hit::CamKey(..) | Hit::DevKey(..) | Hit::Marker(_) => ui.ctx().set_cursor_icon(CursorIcon::Grab),
+                Hit::ClipIn(_) | Hit::ClipOut(_) | Hit::CamStart(_) | Hit::CamEnd(_) | Hit::TextStart(_) | Hit::TextEnd(_) => {
+                    ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal)
+                }
+                Hit::CamBody(..) | Hit::DevBody(..) | Hit::TextBody(..) | Hit::CamKey(..) | Hit::DevKey(..) | Hit::Marker(_) => {
+                    ui.ctx().set_cursor_icon(CursorIcon::Grab)
+                }
                 _ => {}
             },
         }
@@ -255,6 +291,9 @@ impl RecOrdingApp {
                         let start = self.project.device.iter().find(|d| d.id == id).map(|d| d.start).unwrap_or(0.0);
                         Some(Drag::DevMove { id, grab: t - start })
                     }
+                    Hit::TextBody(id, grab) => Some(Drag::TextMove { id, grab }),
+                    Hit::TextStart(id) => self.project.texts.iter().find(|c| c.id == id).map(|c| Drag::TextStart { id, end: c.end() }),
+                    Hit::TextEnd(id) => self.project.texts.iter().find(|c| c.id == id).map(|c| Drag::TextEnd { id, start: c.start }),
                     Hit::Marker(id) => Some(Drag::Marker { id }),
                     Hit::None => None,
                     _ => Some(Drag::Scrub),
@@ -264,6 +303,7 @@ impl RecOrdingApp {
                     Some(Drag::CamMove { id, .. } | Drag::CamStart { id, .. } | Drag::CamEnd { id, .. }) => self.selection = Selection::Camera { id, key: None },
                     Some(Drag::CamKey { id, index }) => self.selection = Selection::Camera { id, key: Some(index) },
                     Some(Drag::DevMove { id, .. }) => self.selection = Selection::Device { id, key: None },
+                    Some(Drag::TextMove { id, .. } | Drag::TextStart { id, .. } | Drag::TextEnd { id, .. }) => self.selection = Selection::Text(id),
                     Some(Drag::Marker { id }) => self.selection = Selection::Target(id),
                     _ => {}
                 }
@@ -301,7 +341,11 @@ impl RecOrdingApp {
                         self.selection = Selection::Clip(id);
                         self.seek(t);
                     }
-                    Hit::VideoEmpty | Hit::CamEmpty | Hit::DevEmpty => {
+                    Hit::TextStart(id) | Hit::TextEnd(id) | Hit::TextBody(id, _) => {
+                        self.selection = Selection::Text(id);
+                        self.seek(t);
+                    }
+                    Hit::VideoEmpty | Hit::CamEmpty | Hit::DevEmpty | Hit::TextEmpty => {
                         self.selection = Selection::None;
                         self.seek(t);
                     }
@@ -341,8 +385,10 @@ impl RecOrdingApp {
         }
         if resp.double_clicked() {
             if let Some(pos) = resp.interact_pointer_pos() {
-                if self.hit(&tl, pos) == Hit::CamEmpty {
-                    self.add_zoom_at(tl.t(pos.x));
+                match self.hit(&tl, pos) {
+                    Hit::CamEmpty => self.add_zoom_at(tl.t(pos.x)),
+                    Hit::TextEmpty => self.add_text_at(tl.t(pos.x)),
+                    _ => {}
                 }
             }
         }
@@ -415,6 +461,18 @@ impl RecOrdingApp {
                     c.start = (t - grab).clamp(0.0, (total - c.duration()).max(0.0));
                 }
             }
+            Drag::TextMove { id, grab } => {
+                if let Some(len) = self.project.texts.iter().find(|c| c.id == id).map(|c| c.duration) {
+                    let start = (t - grab).clamp(0.0, (total - len).max(0.0));
+                    let _ = timeline::place_text(&mut self.project, id, start, start + len);
+                }
+            }
+            Drag::TextStart { id, end } => {
+                let _ = timeline::place_text(&mut self.project, id, t.min(end - 0.8), end);
+            }
+            Drag::TextEnd { id, start } => {
+                let _ = timeline::place_text(&mut self.project, id, start, t.max(start + 0.8));
+            }
             Drag::Marker { id } => {
                 if let Some(tg) = self.project.director.targets.iter_mut().find(|x| x.id == id) {
                     tg.time = t;
@@ -426,11 +484,11 @@ impl RecOrdingApp {
     }
 
     fn paint_timeline(&self, ui: &Ui, tl: &Tl, hover: Hit, drop_x: Option<f32>) {
-        let p = ui.painter_at(Rect::from_min_max(tl.ruler.min - Vec2::new(0.0, 2.0), tl.device.max + Vec2::new(0.0, 2.0)));
+        let p = ui.painter_at(Rect::from_min_max(tl.ruler.min - Vec2::new(0.0, 2.0), tl.text.max + Vec2::new(0.0, 2.0)));
         let dur = tl.dur;
 
         // Row labels
-        for (r, label) in [(tl.video, "Vídeo"), (tl.camera, "Cámara"), (tl.device, "Móvil")] {
+        for (r, label) in [(tl.video, "Vídeo"), (tl.camera, "Cámara"), (tl.device, "Móvil"), (tl.text, "Texto")] {
             p.text(Pos2::new(r.left(), r.center().y), Align2::LEFT_CENTER, label, regular(11.5), TEXT_3);
         }
 
@@ -577,6 +635,32 @@ impl RecOrdingApp {
             }
         }
 
+        // Titles
+        let text_row = Rect::from_min_max(Pos2::new(tl.x0, tl.text.top()), Pos2::new(tl.x1, tl.text.bottom()));
+        p.rect_filled(text_row, Rounding::same(6.0), TRACK);
+        if self.project.texts.is_empty() {
+            p.text(text_row.center(), Align2::CENTER_CENTER, "Sin textos · + Texto, T o doble clic aquí", regular(11.5), TEXT_3);
+        }
+        for c in &self.project.texts {
+            let r = Rect::from_min_max(Pos2::new(tl.x(c.start), tl.text.top() + 2.0), Pos2::new(tl.x(c.end()).max(tl.x(c.start) + 6.0), tl.text.bottom() - 2.0));
+            let selected = self.selection == Selection::Text(c.id);
+            let hovered = matches!(hover, Hit::TextBody(id, _) | Hit::TextStart(id) | Hit::TextEnd(id) if id == c.id);
+            p.rect_filled(r, Rounding::same(5.0), if selected || hovered { lerp_color(TEXT_COLOR, Color32::WHITE, 0.15) } else { TEXT_COLOR });
+            if selected {
+                p.rect_stroke(r, Rounding::same(5.0), Stroke::new(2.0_f32, YELLOW));
+            }
+            let first = c.title.lines().map(str::trim).find(|l| !l.is_empty()).or(c.subtitle.lines().map(str::trim).find(|l| !l.is_empty()));
+            let (label, col) = match first {
+                Some(l) => (l.to_string(), Color32::WHITE),
+                None => ("Sin texto".to_string(), Color32::from_white_alpha(150)),
+            };
+            if r.width() > 30.0 {
+                let tp = ui.painter_at(r.shrink2(Vec2::new(6.0, 0.0)));
+                let g = tp.layout_no_wrap(label, regular(10.5), col);
+                tp.galley(Pos2::new(r.left() + 7.0, r.center().y - g.size().y / 2.0), g, col);
+            }
+        }
+
         // Director markers
         for (n, t) in self.project.director.targets.iter().enumerate() {
             let c = Pos2::new(tl.x(t.time), tl.ruler.center().y + 1.0);
@@ -587,7 +671,7 @@ impl RecOrdingApp {
 
         // Playhead
         let x = tl.x(self.time);
-        p.line_segment([Pos2::new(x, tl.ruler.top() + 4.0), Pos2::new(x, tl.device.bottom())], Stroke::new(1.5_f32, RED));
+        p.line_segment([Pos2::new(x, tl.ruler.top() + 4.0), Pos2::new(x, tl.text.bottom())], Stroke::new(1.5_f32, RED));
         let head = vec![
             Pos2::new(x - 5.0, tl.ruler.top()),
             Pos2::new(x + 5.0, tl.ruler.top()),

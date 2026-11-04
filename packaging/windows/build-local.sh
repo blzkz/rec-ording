@@ -14,6 +14,7 @@ mkdir "$dist/$name"
 cp target/x86_64-pc-windows-gnu/release/rec-ording.exe "$dist/$name/"
 cp -r assets/models "$dist/$name/models"
 cp packaging/windows/LEEME.txt "$dist/$name/"
+cp assets/fonts/OFL.txt "$dist/$name/Inter-OFL.txt"
 rm -f "$name.zip"
 (cd "$dist" && bsdtar -a -cf "$OLDPWD/$name.zip" "$name")
 echo "Listo: $name.zip"

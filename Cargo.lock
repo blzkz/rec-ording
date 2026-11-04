@@ -2072,8 +2072,9 @@ dependencies = [
 
 [[package]]
 name = "rec-ording"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
+ "ab_glyph",
  "crossbeam-channel",
  "eframe",
  "egui",

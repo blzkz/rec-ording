@@ -63,12 +63,20 @@ Se han retirado, de momento, el servidor MCP, el autoactualizador, los subtítul
 - Director: objetivos dibujados sobre la vista previa en cada momento, planos 3D o 2D con intensidad, otra toma por plano o de todos; avisa si sustituye movimientos que se solapan.
 - Servidor MCP (`rec-ording --mcp`) con más de 40 herramientas, incluida `render_frame`; la app muestra al momento los cambios del asistente. Hoja «Asistente» con la configuración para copiar.
 
+## v0.8.0: textos, giros 360° y gráfica
+
+- Pista de texto: títulos al estilo Apple junto al móvil, arriba, abajo o en el centro; tamaño grande para cifras; entrada al aparecer, palabra a palabra o línea a línea; el móvil se aparta mientras se ven. Tipografía Inter Display incluida, la misma en la vista previa, la exportación y Windows. Un halo suave del tono contrario los mantiene legibles sobre la grabación.
+- Giros 360° sobre el eje vertical y volteretas sobre el horizontal, con vueltas, sentido y duración; junto a un cambio de clip se centran en él para ocultar el corte. Nueva entrada «Caída desde arriba». Desenfoque de movimiento en los movimientos rápidos (exportación y vista previa en pausa).
+- Codificación con la tarjeta gráfica (NVENC, AMF, Quick Sync, VAAPI), activada por defecto si hay una que funcione, con vuelta al procesador si falla. Ahorra poco tiempo: lo que más cuesta es dibujar los fotogramas, que sigue haciendo el procesador.
+- MCP: `add_text`, `update_text`, `delete_text`; `add_device_motion` acepta `degrees` y `duration`; `export` acepta `hardware`.
+
 ## Ideas para siguientes versiones
 
-- Títulos y textos animados sobre el vídeo (intro, llamada a la acción).
 - Desenfocar zonas sensibles (correos, tokens).
 - Fondos con imagen propia.
 - Recortar y acelerar tramos intermedios (no solo el inicio y el final).
-- Música de fondo y títulos animados (fase F7 del plan).
+- Música de fondo (lo que queda de la fase F7 del plan).
+- Tarjeta final con el icono de la app y la insignia de Google Play.
+- Dibujar los fotogramas en la tarjeta gráfica (wgpu) para exportar mucho más rápido.
 - Control en vivo por MCP (socket local) en lugar de por archivo.
 - Grabar el escritorio además del móvil.

@@ -72,7 +72,7 @@ struct ModelEdit {
 
 enum ExportUi {
     Idle,
-    Running { fraction: f32, eta: Option<f32>, cancel: Arc<AtomicBool> },
+    Running { fraction: f32, eta: Option<f32>, cancel: Arc<AtomicBool>, encoder: Option<String> },
     Done(PathBuf),
     Failed(String),
 }
@@ -84,11 +84,14 @@ enum Selection {
     Clip(u64),
     Camera { id: u64, key: Option<usize> },
     Device { id: u64, key: Option<usize> },
+    Text(u64),
     Target(u64),
 }
 
 #[derive(PartialEq, Clone)]
 struct RenderKey {
+    /// Titles on screen and motion blur samples, plus a hash of every title.
+    texts: (usize, usize, u64),
     time: f32,
     frame: usize,
     style: Style,
@@ -182,6 +185,8 @@ pub struct RecOrdingApp {
     new_project_name: String,
     update: Option<update::Release>,
     update_ui: UpdateUi,
+    /// Put the cursor in the headline of the selected title (just added).
+    focus_title: bool,
 
     toast: Option<(String, Instant)>,
 }
@@ -280,11 +285,18 @@ impl RecOrdingApp {
             new_project_name: String::new(),
             update: None,
             update_ui: UpdateUi::Idle,
+            focus_title: false,
             toast: None,
         };
         app.project_opened();
         app.refresh_library();
         app.check_for_update();
+        // Find the graphics card encoder now, so exporting does not wait for it.
+        let ctx = cc.egui_ctx.clone();
+        thread::spawn(move || {
+            crate::hwenc::detect();
+            ctx.request_repaint();
+        });
         app
     }
 
@@ -767,6 +779,11 @@ impl RecOrdingApp {
                             *eta = eta_secs;
                         }
                     }
+                    ExportEvent::Encoder(name) => {
+                        if let ExportUi::Running { encoder, .. } = &mut self.export_ui {
+                            *encoder = Some(name);
+                        }
+                    }
                     ExportEvent::Done(p) => {
                         self.export_ui = ExportUi::Done(p);
                         finished = true;
@@ -949,7 +966,7 @@ impl RecOrdingApp {
         let (tx, rx) = unbounded();
         export::start(self.project.clone(), cancel.clone(), tx);
         self.export_rx = Some(rx);
-        self.export_ui = ExportUi::Running { fraction: 0.0, eta: None, cancel };
+        self.export_ui = ExportUi::Running { fraction: 0.0, eta: None, cancel, encoder: None };
     }
 
     fn autosave(&mut self) {
@@ -972,7 +989,8 @@ impl RecOrdingApp {
 
     /// Turns finished edits into undo steps (a slider drag counts once, on release).
     fn commit_history(&mut self, ctx: &egui::Context) {
-        if ctx.input(|i| i.pointer.any_down()) || self.drag.is_some() {
+        // Typing a title is one step, taken when the field loses focus.
+        if ctx.input(|i| i.pointer.any_down()) || self.drag.is_some() || ctx.wants_keyboard_input() {
             return;
         }
         if self.project != self.committed {
@@ -1010,6 +1028,7 @@ impl RecOrdingApp {
             Selection::Camera { id, key: Some(k) } if p.camera.iter().any(|c| c.id == id && c.kind == CameraKind::Move) => timeline::delete_camera_key(p, id, k),
             Selection::Camera { id, .. } => timeline::delete_camera_clip(p, id),
             Selection::Device { id, .. } => timeline::delete_device_clip(p, id),
+            Selection::Text(id) => timeline::delete_text(p, id),
             Selection::Target(id) => timeline::remove_target(p, id),
             Selection::None => return,
         };
@@ -1036,6 +1055,25 @@ impl RecOrdingApp {
         match timeline::add_zoom(&mut self.project, start, end, scale, x, y) {
             Ok(id) => self.selection = Selection::Camera { id, key: None },
             Err(e) => self.toast(e),
+        }
+    }
+
+    fn add_text_at(&mut self, t: f32) {
+        let id = match timeline::add_text(&mut self.project, t, "") {
+            Ok(id) => id,
+            Err(e) => {
+                self.toast(e);
+                return;
+            }
+        };
+        self.selection = Selection::Text(id);
+        self.focus_title = true;
+        if self.playing {
+            self.toggle_play();
+        }
+        // Show the title once it is fully in.
+        if let Some(c) = self.project.texts.iter().find(|c| c.id == id) {
+            self.seek(c.start + 1.0);
         }
     }
 
@@ -1072,7 +1110,7 @@ impl RecOrdingApp {
         if self.project.is_empty() {
             return;
         }
-        let (space, del, esc, z, split, left, right, home, end, shift) = ctx.input(|i| {
+        let (space, del, esc, z, split, left, right, home, end, shift, title) = ctx.input(|i| {
             (
                 i.key_pressed(Key::Space),
                 i.key_pressed(Key::Delete) || i.key_pressed(Key::Backspace),
@@ -1084,8 +1122,12 @@ impl RecOrdingApp {
                 i.key_pressed(Key::Home),
                 i.key_pressed(Key::End),
                 i.modifiers.shift,
+                i.key_pressed(Key::T) && !i.modifiers.command,
             )
         });
+        if title {
+            self.add_text_at(self.time);
+        }
         if space {
             self.toggle_play();
         }
@@ -2001,8 +2043,12 @@ impl RecOrdingApp {
         let has_audio = self.project.media.iter().any(|m| m.info.has_audio);
         let dur = timeline::duration(&self.project);
         Self::sheet_window(ctx, "export", 460.0, |ui| match &self.export_ui {
-            ExportUi::Running { fraction, eta, .. } => {
+            ExportUi::Running { fraction, eta, encoder, .. } => {
                 ui.label(RichText::new("Exportando…").font(medium(20.0)).color(TEXT));
+                if let Some(name) = encoder {
+                    let by = if name == "Procesador" { "Codificando con el procesador".to_string() } else { format!("Codificando con la gráfica · {name}") };
+                    ui.label(RichText::new(by).color(TEXT_3).font(regular(12.0)));
+                }
                 ui.add_space(10.0);
                 let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 6.0), Sense::hover());
                 ui.painter().rect_filled(r, Rounding::same(3.0), CONTROL);
@@ -2092,6 +2138,27 @@ impl RecOrdingApp {
                 if has_audio && s.format != ExportFormat::Gif {
                     form_row(ui, "Sonido", |ui| {
                         toggle(ui, &mut s.include_audio);
+                    });
+                }
+                if s.format != ExportFormat::Gif {
+                    form_row(ui, "Gráfica", |ui| match crate::hwenc::detected() {
+                        None => {
+                            ui.add(egui::Spinner::new().size(14.0).color(TEXT_3));
+                            ui.label(RichText::new("Buscando la tarjeta gráfica…").color(TEXT_3).font(regular(12.0)));
+                        }
+                        Some(None) => {
+                            ui.label(RichText::new("No hay ninguna compatible; se usa el procesador").color(TEXT_3).font(regular(12.0)));
+                        }
+                        Some(Some(e)) => {
+                            toggle(ui, &mut s.hardware);
+                            let codec = if s.format == ExportFormat::Hevc { crate::hwenc::Codec::Hevc } else { crate::hwenc::Codec::H264 };
+                            let note = match (s.hardware, e.supports(codec)) {
+                                (false, _) => "Desactivada: codifica el procesador".to_string(),
+                                (true, true) => format!("Codifica {}", e.name),
+                                (true, false) => format!("{} no admite HEVC; se usa el procesador", e.name),
+                            };
+                            ui.label(RichText::new(note).color(TEXT_3).font(regular(12.0)));
+                        }
                     });
                 }
                 form_row(ui, "Guardar en", |ui| {

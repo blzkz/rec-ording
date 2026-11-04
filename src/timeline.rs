@@ -5,6 +5,7 @@
 use crate::compositor::Layout;
 use crate::model::*;
 use crate::model3d::ModelMeta;
+use crate::text;
 
 // ---------- Video track ----------
 
@@ -175,7 +176,100 @@ pub fn pose_at(p: &Project, t: f32) -> PoseValue {
             out.roll += v.roll;
         }
     }
+    // Titles push the device aside while they are on screen. Titles in a row on the same side
+    // count as one, so the device stays put between them; it comes back once they have gone.
+    let mut spans: Vec<(f32, f32, TextPlace)> = Vec::new();
+    for c in p.texts.iter().filter(|c| c.make_room && !text::is_blank(c)) {
+        match spans.last_mut() {
+            Some(s) if s.2 == c.place && c.start <= s.1 + 1.0 => s.1 = s.1.max(c.end()),
+            _ => spans.push((c.start, c.end(), c.place)),
+        }
+    }
+    let (mut room_x, mut room_y, mut room_s) = (0.0f32, 0.0f32, 1.0f32);
+    for &(a, b, place) in spans.iter().filter(|s| t >= s.0 && t < s.1 + text::ROOM_AFTER) {
+        let v = text::smooth((t - a) / text::ROOM_IN).min(text::smooth((b + text::ROOM_AFTER - t) / text::ROOM_AFTER));
+        let (dx, dy, scale) = text::room(place, v, p.style.aspect.ratio());
+        if dx.abs() > room_x.abs() {
+            room_x = dx;
+        }
+        if dy.abs() > room_y.abs() {
+            room_y = dy;
+        }
+        room_s = room_s.min(scale);
+    }
+    out.dx += room_x;
+    out.dy += room_y;
+    out.scale *= room_s;
     out
+}
+
+/// Instants to average into one frame at `t` for motion blur (a half-frame shutter at `fps`).
+/// Empty when the device and the camera barely move during the frame.
+pub fn shutter(p: &Project, t: f32, fps: f32) -> Vec<(f32, CameraValue, PoseValue)> {
+    let half = 0.25 / fps.max(1.0);
+    let (c0, p0) = (camera_at(p, t - half), pose_at(p, t - half));
+    let (c1, p1) = (camera_at(p, t + half), pose_at(p, t + half));
+    let degrees = [p1.turn - p0.turn, p1.tilt - p0.tilt, p1.roll - p0.roll, c1.turn - c0.turn, c1.tilt - c0.tilt, c1.roll - c0.roll]
+        .iter()
+        .fold(0.0f32, |m, d| m.max(d.abs()));
+    // Travel in percent of the frame's short side.
+    let travel = (p1.dx - p0.dx).hypot(p1.dy - p0.dy) * 100.0;
+    let n = (degrees / 1.2).max(travel / 0.6).ceil() as usize;
+    if n < 2 {
+        return Vec::new();
+    }
+    let n = n.min(12);
+    (0..n)
+        .map(|i| {
+            let s = t - half + (i as f32 + 0.5) / n as f32 * 2.0 * half;
+            (s, camera_at(p, s), pose_at(p, s))
+        })
+        .collect()
+}
+
+// ---------- Titles ----------
+
+pub fn texts_at(p: &Project, t: f32) -> Vec<text::Shown<'_>> {
+    p.texts.iter().filter(|c| t >= c.start && t < c.end()).map(|c| text::Shown { clip: c, local: t - c.start }).collect()
+}
+
+/// Adds a title at `t`, or right after the one already there: 3 seconds, or up to the next
+/// title or the end of the video. Returns its id.
+pub fn add_text(p: &mut Project, t: f32, title: &str) -> Result<u64, String> {
+    let total = duration(p);
+    let end_of = if total > 0.0 { total } else { f32::MAX };
+    let mut start = t.clamp(0.0, (end_of - 1.5).max(0.0));
+    if let Some(c) = p.texts.iter().find(|c| start >= c.start && start < c.end()) {
+        start = c.end();
+    }
+    let next = p.texts.iter().map(|c| c.start).filter(|&s| s >= start).fold(end_of, f32::min);
+    let len = 3.0f32.min(next - start);
+    if len < 0.8 {
+        return Err("No queda sitio para un texto aquí".into());
+    }
+    let id = p.next_id();
+    p.texts.push(TextClip { id, start, duration: len, title: title.into(), ..TextClip::default() });
+    p.texts.sort_by(|a, b| a.start.total_cmp(&b.start));
+    Ok(id)
+}
+
+pub fn delete_text(p: &mut Project, id: u64) -> Result<(), String> {
+    let before = p.texts.len();
+    p.texts.retain(|c| c.id != id);
+    if p.texts.len() == before {
+        return Err(format!("No hay ningún texto {id}"));
+    }
+    Ok(())
+}
+
+/// Sets when a title starts and ends (at least 0,8 s long).
+pub fn place_text(p: &mut Project, id: u64, start: f32, end: f32) -> Result<(), String> {
+    let c = p.texts.iter_mut().find(|c| c.id == id).ok_or(format!("No hay ningún texto {id}"))?;
+    let start = start.max(0.0);
+    c.start = start;
+    c.duration = (end - start).max(0.8);
+    p.texts.sort_by(|a, b| a.start.total_cmp(&b.start));
+    Ok(())
 }
 
 // ---------- Camera clips ----------
@@ -448,19 +542,24 @@ pub fn resize_camera_clip(p: &mut Project, id: u64, start: f32, end: f32) -> Res
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DevicePreset {
     SpinIn,
+    DropIn,
     FullTurn,
+    Flip,
     RiseUp,
     Exit,
     Hop,
 }
 
 impl DevicePreset {
-    pub const ALL: [DevicePreset; 5] = [DevicePreset::SpinIn, DevicePreset::FullTurn, DevicePreset::RiseUp, DevicePreset::Hop, DevicePreset::Exit];
+    pub const ALL: [DevicePreset; 7] =
+        [DevicePreset::FullTurn, DevicePreset::Flip, DevicePreset::SpinIn, DevicePreset::DropIn, DevicePreset::RiseUp, DevicePreset::Hop, DevicePreset::Exit];
 
     pub fn label(self) -> &'static str {
         match self {
             DevicePreset::SpinIn => "Entrada girando",
-            DevicePreset::FullTurn => "Giro completo",
+            DevicePreset::DropIn => "Caída desde arriba",
+            DevicePreset::FullTurn => "Giro 360°",
+            DevicePreset::Flip => "Voltereta 360°",
             DevicePreset::RiseUp => "Asomarse desde abajo",
             DevicePreset::Hop => "Saltito",
             DevicePreset::Exit => "Salida",
@@ -470,11 +569,19 @@ impl DevicePreset {
     pub fn key(self) -> &'static str {
         match self {
             DevicePreset::SpinIn => "spin_in",
+            DevicePreset::DropIn => "drop_in",
             DevicePreset::FullTurn => "full_turn",
+            DevicePreset::Flip => "flip",
             DevicePreset::RiseUp => "rise_up",
             DevicePreset::Hop => "hop",
             DevicePreset::Exit => "exit",
         }
+    }
+
+    /// Spins turn the device all the way round; near a cut they centre on it, so the clip
+    /// changes while the back of the device faces the camera.
+    pub fn is_spin(self) -> bool {
+        matches!(self, DevicePreset::FullTurn | DevicePreset::Flip)
     }
 
     pub fn from_key(k: &str) -> Option<Self> {
@@ -485,7 +592,9 @@ impl DevicePreset {
         let r = PoseKey::rest;
         match self {
             DevicePreset::SpinIn => vec![PoseKey { dy: 0.6, turn: -40.0, tilt: 18.0, ..r(0.0, Ease::Smooth) }, r(1.4, Ease::Spring)],
-            DevicePreset::FullTurn => vec![r(0.0, Ease::Smooth), PoseKey { turn: 360.0, ..r(2.2, Ease::Smooth) }],
+            DevicePreset::DropIn => vec![PoseKey { dy: -1.1, tilt: -14.0, ..r(0.0, Ease::Smooth) }, r(0.9, Ease::Spring)],
+            DevicePreset::FullTurn => vec![r(0.0, Ease::Smooth), PoseKey { turn: 360.0, ..r(1.2, Ease::Smooth) }],
+            DevicePreset::Flip => vec![r(0.0, Ease::Smooth), PoseKey { tilt: 360.0, ..r(1.2, Ease::Smooth) }],
             DevicePreset::RiseUp => vec![PoseKey { dy: 0.9, ..r(0.0, Ease::Smooth) }, r(1.2, Ease::Spring)],
             DevicePreset::Hop => vec![r(0.0, Ease::Smooth), PoseKey { dy: -0.06, scale: 1.04, ..r(0.25, Ease::Smooth) }, r(0.6, Ease::Spring)],
             DevicePreset::Exit => vec![r(0.0, Ease::Smooth), PoseKey { dy: 0.9, turn: 30.0, ..r(1.0, Ease::Smooth) }],
@@ -499,14 +608,52 @@ pub fn add_device_preset(p: &mut Project, preset: DevicePreset, t: f32) -> u64 {
     let keys = preset.keys();
     let len = keys.last().map(|k| k.t).unwrap_or(0.0);
     let total = duration(p);
-    let start = match preset {
-        DevicePreset::Exit => (t.min(total) - len).max(0.0),
+    let cut = placed(p).iter().rev().skip(1).map(|c| c.end).filter(|e| (e - t).abs() <= 1.5).min_by(|a, b| (a - t).abs().total_cmp(&(b - t).abs()));
+    let start = match (preset, cut) {
+        (DevicePreset::Exit, _) => (t.min(total) - len).max(0.0),
+        (pr, Some(cut)) if pr.is_spin() => (cut - len * 0.5).max(0.0),
         _ => t.clamp(0.0, (total - len).max(0.0)),
     };
     let id = p.next_id();
     p.device.push(DeviceClip { id, start, name: preset.label().into(), keys });
     p.device.sort_by(|a, b| a.start.total_cmp(&b.start));
     id
+}
+
+/// The angle a spin turns (`(axis, degrees)`, axis 0 = turn, 1 = tilt, 2 = roll), if the clip
+/// turns the device all the way round.
+pub fn spin_of(c: &DeviceClip) -> Option<(usize, f32)> {
+    let last = c.keys.last()?;
+    [last.turn, last.tilt, last.roll].into_iter().enumerate().find(|(_, v)| v.abs() >= 300.0)
+}
+
+fn axis_mut(k: &mut PoseKey, axis: usize) -> &mut f32 {
+    match axis {
+        0 => &mut k.turn,
+        1 => &mut k.tilt,
+        _ => &mut k.roll,
+    }
+}
+
+/// Sets how far a spin turns, keeping the shape of its motion.
+pub fn set_spin(c: &mut DeviceClip, degrees: f32) {
+    if let Some((axis, current)) = spin_of(c) {
+        let k = degrees / current;
+        for key in &mut c.keys {
+            *axis_mut(key, axis) *= k;
+        }
+    }
+}
+
+/// Stretches a device clip's keyframes to last `secs`.
+pub fn set_device_duration(c: &mut DeviceClip, secs: f32) {
+    let current = c.duration();
+    if current > 0.0 {
+        let k = secs.max(0.2) / current;
+        for key in &mut c.keys {
+            key.t *= k;
+        }
+    }
 }
 
 pub fn delete_device_clip(p: &mut Project, id: u64) -> Result<(), String> {
@@ -810,10 +957,66 @@ mod tests {
     fn device_presets_add_up() {
         let mut p = project(&[10.0]);
         add_device_preset(&mut p, DevicePreset::FullTurn, 2.0);
-        let half = pose_at(&p, 3.1);
+        let half = pose_at(&p, 2.6);
         assert!(half.turn > 100.0 && half.turn < 260.0, "{half:?}");
         add_device_preset(&mut p, DevicePreset::Exit, 10.0);
         assert!((p.device.iter().find(|d| d.name == "Salida").unwrap().end() - 10.0).abs() < 1e-4);
         assert!(pose_at(&p, 10.0).dy > 0.8);
+    }
+
+    #[test]
+    fn spins_hide_the_cut_and_can_turn_more() {
+        let mut p = project(&[4.0, 4.0]);
+        // Dropped near the cut at 4 s, the spin shows the back of the device right on it.
+        let id = add_device_preset(&mut p, DevicePreset::FullTurn, 3.2);
+        assert!((pose_at(&p, 4.0).turn - 180.0).abs() < 1.0, "{:?}", pose_at(&p, 4.0));
+        // Away from cuts it starts where it is dropped.
+        let flip = add_device_preset(&mut p, DevicePreset::Flip, 6.0);
+        assert_eq!(p.device.iter().find(|d| d.id == flip).unwrap().start, 6.0);
+
+        let c = p.device.iter_mut().find(|d| d.id == id).unwrap();
+        assert_eq!(spin_of(c), Some((0, 360.0)));
+        set_spin(c, -720.0);
+        set_device_duration(c, 2.0);
+        assert_eq!(spin_of(c), Some((0, -720.0)));
+        assert!((c.duration() - 2.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn fast_spins_get_motion_blur() {
+        let mut p = project(&[6.0]);
+        assert!(shutter(&p, 1.0, 30.0).is_empty());
+        add_device_preset(&mut p, DevicePreset::FullTurn, 1.0);
+        let s = shutter(&p, 1.6, 30.0);
+        assert!(s.len() >= 3, "{}", s.len());
+        assert!(s.windows(2).all(|w| w[1].2.turn > w[0].2.turn));
+        assert!(shutter(&p, 4.0, 30.0).is_empty());
+    }
+
+    #[test]
+    fn titles_move_the_device_aside() {
+        let mut p = project(&[8.0]);
+        let id = add_text(&mut p, 1.0, "Camina.").unwrap();
+        let c = p.texts.iter().find(|c| c.id == id).unwrap().clone();
+        assert_eq!((c.start, c.duration), (1.0, 3.0));
+        assert_eq!(texts_at(&p, 2.0).len(), 1);
+        assert!(pose_at(&p, 2.5).dx > 0.3, "{:?}", pose_at(&p, 2.5));
+        assert_eq!(pose_at(&p, 5.0).dx, 0.0);
+        // A second title right after keeps the device where it is.
+        let second = add_text(&mut p, 4.2, "Corre.").unwrap();
+        let dxs: Vec<f32> = (0..20).map(|i| pose_at(&p, 3.5 + i as f32 * 0.05).dx).collect();
+        assert!(dxs.iter().all(|d| (d - dxs[0]).abs() < 0.01), "{dxs:?}");
+        // Adding over a title puts the new one right after it, if there is room before the next.
+        assert!(add_text(&mut p, 2.0, "").is_err());
+        delete_text(&mut p, second).unwrap();
+        let third = add_text(&mut p, 2.0, "").unwrap();
+        let c = p.texts.iter().find(|c| c.id == third).unwrap();
+        assert_eq!((c.start, c.duration), (4.0, 3.0));
+        delete_text(&mut p, third).unwrap();
+        place_text(&mut p, id, 6.0, 6.2).unwrap();
+        let c = p.texts.iter().find(|c| c.id == id).unwrap();
+        assert!((c.duration - 0.8).abs() < 1e-5);
+        delete_text(&mut p, id).unwrap();
+        assert!(delete_text(&mut p, id).is_err());
     }
 }

@@ -225,6 +225,7 @@ impl Layout {
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct ComposeInput<'a> {
     pub style: &'a Style,
     pub screen: Option<&'a Mips>,
@@ -242,6 +243,10 @@ pub struct ComposeInput<'a> {
     pub model: Option<&'a PreparedModel>,
     /// Supersampling of the model's edges (1 = off, 2 = 4 samples per pixel).
     pub supersample: usize,
+    /// Titles on screen, drawn over everything.
+    pub texts: &'a [crate::text::Shown<'a>],
+    /// Instants averaged for motion blur (see `timeline::shutter`); empty for none.
+    pub blur: &'a [(f32, CameraValue, PoseValue)],
 }
 
 struct Indicator {
@@ -477,11 +482,31 @@ pub fn device_pose(style: &Style, cam: &CameraValue, pose: &PoseValue, since_sta
     DevicePose { tilt, turn, roll, dx: pose.dx * min_dim, dy, scale: pose.scale.max(0.05) }
 }
 
-/// Renders the frame into `out` (RGBA8, `ow * oh * 4` bytes).
+/// Renders the frame into `out` (RGBA8, `ow * oh * 4` bytes): the scene (averaged over the
+/// shutter when it moves fast), then the titles.
 pub fn compose(out: &mut [u8], ow: usize, oh: usize, inp: &ComposeInput) {
     if out.len() != ow * oh * 4 || ow == 0 || oh == 0 {
         return;
     }
+    if inp.blur.len() < 2 {
+        compose_scene(out, ow, oh, inp);
+    } else {
+        let mut acc = vec![0u32; out.len()];
+        for &(time, cam, pose) in inp.blur {
+            compose_scene(out, ow, oh, &ComposeInput { cam, pose, time, since_start: time, ..*inp });
+            for (a, &v) in acc.iter_mut().zip(out.iter()) {
+                *a += v as u32;
+            }
+        }
+        let n = inp.blur.len() as u32;
+        for (o, a) in out.iter_mut().zip(acc) {
+            *o = ((a + n / 2) / n) as u8;
+        }
+    }
+    crate::text::draw(out, ow, oh, inp.style, inp.texts);
+}
+
+fn compose_scene(out: &mut [u8], ow: usize, oh: usize, inp: &ComposeInput) {
     let style = inp.style;
     let (cw, ch) = (ow as f32, oh as f32);
     let model = inp.model.filter(|_| style.frame == FrameStyle::Custom);
@@ -912,6 +937,8 @@ mod tests {
             since_start: 0.0,
             model: None,
             supersample: 1,
+            texts: &[],
+            blur: &[],
         };
         compose(&mut out, w, h, &inp);
         let px = |x: usize, y: usize| &out[(y * w + x) * 4..(y * w + x) * 4 + 4];
@@ -985,7 +1012,7 @@ mod pose_tests {
         let style = Style { tilt: 38.0, ..Style::default() };
         let (w, h) = (320usize, 180usize);
         let mut out = vec![0u8; w * h * 4];
-        let inp = ComposeInput { style: &style, screen: None, video_w: 1080.0, video_h: 2400.0, cam: CameraValue::REST, pose: PoseValue::REST, touches: &[], time: 0.0, since_start: 5.0, model: None, supersample: 1 };
+        let inp = ComposeInput { style: &style, screen: None, video_w: 1080.0, video_h: 2400.0, cam: CameraValue::REST, pose: PoseValue::REST, touches: &[], time: 0.0, since_start: 5.0, model: None, supersample: 1, texts: &[], blur: &[] };
         compose(&mut out, w, h, &inp);
         // Top and bottom rows are background (no dark device pixels).
         for y in [0, h - 1] {

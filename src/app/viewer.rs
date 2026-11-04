@@ -112,6 +112,16 @@ impl RecOrdingApp {
             (timeline::camera_at(&self.project, self.time), timeline::pose_at(&self.project, self.time), self.project.style.clone())
         };
         let touches = timeline::timeline_touches(&self.project);
+        // Titles are hidden while framing; motion blur only shows when paused (it costs a few
+        // renders per frame).
+        let texts = if flat { Vec::new() } else { timeline::texts_at(&self.project, self.time) };
+        let blur = if flat || self.playing { Vec::new() } else { timeline::shutter(&self.project, self.time, self.project.export.fps as f32) };
+        let text_hash = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            format!("{:?}", self.project.texts).hash(&mut h);
+            (texts.len(), blur.len(), h.finish())
+        };
         let bits = |v: [f32; 6]| v.map(f32::to_bits);
         let key = RenderKey {
             time: self.time,
@@ -124,6 +134,7 @@ impl RecOrdingApp {
             touches: touches.len(),
             model: self.active_model().map(|m| m as *const PreparedModel as usize).unwrap_or(0),
             supersample: if self.playing { 1 } else { 2 },
+            texts: text_hash,
         };
         if self.last_render.as_ref() != Some(&key) {
             self.viewer_buf.resize(ow * oh * 4, 0);
@@ -143,6 +154,8 @@ impl RecOrdingApp {
                     since_start: self.time,
                     model: self.model_prepared.as_ref().map(|(_, m)| m.as_ref()).filter(|_| style.frame == FrameStyle::Custom),
                     supersample: key.supersample,
+                    texts: &texts,
+                    blur: &blur,
                 },
             );
             let img = ColorImage::from_rgba_unmultiplied([ow, oh], &self.viewer_buf);

@@ -42,6 +42,7 @@ jobs:
           Copy-Item target/release/rec-ording.exe "dist/$name/"
           Copy-Item -Recurse assets/models "dist/$name/models"
           Copy-Item packaging/windows/LEEME.txt "dist/$name/"
+          Copy-Item assets/fonts/OFL.txt "dist/$name/Inter-OFL.txt"
           Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
           "NAME=$name" >> $env:GITHUB_ENV
 

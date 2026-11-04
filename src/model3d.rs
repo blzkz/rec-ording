@@ -706,17 +706,41 @@ pub fn prepare(src: &ModelSource, screen_part: usize, quarter_turns: u8) -> Resu
         return Err("Esa pieza no tiene superficie visible".into());
     }
     let main = norm(nsum);
-    let mut tri_screen = vec![false; src.tris.len()];
-    let mut csum = [0.0f32; 3];
-    let mut area = 0.0f32;
+    // Some models put the glass of the back cameras in the same part, facing the same way: keep
+    // only the triangles near the plane where most of the screen lies.
+    let centroid = |t: &[u32; 3]| {
+        let (p0, p1, p2) = (src.pos[t[0] as usize], src.pos[t[1] as usize], src.pos[t[2] as usize]);
+        [(p0[0] + p1[0] + p2[0]) / 3.0, (p0[1] + p1[1] + p2[1]) / 3.0, (p0[2] + p1[2] + p2[2]) / 3.0]
+    };
+    let mut facing: Vec<(f32, f32, usize)> = Vec::new();
     for (i, t) in src.tris.iter().enumerate() {
         if src.tri_part[i] as usize != screen_part {
             continue;
         }
         let (n, a) = tri_area_normal(&src.pos, t);
-        if dot(n, main) < 0.85 {
+        if dot(n, main) >= 0.85 {
+            facing.push((dot(centroid(t), main), a, i));
+        }
+    }
+    facing.sort_by(|x, y| x.0.total_cmp(&y.0));
+    let half = facing.iter().map(|f| f.1).sum::<f32>() * 0.5;
+    let mut acc = 0.0;
+    let plane = facing.iter().find(|f| {
+        acc += f.1;
+        acc >= half
+    });
+    let plane = plane.map(|f| f.0).unwrap_or(0.0);
+    let (lo, hi) = src.pos.iter().map(|p| dot(*p, main)).fold((f32::MAX, f32::MIN), |(lo, hi), d| (lo.min(d), hi.max(d)));
+    let tolerance = 0.25 * (hi - lo).max(1e-6);
+    let mut tri_screen = vec![false; src.tris.len()];
+    let mut csum = [0.0f32; 3];
+    let mut area = 0.0f32;
+    for &(depth, _, i) in &facing {
+        if (depth - plane).abs() > tolerance {
             continue;
         }
+        let t = &src.tris[i];
+        let (_, a) = tri_area_normal(&src.pos, t);
         tri_screen[i] = true;
         area += a;
         for k in 0..3 {

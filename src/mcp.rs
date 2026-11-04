@@ -30,6 +30,8 @@ struct ExportJob {
     rx: Receiver<ExportEvent>,
     cancel: Arc<AtomicBool>,
     status: String,
+    /// What encodes it (graphics card or CPU).
+    encoder: String,
     done: bool,
 }
 
@@ -455,11 +457,62 @@ impl Server {
                 let key = text(a, "preset")?;
                 let preset = DevicePreset::from_key(&key).ok_or(format!("Movimiento desconocido: {key}"))?;
                 let t = num(a, "time")?;
-                self.edit(|p| Ok(format!("Movimiento «{}» añadido (clip {})", preset.label(), timeline::add_device_preset(p, preset, t))))
+                let (degrees, secs) = (opt_num(a, "degrees"), opt_num(a, "duration"));
+                self.edit(move |p| {
+                    let id = timeline::add_device_preset(p, preset, t);
+                    let c = p.device.iter_mut().find(|c| c.id == id).ok_or("No se pudo añadir")?;
+                    if let Some(d) = degrees {
+                        if timeline::spin_of(c).is_none() {
+                            return Err("degrees solo vale para full_turn y flip".into());
+                        }
+                        timeline::set_spin(c, d);
+                    }
+                    if let Some(s) = secs {
+                        timeline::set_device_duration(c, s);
+                    }
+                    Ok(format!("Movimiento «{}» añadido de {:.2} a {:.2} s (clip {id})", preset.label(), c.start, c.end()))
+                })
             }
             "delete_device_motion" => {
                 let id = int(a, "clip_id")?;
                 self.edit(|p| timeline::delete_device_clip(p, id).map(|_| "Movimiento eliminado".into()))
+            }
+
+            // ----- Titles -----
+            "add_text" => {
+                let a = a.clone();
+                let t = num(&a, "time")?;
+                let title = text(&a, "title")?;
+                self.edit(move |p| {
+                    let id = timeline::add_text(p, t, &title)?;
+                    let c = p.texts.iter_mut().find(|c| c.id == id).ok_or("No se pudo añadir")?;
+                    set_text_fields(c, &a)?;
+                    let start = c.start;
+                    if let Some(d) = opt_num(&a, "duration") {
+                        timeline::place_text(p, id, start, start + d)?;
+                    }
+                    let c = p.texts.iter().find(|c| c.id == id).ok_or("No se pudo añadir")?;
+                    Ok(format!("Texto añadido de {:.2} a {:.2} s (texto {id})", c.start, c.end()))
+                })
+            }
+            "update_text" => {
+                let a = a.clone();
+                let id = int(&a, "text_id")?;
+                self.edit(move |p| {
+                    let c = p.texts.iter_mut().find(|c| c.id == id).ok_or(format!("No hay ningún texto {id}"))?;
+                    set_text_fields(c, &a)?;
+                    if let Some(v) = opt_str(&a, "title") {
+                        c.title = v;
+                    }
+                    let start = opt_num(&a, "start").unwrap_or(c.start);
+                    let end = start + opt_num(&a, "duration").unwrap_or(c.duration);
+                    timeline::place_text(p, id, start, end)?;
+                    Ok("Texto actualizado".into())
+                })
+            }
+            "delete_text" => {
+                let id = int(a, "text_id")?;
+                self.edit(|p| timeline::delete_text(p, id).map(|_| "Texto eliminado".into()))
             }
 
             // ----- Look -----
@@ -539,6 +592,9 @@ impl Server {
                         _ => return Err("quality debe ser standard, high o max".into()),
                     };
                 }
+                if let Some(v) = a["hardware"].as_bool() {
+                    p.export.hardware = v;
+                }
                 if let Some(v) = a["include_audio"].as_bool() {
                     p.export.include_audio = v;
                 }
@@ -552,14 +608,15 @@ impl Server {
                 let (tx, rx) = unbounded();
                 let cancel = Arc::new(AtomicBool::new(false));
                 export::start(p, cancel.clone(), tx);
-                self.export = Some(ExportJob { rx, cancel, status: "Exportando… 0 %".into(), done: false });
+                self.export = Some(ExportJob { rx, cancel, status: "Exportando… 0 %".into(), encoder: String::new(), done: false });
                 Ok(Reply::Text("Exportación iniciada; consulta export_status".into()))
             }
             "export_status" => {
                 let job = self.export.as_mut().ok_or("No se ha iniciado ninguna exportación")?;
                 while let Ok(ev) = job.rx.try_recv() {
                     match ev {
-                        ExportEvent::Progress { fraction, .. } => job.status = format!("Exportando… {:.0} %", fraction * 100.0),
+                        ExportEvent::Progress { fraction, .. } => job.status = format!("Exportando… {:.0} % ({})", fraction * 100.0, job.encoder),
+                        ExportEvent::Encoder(name) => job.encoder = name,
                         ExportEvent::Done(path) => {
                             job.status = format!("Terminado: {}", path.display());
                             job.done = true;
@@ -686,7 +743,15 @@ fn summary(p: &Project, path: &Path) -> Value {
         "touches": timeline::timeline_touches(p).iter().map(|t| json!({"time": t.time, "x": t.x, "y": t.y, "kind": if t.kind == TouchKind::Tap {"tap"} else {"swipe"}})).collect::<Vec<_>>(),
         "camera": p.camera.iter().map(|c| json!({"id": c.id, "kind": c.kind.label(), "start": c.start, "end": c.end(),
             "keyframes": c.keys.iter().map(|k| json!({"time": c.start + k.t, "zoom": k.zoom, "x": k.x, "y": k.y, "tilt": k.tilt, "turn": k.turn, "roll": k.roll, "ease": ease_key(k.ease)})).collect::<Vec<_>>()})).collect::<Vec<_>>(),
-        "device_motion": p.device.iter().map(|d| json!({"id": d.id, "name": d.name, "start": d.start, "end": d.end()})).collect::<Vec<_>>(),
+        "device_motion": p.device.iter().map(|d| {
+            let spin = timeline::spin_of(d).map(|(axis, deg)| {
+                let axis = ["vertical", "horizontal", "plane"][axis];
+                json!({"axis": axis, "degrees": deg})
+            });
+            json!({"id": d.id, "name": d.name, "start": d.start, "end": d.end(), "spin": spin})
+        }).collect::<Vec<_>>(),
+        "texts": p.texts.iter().map(|c| json!({"id": c.id, "start": c.start, "end": c.end(), "title": c.title, "subtitle": c.subtitle,
+            "place": key_of(&TEXT_PLACES, c.place), "size": key_of(&TEXT_SIZES, c.size), "reveal": key_of(&TEXT_REVEALS, c.reveal), "color": key_of(&TEXT_COLORS, c.color), "make_room": c.make_room})).collect::<Vec<_>>(),
         "director": {
             "motion": if p.director.motion == DirectorMotion::ThreeD {"3d"} else {"2d"},
             "intensity": p.director.intensity,
@@ -732,6 +797,8 @@ pub fn render_png(p: &Project, t: f32, width: usize, model: Option<&PreparedMode
     let (ow, oh) = (width, ((width as f32 / ratio).round() as usize).max(2));
     let mut rgba = vec![0u8; ow * oh * 4];
     let touches = timeline::timeline_touches(p);
+    let texts = timeline::texts_at(p, t);
+    let blur = timeline::shutter(p, t, p.export.fps as f32);
     compose(
         &mut rgba,
         ow,
@@ -748,6 +815,8 @@ pub fn render_png(p: &Project, t: f32, width: usize, model: Option<&PreparedMode
             since_start: t,
             model,
             supersample: 2,
+            texts: &texts,
+            blur: &blur,
         },
     );
     let mut enc = command("ffmpeg")
@@ -784,6 +853,51 @@ fn base64(data: &[u8]) -> String {
 }
 
 // ---------- Tool catalogue ----------
+
+const TEXT_PLACES: [(&str, TextPlace); 5] =
+    [("left", TextPlace::Left), ("right", TextPlace::Right), ("top", TextPlace::Top), ("bottom", TextPlace::Bottom), ("center", TextPlace::Center)];
+const TEXT_SIZES: [(&str, TextSize); 3] = [("small", TextSize::Small), ("medium", TextSize::Medium), ("large", TextSize::Large)];
+const TEXT_REVEALS: [(&str, TextReveal); 3] = [("fade", TextReveal::Fade), ("words", TextReveal::Words), ("lines", TextReveal::Lines)];
+const TEXT_COLORS: [(&str, TextColor); 3] = [("auto", TextColor::Auto), ("light", TextColor::Light), ("dark", TextColor::Dark)];
+
+fn key_of<T: PartialEq + Copy>(table: &[(&'static str, T)], v: T) -> &'static str {
+    table.iter().find(|(_, x)| *x == v).map(|(k, _)| *k).unwrap_or("")
+}
+
+fn pick<T: Copy>(table: &[(&str, T)], a: &Value, field: &str) -> Result<Option<T>, String> {
+    let Some(v) = a[field].as_str() else {
+        return Ok(None);
+    };
+    let keys: Vec<&str> = table.iter().map(|(k, _)| *k).collect();
+    table.iter().find(|(k, _)| *k == v).map(|(_, x)| Some(*x)).ok_or(format!("{field} debe ser {}", keys.join(", ")))
+}
+
+fn opt_str(a: &Value, field: &str) -> Option<String> {
+    a[field].as_str().map(str::to_string)
+}
+
+/// Optional fields shared by add_text and update_text.
+fn set_text_fields(c: &mut TextClip, a: &Value) -> Result<(), String> {
+    if let Some(v) = opt_str(a, "subtitle") {
+        c.subtitle = v;
+    }
+    if let Some(v) = pick(&TEXT_PLACES, a, "place")? {
+        c.place = v;
+    }
+    if let Some(v) = pick(&TEXT_SIZES, a, "size")? {
+        c.size = v;
+    }
+    if let Some(v) = pick(&TEXT_REVEALS, a, "reveal")? {
+        c.reveal = v;
+    }
+    if let Some(v) = pick(&TEXT_COLORS, a, "color")? {
+        c.color = v;
+    }
+    if let Some(v) = a["make_room"].as_bool() {
+        c.make_room = v;
+    }
+    Ok(())
+}
 
 fn tool(name: &str, description: &str, props: Value, required: &[&str]) -> Value {
     json!({"name": name, "description": description, "inputSchema": {"type": "object", "properties": props, "required": required}})
@@ -849,11 +963,37 @@ pub fn tools() -> Vec<Value> {
         tool("import_model", "Importa un modelo .glb/.gltf (o el .zip de la descarga) a la galería y lo usa.", json!({"path": s("Ruta")}), &["path"]),
         tool("set_model_options", "Ajustes del modelo 3D en uso.", json!({"screen_part": json!({"description": "\"auto\" o índice de pieza"}), "quarter_turns": i("Giros de 90° de la pantalla"), "animation": json!({"description": "Índice de animación o \"none\""}), "loop": b("Repetir en bucle"), "animation_start": n("Segundo en que empieza la animación"), "video_fit": s("fill, fit o stretch"), "fit_pan": n("Encuadre con fill, 0..1")}), &[]),
         tool("set_angle", "Ángulo de reposo del dispositivo y movimientos globales.", json!({"tilt": n("grados"), "turn": n("grados"), "roll": n("grados"), "straighten_on_zoom": b("Ponerse de frente al hacer zoom"), "float": b("Balanceo suave"), "intro": b("Entrar girando al empezar")}), &[]),
-        tool("add_device_motion", "Añade un movimiento del dispositivo en un momento.", json!({"preset": s("spin_in, full_turn, rise_up, hop o exit"), "time": n("s (exit termina en ese momento)")}), &["preset", "time"]),
+        tool(
+            "add_device_motion",
+            "Añade un movimiento del dispositivo en un momento. full_turn gira 360° sobre el eje vertical y flip sobre el horizontal; cerca de un cambio de clip se centran en él, para que el corte ocurra mientras se ve la trasera.",
+            json!({"preset": s("full_turn, flip, spin_in, drop_in, rise_up, hop o exit"), "time": n("s (exit termina en ese momento)"), "degrees": n("Solo giros: grados (360, 720, -360 para el otro sentido…)"), "duration": n("s")}),
+            &["preset", "time"],
+        ),
+        tool(
+            "add_text",
+            "Añade un título sobre el vídeo, al estilo de los anuncios de Apple: frases cortas junto al móvil, que se aparta para dejarle sitio. Usa saltos de línea (\\n) para varias líneas.",
+            json!({"time": n("s"), "title": s("Titular"), "subtitle": s("Línea más pequeña debajo (opcional)"), "duration": n("s (por defecto 3)"),
+                   "place": s("left, right, top, bottom o center"), "size": s("small, medium o large (large: cifra o titular grande)"),
+                   "reveal": s("fade, words (palabra a palabra) o lines (línea a línea, las anteriores se atenúan)"), "color": s("auto, light o dark"), "make_room": b("Apartar el móvil (por defecto sí)")}),
+            &["time", "title"],
+        ),
+        tool(
+            "update_text",
+            "Cambia un título: texto, momento, duración o estilo.",
+            json!({"text_id": i("Texto"), "title": s("Titular"), "subtitle": s("Línea pequeña"), "start": n("s"), "duration": n("s"), "place": s("left, right, top, bottom o center"),
+                   "size": s("small, medium o large"), "reveal": s("fade, words o lines"), "color": s("auto, light o dark"), "make_room": b("Apartar el móvil")}),
+            &["text_id"],
+        ),
+        tool("delete_text", "Elimina un título.", json!({"text_id": i("Texto")}), &["text_id"]),
         tool("delete_device_motion", "Elimina un movimiento del dispositivo.", json!({"clip_id": i("Clip")}), &["clip_id"]),
         tool("set_style", "Formato, fondo, margen, sombra y toques.", json!({"aspect": s("16:9, 9:16, 1:1 o 4:5"), "background_preset": s("Medianoche, Aurora, Atardecer, Lavanda, Menta, Océano, Melocotón, Bosque, Grafito o Nube"), "background_a": s("#rrggbb"), "background_b": s("#rrggbb"), "background_angle": n("grados"), "padding": n("0.02..0.25"), "shadow": n("0..1"), "show_touches": b("Mostrar los toques"), "touch_size": n("0.5..2")}), &[]),
         tool("render_frame", "Imagen de cómo queda el vídeo en un momento.", json!({"time": n("s"), "width": i("Ancho en píxeles (por defecto 960)")}), &["time"]),
-        tool("export", "Exporta el vídeo (en segundo plano).", json!({"resolution": s("720p, 1080p o 4K"), "fps": i("30 o 60"), "format": s("h264, hevc o gif"), "quality": s("standard, high o max"), "include_audio": b("Incluir sonido"), "folder": s("Carpeta de destino")}), &[]),
+        tool(
+            "export",
+            "Exporta el vídeo (en segundo plano). Por defecto codifica con la tarjeta gráfica si hay una compatible (NVIDIA, AMD o Intel); si falla, con el procesador.",
+            json!({"resolution": s("720p, 1080p o 4K"), "fps": i("30 o 60"), "format": s("h264, hevc o gif"), "quality": s("standard, high o max"), "include_audio": b("Incluir sonido"), "folder": s("Carpeta de destino"), "hardware": b("Codificar con la tarjeta gráfica")}),
+            &[],
+        ),
         tool("export_status", "Progreso o resultado de la exportación.", json!({}), &[]),
         tool("cancel_export", "Cancela la exportación en marcha.", json!({}), &[]),
     ]

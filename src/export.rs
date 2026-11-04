@@ -2,7 +2,8 @@
 
 use crate::timeline;
 use crate::compositor::{compose, ComposeInput, Frame, Mips};
-use crate::model::{ExportFormat, Project, Quality};
+use crate::hwenc::{self, Codec, Encoder};
+use crate::model::{ExportFormat, ExportSettings, Project, Quality};
 use crossbeam_channel::{bounded, Sender};
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -15,6 +16,8 @@ use std::time::Instant;
 
 pub enum ExportEvent {
     Progress { fraction: f32, eta_secs: Option<f32> },
+    /// What encodes the video ("AMD (VAAPI)", "Procesador"…).
+    Encoder(String),
     Done(PathBuf),
     Failed(String),
     Cancelled,
@@ -38,7 +41,14 @@ pub fn output_path(project: &Project) -> PathBuf {
 pub fn start(project: Project, cancel: Arc<AtomicBool>, tx: Sender<ExportEvent>) {
     thread::spawn(move || {
         let out = output_path(&project);
-        let ev = match run(&project, &out, &cancel, &tx) {
+        let hw = encoder_for(&project.export);
+        let mut result = run(&project, &out, &cancel, &tx, hw.as_ref());
+        if result.is_err() && hw.is_some() && !cancel.load(Ordering::Relaxed) {
+            // The graphics card failed (driver, size limits…): do it again on the CPU.
+            let _ = tx.send(ExportEvent::Progress { fraction: 0.0, eta_secs: None });
+            result = run(&project, &out, &cancel, &tx, None);
+        }
+        let ev = match result {
             Ok(()) => ExportEvent::Done(out),
             Err(_) if cancel.load(Ordering::Relaxed) => {
                 let _ = std::fs::remove_file(&out);
@@ -66,7 +76,21 @@ fn collect_stderr(child: &mut Child) -> Arc<Mutex<String>> {
     buf
 }
 
-fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<ExportEvent>) -> Result<(), String> {
+fn codec_of(format: ExportFormat) -> Option<Codec> {
+    match format {
+        ExportFormat::H264 => Some(Codec::H264),
+        ExportFormat::Hevc => Some(Codec::Hevc),
+        ExportFormat::Gif => None,
+    }
+}
+
+/// The graphics card encoder for these settings, if they ask for one and there is one that can.
+pub fn encoder_for(settings: &ExportSettings) -> Option<Encoder> {
+    let codec = codec_of(settings.format)?;
+    settings.hardware.then(hwenc::detect).flatten().filter(|e| e.supports(codec))
+}
+
+fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<ExportEvent>, hw: Option<&Encoder>) -> Result<(), String> {
     let clips = timeline::placed(project);
     if clips.is_empty() {
         return Err("No hay ningún vídeo en el proyecto".into());
@@ -106,9 +130,13 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
         .collect::<Result<_, String>>()?;
 
     // Encoder: input 0 is the rendered video, then one audio input per clip.
+    let _ = tx.send(ExportEvent::Encoder(hw.map(|e| e.name.clone()).unwrap_or_else(|| "Procesador".into())));
     let mut enc = command("ffmpeg");
-    enc.args(["-nostdin", "-y", "-loglevel", "error"])
-        .args(["-f", "rawvideo", "-pix_fmt", "rgba", "-s", &format!("{ow}x{oh}"), "-r", &fps.to_string(), "-i", "-"]);
+    enc.args(["-nostdin", "-y", "-loglevel", "error"]);
+    if let Some(e) = hw {
+        enc.args(e.input_args());
+    }
+    enc.args(["-f", "rawvideo", "-pix_fmt", "rgba", "-s", &format!("{ow}x{oh}"), "-r", &fps.to_string(), "-i", "-"]);
     let audio = settings.include_audio && parts.iter().any(|p| p.audio) && settings.format != ExportFormat::Gif;
     if audio {
         let mut filter = String::new();
@@ -131,22 +159,27 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
         filter.push_str(&format!("concat=n={}:v=0:a=1[aout]", parts.len()));
         enc.args(["-filter_complex", &filter, "-map", "0:v", "-map", "[aout]"]);
     }
-    let crf = |base: u32| -> String {
+    let crf = |base: u32| -> u32 {
         match settings.quality {
             Quality::Standard => base + 5,
             Quality::High => base,
             Quality::Max => base.saturating_sub(4),
         }
-        .to_string()
     };
-    match settings.format {
-        ExportFormat::H264 => {
-            enc.args(["-c:v", "libx264", "-preset", "medium", "-crf", &crf(18), "-pix_fmt", "yuv420p"]);
+    match (settings.format, hw) {
+        (ExportFormat::H264, Some(e)) => {
+            enc.args(e.output_args(Codec::H264, crf(18)));
         }
-        ExportFormat::Hevc => {
-            enc.args(["-c:v", "libx265", "-preset", "medium", "-crf", &crf(21), "-pix_fmt", "yuv420p", "-tag:v", "hvc1"]);
+        (ExportFormat::Hevc, Some(e)) => {
+            enc.args(e.output_args(Codec::Hevc, crf(21)));
         }
-        ExportFormat::Gif => {
+        (ExportFormat::H264, None) => {
+            enc.args(["-c:v", "libx264", "-preset", "medium", "-crf", &crf(18).to_string(), "-pix_fmt", "yuv420p"]);
+        }
+        (ExportFormat::Hevc, None) => {
+            enc.args(["-c:v", "libx265", "-preset", "medium", "-crf", &crf(21).to_string(), "-pix_fmt", "yuv420p", "-tag:v", "hvc1"]);
+        }
+        (ExportFormat::Gif, _) => {
             let width = ow.min(800);
             enc.args([
                 "-vf",
@@ -269,6 +302,8 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
         };
         let t = i as f32 / fps as f32;
         let mut buf = vec![0u8; ow * oh * 4];
+        let texts = timeline::texts_at(project, t);
+        let blur = timeline::shutter(project, t, fps as f32);
         compose(
             &mut buf,
             ow,
@@ -285,6 +320,8 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
                 since_start: t,
                 model: model.as_ref(),
                 supersample: 2,
+                texts: &texts,
+                blur: &blur,
             },
         );
         if out_tx.send(buf).is_err() {
@@ -357,7 +394,7 @@ mod tests {
         timeline::add_device_preset(&mut project, timeline::DevicePreset::FullTurn, 9.0);
         let out = output_path(&project);
         let (tx, _rx) = crossbeam_channel::unbounded();
-        run(&project, &out, &AtomicBool::new(false), &tx).expect("export");
+        run(&project, &out, &AtomicBool::new(false), &tx, encoder_for(&project.export).as_ref()).expect("export");
         let probed = crate::media::probe(&out.to_string_lossy()).expect("output readable");
         assert_eq!((probed.width, probed.height), (1280, 720));
         assert!(probed.has_audio);
