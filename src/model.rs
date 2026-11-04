@@ -3,19 +3,24 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-pub const PROJECT_VERSION: u32 = 3;
+pub const PROJECT_VERSION: u32 = 4;
 
-/// A single editable video: one screen recording plus the styling applied on top of it.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// A video project: recordings placed on a timeline, camera and device motion, and the look.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Project {
     pub version: u32,
     pub name: String,
-    pub media: Option<MediaInfo>,
-    pub trim_start: f32,
-    pub trim_end: f32,
-    pub touches: Vec<Touch>,
-    pub zooms: Vec<ZoomSegment>,
+    /// Bumped on every save, so the app notices edits made by the MCP server.
+    pub revision: u64,
+    pub media: Vec<Media>,
+    /// The video track: clips play back to back, in this order.
+    pub clips: Vec<Clip>,
+    /// Camera animation clips (zooms, moves, Director shots); they do not overlap.
+    pub camera: Vec<CameraClip>,
+    /// Device motion clips; overlapping ones add up.
+    pub device: Vec<DeviceClip>,
+    pub director: Director,
     pub style: Style,
     pub export: ExportSettings,
 }
@@ -25,11 +30,12 @@ impl Default for Project {
         Self {
             version: PROJECT_VERSION,
             name: "Mi app".into(),
-            media: None,
-            trim_start: 0.0,
-            trim_end: 0.0,
-            touches: Vec::new(),
-            zooms: Vec::new(),
+            revision: 0,
+            media: Vec::new(),
+            clips: Vec::new(),
+            camera: Vec::new(),
+            device: Vec::new(),
+            director: Director::default(),
             style: Style::default(),
             export: ExportSettings::default(),
         }
@@ -37,31 +43,209 @@ impl Default for Project {
 }
 
 impl Project {
-    /// Replaces the clip, keeping the look (style, export settings, name) of the current project.
-    pub fn with_new_media(&self, media: MediaInfo, touches: Vec<Touch>) -> Project {
-        let mut p = Project {
-            name: self.name.clone(),
-            style: self.style.clone(),
-            export: self.export.clone(),
-            ..Default::default()
-        };
-        p.trim_start = 0.0;
-        p.trim_end = media.duration;
-        p.media = Some(media);
-        p.touches = touches;
-        p
+    /// A fresh id, unique among every clip, media, keyframe owner and target of the project.
+    pub fn next_id(&self) -> u64 {
+        let ids = self
+            .media
+            .iter()
+            .map(|m| m.id)
+            .chain(self.clips.iter().map(|c| c.id))
+            .chain(self.camera.iter().map(|c| c.id))
+            .chain(self.device.iter().map(|c| c.id))
+            .chain(self.director.targets.iter().map(|t| t.id));
+        ids.max().unwrap_or(0) + 1
     }
 
+    pub fn media(&self, id: u64) -> Option<&Media> {
+        self.media.iter().find(|m| m.id == id)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.clips.is_empty()
+    }
+}
+
+/// A recording or imported video, with the touches recorded with it (in its own time).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Media {
+    pub id: u64,
+    pub info: MediaInfo,
+    #[serde(default)]
+    pub touches: Vec<Touch>,
+}
+
+/// A piece of a recording on the video track.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Clip {
+    pub id: u64,
+    pub media: u64,
+    pub source_in: f32,
+    pub source_out: f32,
+}
+
+impl Clip {
     pub fn duration(&self) -> f32 {
-        self.media.as_ref().map(|m| m.duration).unwrap_or(0.0)
+        (self.source_out - self.source_in).max(0.0)
     }
+}
 
-    pub fn trimmed_duration(&self) -> f32 {
-        (self.trim_end - self.trim_start).max(0.0)
+/// How a keyframe is reached from the previous one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Ease {
+    /// Fast start, soft landing, like a damped spring.
+    Spring,
+    /// Eases in and out.
+    Smooth,
+    Linear,
+    /// Keeps the previous value and jumps at the keyframe.
+    Hold,
+}
+
+impl Ease {
+    pub const ALL: [Ease; 4] = [Ease::Spring, Ease::Smooth, Ease::Linear, Ease::Hold];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Ease::Spring => "Muelle",
+            Ease::Smooth => "Suave",
+            Ease::Linear => "Lineal",
+            Ease::Hold => "Corte",
+        }
     }
+}
 
-    pub fn next_zoom_id(&self) -> u64 {
-        self.zooms.iter().map(|z| z.id).max().unwrap_or(0) + 1
+/// Camera at a keyframe. `t` is relative to the clip start; angles are added to the style's
+/// device angle (0 = unchanged); `zoom` 1 and focus (0.5, 0.5) is the resting camera.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct CamKey {
+    pub t: f32,
+    pub zoom: f32,
+    pub x: f32,
+    pub y: f32,
+    pub tilt: f32,
+    pub turn: f32,
+    pub roll: f32,
+    pub ease: Ease,
+}
+
+impl CamKey {
+    pub fn rest(t: f32, ease: Ease) -> Self {
+        Self { t, zoom: 1.0, x: 0.5, y: 0.5, tilt: 0.0, turn: 0.0, roll: 0.0, ease }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CameraKind {
+    /// Generated from the touches (regenerating replaces these).
+    Auto,
+    /// A zoom on one spot.
+    Zoom,
+    /// A shot generated by the Director.
+    Director,
+    /// Free keyframes (turns, orbits…).
+    Move,
+}
+
+impl CameraKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            CameraKind::Auto => "Zoom automático",
+            CameraKind::Zoom => "Zoom",
+            CameraKind::Director => "Director",
+            CameraKind::Move => "Movimiento",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CameraClip {
+    pub id: u64,
+    pub start: f32,
+    pub kind: CameraKind,
+    pub keys: Vec<CamKey>,
+}
+
+impl CameraClip {
+    pub fn duration(&self) -> f32 {
+        self.keys.last().map(|k| k.t).unwrap_or(0.0)
+    }
+    pub fn end(&self) -> f32 {
+        self.start + self.duration()
+    }
+}
+
+/// Device pose at a keyframe: offset (fraction of the frame's short side), scale and angles,
+/// all relative to the resting device.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PoseKey {
+    pub t: f32,
+    pub dx: f32,
+    pub dy: f32,
+    pub scale: f32,
+    pub tilt: f32,
+    pub turn: f32,
+    pub roll: f32,
+    pub ease: Ease,
+}
+
+impl PoseKey {
+    pub fn rest(t: f32, ease: Ease) -> Self {
+        Self { t, dx: 0.0, dy: 0.0, scale: 1.0, tilt: 0.0, turn: 0.0, roll: 0.0, ease }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeviceClip {
+    pub id: u64,
+    pub start: f32,
+    pub name: String,
+    pub keys: Vec<PoseKey>,
+}
+
+impl DeviceClip {
+    pub fn duration(&self) -> f32 {
+        self.keys.last().map(|k| k.t).unwrap_or(0.0)
+    }
+    pub fn end(&self) -> f32 {
+        self.start + self.duration()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DirectorMotion {
+    /// Angles, orbits and zooms towards each target.
+    ThreeD,
+    /// Flat zoom and pan.
+    TwoD,
+}
+
+/// A box drawn on the video at a moment: the Director frames it in one shot.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Target {
+    pub id: u64,
+    /// Timeline seconds.
+    pub time: f32,
+    /// Box in normalized video coordinates.
+    pub x0: f32,
+    pub y0: f32,
+    pub x1: f32,
+    pub y1: f32,
+    /// Varies the camera move; "retake" changes it.
+    pub seed: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Director {
+    pub targets: Vec<Target>,
+    pub motion: DirectorMotion,
+    /// 0..1: how bold the 3D moves are.
+    pub intensity: f32,
+}
+
+impl Default for Director {
+    fn default() -> Self {
+        Self { targets: Vec::new(), motion: DirectorMotion::ThreeD, intensity: 0.5 }
     }
 }
 
@@ -92,19 +276,6 @@ pub struct Touch {
     pub end_x: f32,
     pub end_y: f32,
     pub kind: TouchKind,
-}
-
-/// A camera move: between `start` and `end` the camera zooms to `scale` around (`x`, `y`).
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct ZoomSegment {
-    pub id: u64,
-    pub start: f32,
-    pub end: f32,
-    pub scale: f32,
-    pub x: f32,
-    pub y: f32,
-    /// Created by "zoom automático" (regenerating replaces only these).
-    pub auto: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -313,11 +484,13 @@ pub struct CustomModel {
     /// Animation of the model to play, if it has any.
     pub animation: Option<usize>,
     pub loop_animation: bool,
+    /// Timeline second at which the model's animation starts.
+    pub animation_start: f32,
 }
 
 impl Default for CustomModel {
     fn default() -> Self {
-        Self { path: String::new(), screen_part: None, quarter_turns: 0, animation: None, loop_animation: true }
+        Self { path: String::new(), screen_part: None, quarter_turns: 0, animation: None, loop_animation: true, animation_start: 0.0 }
     }
 }
 
@@ -562,39 +735,199 @@ pub fn timestamp_for_filename() -> String {
         })
 }
 
-fn autosave_path() -> PathBuf {
-    data_dir().join("proyecto.json")
+// ---------- Projects on disk ----------
+
+/// Folder with one `.recproj.json` file per project.
+pub fn projects_dir() -> PathBuf {
+    let dir = data_dir().join("proyectos");
+    let _ = fs::create_dir_all(&dir);
+    dir
 }
 
-pub fn load_last_project() -> Project {
-    let Ok(raw) = fs::read_to_string(autosave_path()) else {
-        return Project::default();
-    };
-    let Ok(mut p) = serde_json::from_str::<Project>(&raw) else {
-        return Project::default();
-    };
-    // The recording may have been moved or deleted since the last session.
-    if let Some(m) = &p.media {
-        if !Path::new(&m.path).exists() {
-            p.media = None;
-            p.touches.clear();
-            p.zooms.clear();
-        }
+fn state_path() -> PathBuf {
+    data_dir().join("estado.json")
+}
+
+#[derive(Debug, Clone)]
+pub struct ProjectEntry {
+    pub name: String,
+    pub path: PathBuf,
+    pub modified: std::time::SystemTime,
+}
+
+pub fn list_projects() -> Vec<ProjectEntry> {
+    let mut out: Vec<ProjectEntry> = fs::read_dir(projects_dir())
+        .map(|rd| rd.flatten().map(|e| e.path()).collect::<Vec<_>>())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|p| p.to_string_lossy().ends_with(".recproj.json"))
+        .filter_map(|path| {
+            let modified = fs::metadata(&path).and_then(|m| m.modified()).ok()?;
+            let name = load_project(&path).map(|p| p.name).unwrap_or_else(|_| "(dañado)".into());
+            Some(ProjectEntry { name, path, modified })
+        })
+        .collect();
+    out.sort_by(|a, b| b.modified.cmp(&a.modified));
+    out
+}
+
+fn slug(name: &str) -> String {
+    let s: String = name
+        .trim()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .collect();
+    let s = s.split('-').filter(|p| !p.is_empty()).collect::<Vec<_>>().join("-");
+    if s.is_empty() { "proyecto".into() } else { s }
+}
+
+/// A new, empty project file named after `name` (keeps the look of `template` if given).
+pub fn create_project(name: &str, template: Option<&Project>) -> Result<(PathBuf, Project), String> {
+    let base = slug(name);
+    let dir = projects_dir();
+    let mut path = dir.join(format!("{base}.recproj.json"));
+    let mut n = 2;
+    while path.exists() {
+        path = dir.join(format!("{base}-{n}.recproj.json"));
+        n += 1;
     }
+    let mut p = Project { name: name.trim().to_string(), ..Default::default() };
+    if let Some(t) = template {
+        p.style = t.style.clone();
+        p.export = t.export.clone();
+    }
+    save_project_to(&path, &mut p)?;
+    Ok((path, p))
+}
+
+/// The project that is open (in the app and for the MCP server).
+pub fn current_project_path() -> PathBuf {
+    let saved = fs::read_to_string(state_path())
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v["current"].as_str().map(PathBuf::from))
+        .filter(|p| p.is_file());
+    if let Some(p) = saved {
+        return p;
+    }
+    // First run of v4: bring the single autosaved project of earlier versions along.
+    let legacy = data_dir().join("proyecto.json");
+    let project = fs::read_to_string(&legacy).ok().and_then(|raw| parse_project(&raw).ok());
+    let path = match list_projects().first() {
+        Some(e) if project.is_none() => e.path.clone(),
+        _ => {
+            let template = project.unwrap_or_default();
+            let path = projects_dir().join(format!("{}.recproj.json", slug(&template.name)));
+            let mut p = template;
+            let _ = save_project_to(&path, &mut p);
+            let _ = fs::rename(&legacy, data_dir().join("proyecto.v3.bak.json"));
+            path
+        }
+    };
+    set_current_project(&path);
+    path
+}
+
+pub fn set_current_project(path: &Path) {
+    let v = serde_json::json!({ "current": path.to_string_lossy() });
+    let _ = fs::write(state_path(), v.to_string());
+}
+
+/// Reads a project file of any version.
+pub fn load_project(path: &Path) -> Result<Project, String> {
+    let raw = fs::read_to_string(path).map_err(|e| format!("No se pudo leer el proyecto: {e}"))?;
+    let mut p = parse_project(&raw)?;
     if !Path::new(&p.export.folder).is_dir() {
         p.export.folder = videos_dir().to_string_lossy().into_owned();
     }
-    p
+    Ok(p)
 }
 
-pub fn save_project(project: &Project) -> Result<(), String> {
+fn parse_project(raw: &str) -> Result<Project, String> {
+    let v: serde_json::Value = serde_json::from_str(raw).map_err(|e| format!("Proyecto dañado: {e}"))?;
+    if v["version"].as_u64().unwrap_or(0) < 4 {
+        return migrate_v3(v);
+    }
+    serde_json::from_value(v).map_err(|e| format!("Proyecto dañado: {e}"))
+}
+
+/// Writes atomically (the app and the MCP server may both be watching the file) and bumps
+/// the revision.
+pub fn save_project_to(path: &Path, project: &mut Project) -> Result<(), String> {
+    project.version = PROJECT_VERSION;
+    project.revision += 1;
     let json = serde_json::to_string_pretty(project).map_err(|e| e.to_string())?;
-    fs::write(autosave_path(), json).map_err(|e| e.to_string())
+    let tmp = path.with_extension("tmp");
+    fs::write(&tmp, json).map_err(|e| e.to_string())?;
+    fs::rename(&tmp, path).map_err(|e| e.to_string())
+}
+
+/// Version 3 had one recording with a trim, touches and zoom segments.
+fn migrate_v3(v: serde_json::Value) -> Result<Project, String> {
+    #[derive(Deserialize)]
+    struct ZoomV3 {
+        start: f32,
+        end: f32,
+        scale: f32,
+        x: f32,
+        y: f32,
+        #[serde(default)]
+        auto: bool,
+    }
+    #[derive(Deserialize, Default)]
+    #[serde(default)]
+    struct V3 {
+        name: String,
+        media: Option<MediaInfo>,
+        trim_start: f32,
+        trim_end: f32,
+        touches: Vec<Touch>,
+        zooms: Vec<ZoomV3>,
+        style: Style,
+        export: ExportSettings,
+    }
+    let old: V3 = serde_json::from_value(v).map_err(|e| format!("Proyecto dañado: {e}"))?;
+    let mut p = Project {
+        name: if old.name.is_empty() { "Mi app".into() } else { old.name },
+        style: old.style,
+        export: old.export,
+        ..Default::default()
+    };
+    if let Some(info) = old.media.filter(|m| Path::new(&m.path).exists()) {
+        let end = if old.trim_end > old.trim_start { old.trim_end } else { info.duration };
+        p.media.push(Media { id: 1, info, touches: old.touches });
+        p.clips.push(Clip { id: 2, media: 1, source_in: old.trim_start, source_out: end });
+        // Zoom segments were in the recording's time; the clip starts at its trim.
+        let mut id = 3;
+        for z in old.zooms {
+            let kind = if z.auto { CameraKind::Auto } else { CameraKind::Zoom };
+            let start = (z.start - old.trim_start).max(0.0);
+            let end = (z.end - old.trim_start).max(start + 0.3);
+            p.camera.push(crate::timeline::zoom_clip(id, start, end, z.scale, z.x, z.y, kind));
+            id += 1;
+        }
+    }
+    Ok(p)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn migrates_v3_projects() {
+        let raw = r#"{"version":3,"name":"Demo","media":{"path":"/bin/sh","width":1080,"height":2400,"duration":8.0,"fps":30.0,"has_audio":true},
+            "trim_start":1.0,"trim_end":7.0,"touches":[{"time":2.0,"duration":0.1,"x":0.5,"y":0.3,"end_x":0.5,"end_y":0.3,"kind":"Tap"}],
+            "zooms":[{"id":1,"start":2.0,"end":4.0,"scale":1.8,"x":0.5,"y":0.3,"auto":true}]}"#;
+        let p = parse_project(raw).unwrap();
+        assert_eq!(p.name, "Demo");
+        assert_eq!(p.clips.len(), 1);
+        assert_eq!((p.clips[0].source_in, p.clips[0].source_out), (1.0, 7.0));
+        assert_eq!(p.media[0].touches.len(), 1);
+        assert_eq!(p.camera.len(), 1);
+        assert_eq!(p.camera[0].kind, CameraKind::Auto);
+        assert!((p.camera[0].start - 1.0).abs() < 1e-4, "zoom moved into timeline time");
+    }
 
     #[test]
     fn old_screen_choice_becomes_automatic() {

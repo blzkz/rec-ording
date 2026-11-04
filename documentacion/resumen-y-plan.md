@@ -53,13 +53,22 @@ Se han retirado, de momento, el servidor MCP, el autoactualizador, los subtítul
 
 - La pieza detectada como pantalla es la opción por defecto: aparece la primera del desplegable con la etiqueta «RECOMENDADA» y es la que se usa al elegir un modelo. Elegir otra a mano queda indicado, con un enlace para volver a la recomendada. Las elecciones guardadas por versiones anteriores se descartan (numeraban las piezas de otra forma).
 
-## Ideas para siguientes versiones
+## v0.7.0: Director, pistas y asistente (MCP)
 
-- **Plan detallado para la siguiente sesión**: Director, pista de cámara con giros animables, varias pistas y servidor MCP en [`plan-director-mcp-pistas.md`](plan-director-mcp-pistas.md).
+- Proyectos con nombre (`~/.local/share/rec-ording/proyectos/`) y migración automática del proyecto de versiones anteriores (se conserva una copia `proyecto.v3.bak.json`).
+- Deshacer y rehacer de todo, también de los cambios hechos por el asistente.
+- Pista de vídeo con varios clips seguidos: recortar, dividir, reordenar y eliminar; exportación con el audio de todos los clips unido.
+- Pista de cámara con fotogramas clave: zoom, encuadre e inclinación, giro y rotación animables en cualquier momento, con llegada en muelle, suave, lineal o corte. Los zooms anteriores pasan a ser clips de esta pista.
+- Pista del móvil: movimientos del dispositivo (entrada, giro completo, asomarse, saltito, salida) editables por fotogramas clave. Los marcos integrados tienen ahora parte trasera (con módulo de cámaras) para los giros completos.
+- Director: objetivos dibujados sobre la vista previa en cada momento, planos 3D o 2D con intensidad, otra toma por plano o de todos; avisa si sustituye movimientos que se solapan.
+- Servidor MCP (`rec-ording --mcp`) con más de 40 herramientas, incluida `render_frame`; la app muestra al momento los cambios del asistente. Hoja «Asistente» con la configuración para copiar.
+
+## Ideas para siguientes versiones
 
 - Títulos y textos animados sobre el vídeo (intro, llamada a la acción).
 - Desenfocar zonas sensibles (correos, tokens).
 - Fondos con imagen propia.
 - Recortar y acelerar tramos intermedios (no solo el inicio y el final).
-- Servidor MCP sobre el nuevo modelo de proyecto, para que un asistente pueda montar el vídeo.
+- Música de fondo y títulos animados (fase F7 del plan).
+- Control en vivo por MCP (socket local) en lugar de por archivo.
 - Grabar el escritorio además del móvil.

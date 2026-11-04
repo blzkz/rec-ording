@@ -1,6 +1,6 @@
 //! Final render: decode the recording at full size, compose every frame and encode with ffmpeg.
 
-use crate::camera::CameraTrack;
+use crate::timeline;
 use crate::compositor::{compose, ComposeInput, Frame, Mips};
 use crate::model::{ExportFormat, Project, Quality};
 use crossbeam_channel::{bounded, Sender};
@@ -66,37 +66,69 @@ fn collect_stderr(child: &mut Child) -> Arc<Mutex<String>> {
 }
 
 fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<ExportEvent>) -> Result<(), String> {
-    let media = project.media.as_ref().ok_or("No hay ningún vídeo en el proyecto")?;
+    let clips = timeline::placed(project);
+    if clips.is_empty() {
+        return Err("No hay ningún vídeo en el proyecto".into());
+    }
     let settings = &project.export;
     let (ow, oh) = settings.dimensions(project.style.aspect);
     let (ow, oh) = (ow as usize, oh as usize);
     let fps = if settings.format == ExportFormat::Gif { settings.fps.min(25) } else { settings.fps };
-    let start = project.trim_start;
-    let dur = project.trimmed_duration().max(0.1);
+    let dur = timeline::duration(project).max(0.1);
     let total = ((dur * fps as f32).round() as usize).max(1);
-    let (vw, vh) = (media.width as usize, media.height as usize);
 
-    let ss = format!("{start:.3}");
-    let tt = format!("{dur:.3}");
+    // Each clip, with its recording and how many output frames it fills.
+    struct Part {
+        path: String,
+        w: usize,
+        h: usize,
+        from: f32,
+        len: f32,
+        frames: usize,
+        audio: bool,
+    }
+    let parts: Vec<Part> = clips
+        .iter()
+        .map(|c| {
+            let m = project.media(c.clip.media).ok_or("Falta una grabación del proyecto")?;
+            let frames = ((c.end * fps as f32).round() - (c.start * fps as f32).round()).max(0.0) as usize;
+            Ok(Part {
+                path: m.info.path.clone(),
+                w: m.info.width as usize,
+                h: m.info.height as usize,
+                from: c.clip.source_in,
+                len: c.clip.duration(),
+                frames,
+                audio: m.info.has_audio,
+            })
+        })
+        .collect::<Result<_, String>>()?;
 
-    // Decoder: full-size RGBA frames at the output frame rate.
-    let mut decoder = Command::new("ffmpeg")
-        .args(["-nostdin", "-loglevel", "error", "-ss", &ss, "-t", &tt, "-i", &media.path])
-        .args(["-vf", &format!("scale={vw}:{vh},fps={fps}"), "-an", "-f", "rawvideo", "-pix_fmt", "rgba", "-"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("No se pudo iniciar ffmpeg: {e}"))?;
-    let dec_err = collect_stderr(&mut decoder);
-
-    // Encoder
+    // Encoder: input 0 is the rendered video, then one audio input per clip.
     let mut enc = Command::new("ffmpeg");
     enc.args(["-nostdin", "-y", "-loglevel", "error"])
         .args(["-f", "rawvideo", "-pix_fmt", "rgba", "-s", &format!("{ow}x{oh}"), "-r", &fps.to_string(), "-i", "-"]);
-    let audio = settings.include_audio && media.has_audio && settings.format != ExportFormat::Gif;
+    let audio = settings.include_audio && parts.iter().any(|p| p.audio) && settings.format != ExportFormat::Gif;
     if audio {
-        enc.args(["-ss", &ss, "-t", &tt, "-i", &media.path, "-map", "0:v", "-map", "1:a?"]);
+        let mut filter = String::new();
+        for (k, part) in parts.iter().enumerate() {
+            let len = format!("{:.3}", part.len);
+            if part.audio {
+                enc.args(["-ss", &format!("{:.3}", part.from), "-t", &len, "-i", &part.path]);
+            } else {
+                // Silence for clips without sound, so the rest stays in sync.
+                enc.args(["-f", "lavfi", "-t", &len, "-i", "anullsrc=r=48000:cl=stereo"]);
+            }
+            filter.push_str(&format!(
+                "[{i}:a]aresample=48000,aformat=channel_layouts=stereo,atrim=0:{len},asetpts=PTS-STARTPTS[a{k}];",
+                i = k + 1
+            ));
+        }
+        for k in 0..parts.len() {
+            filter.push_str(&format!("[a{k}]"));
+        }
+        filter.push_str(&format!("concat=n={}:v=0:a=1[aout]", parts.len()));
+        enc.args(["-filter_complex", &filter, "-map", "0:v", "-map", "[aout]"]);
     }
     let crf = |base: u32| -> String {
         match settings.quality {
@@ -140,16 +172,58 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
         .map_err(|e| format!("No se pudo iniciar ffmpeg: {e}"))?;
     let enc_err = collect_stderr(&mut encoder);
 
-    // Pipeline: reader thread -> compose (here, parallel per row) -> writer thread.
+    // Reader thread: decodes the clips one after another, giving exactly `frames` frames per
+    // clip (repeating the last one if a recording runs a few frames short).
     let (frame_tx, frame_rx) = bounded::<Frame>(3);
-    let mut dec_out = decoder.stdout.take().ok_or("ffmpeg sin salida")?;
-    let reader = thread::spawn(move || loop {
-        let mut data = vec![0u8; vw * vh * 4];
-        if dec_out.read_exact(&mut data).is_err() {
-            break;
-        }
-        if frame_tx.send(Frame { w: vw, h: vh, data }).is_err() {
-            break;
+    let dec_err = Arc::new(Mutex::new(String::new()));
+    let reader_err = dec_err.clone();
+    let stop = Arc::new(AtomicBool::new(false));
+    let reader_stop = stop.clone();
+    let reader = thread::spawn(move || {
+        for part in parts {
+            if part.frames == 0 {
+                continue;
+            }
+            let spawned = Command::new("ffmpeg")
+                .args(["-nostdin", "-loglevel", "error", "-ss", &format!("{:.3}", part.from), "-t", &format!("{:.3}", part.len), "-i", &part.path])
+                .args(["-vf", &format!("scale={}:{},fps={fps}", part.w, part.h), "-an", "-f", "rawvideo", "-pix_fmt", "rgba", "-"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn();
+            let Ok(mut dec) = spawned else {
+                *reader_err.lock().unwrap() = "No se pudo iniciar ffmpeg".into();
+                return;
+            };
+            let err = collect_stderr(&mut dec);
+            let mut stdout = dec.stdout.take().unwrap();
+            let mut last: Option<Vec<u8>> = None;
+            for _ in 0..part.frames {
+                if reader_stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                let mut data = vec![0u8; part.w * part.h * 4];
+                let data = match stdout.read_exact(&mut data) {
+                    Ok(()) => {
+                        last = Some(data.clone());
+                        data
+                    }
+                    Err(_) => match &last {
+                        Some(l) => l.clone(),
+                        None => {
+                            *reader_err.lock().unwrap() = format!("No se pudo leer {}: {}", part.path, err.lock().unwrap().trim());
+                            let _ = dec.kill();
+                            return;
+                        }
+                    },
+                };
+                if frame_tx.send(Frame { w: part.w, h: part.h, data }).is_err() {
+                    let _ = dec.kill();
+                    return;
+                }
+            }
+            let _ = dec.kill();
+            let _ = dec.wait();
         }
     });
 
@@ -164,7 +238,6 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
         true
     });
 
-    let track = CameraTrack::build(&project.zooms, 0.0, media.duration);
     let model = match (&project.style.frame, &project.style.model) {
         (crate::model::FrameStyle::Custom, Some(cm)) => {
             let src = crate::model3d::load(&cm.path)?;
@@ -173,9 +246,10 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
         }
         _ => None,
     };
+    let touches = timeline::timeline_touches(project);
     let began = Instant::now();
     let mut written = 0usize;
-    let mut last_mips: Option<Mips> = None;
+    let mut last: Option<(Mips, usize, usize)> = None;
     let mut failed = None;
 
     for i in 0..total {
@@ -183,15 +257,16 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
             failed = Some("cancelado".to_string());
             break;
         }
-        // Reuse the last frame if the source runs a few frames short.
         if let Ok(f) = frame_rx.recv() {
-            last_mips = Some(Mips::build(f));
+            let (w, h) = (f.w, f.h);
+            last = Some((Mips::build(f), w, h));
         }
-        let Some(mips) = last_mips.as_ref() else {
-            failed = Some("No se pudo decodificar el vídeo".to_string());
+        let Some((mips, vw, vh)) = last.as_ref() else {
+            let e = dec_err.lock().unwrap().clone();
+            failed = Some(if e.is_empty() { "No se pudo decodificar el vídeo".to_string() } else { e });
             break;
         };
-        let t = start + i as f32 / fps as f32;
+        let t = i as f32 / fps as f32;
         let mut buf = vec![0u8; ow * oh * 4];
         compose(
             &mut buf,
@@ -200,12 +275,13 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
             &ComposeInput {
                 style: &project.style,
                 screen: Some(mips),
-                video_w: vw as f32,
-                video_h: vh as f32,
-                cam: track.sample(t),
-                touches: &project.touches,
+                video_w: *vw as f32,
+                video_h: *vh as f32,
+                cam: timeline::camera_at(project, t),
+                pose: timeline::pose_at(project, t),
+                touches: &touches,
                 time: t,
-                since_start: t - start,
+                since_start: t,
                 model: model.as_ref(),
                 supersample: 2,
             },
@@ -223,10 +299,9 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
     }
 
     drop(out_tx);
+    stop.store(true, Ordering::Relaxed);
     drop(frame_rx);
     let wrote_all = writer.join().unwrap_or(false);
-    let _ = decoder.kill();
-    let _ = decoder.wait();
     let _ = reader.join();
 
     if let Some(reason) = failed {
@@ -254,7 +329,13 @@ mod tests {
     fn exports_real_video() {
         let Ok(src) = std::env::var("REC_TEST_VIDEO") else { return };
         let info = crate::media::probe(&src).expect("probe");
-        let mut project = Project::default().with_new_media(info, vec![]);
+        // Two clips: the recording from 1 s to 5 s, then the whole recording again.
+        let mut project = Project::default();
+        let tap = Touch { time: 1.5, duration: 0.1, x: 0.5, y: 0.2, end_x: 0.5, end_y: 0.2, kind: TouchKind::Tap };
+        timeline::append_media(&mut project, info.clone(), vec![tap]);
+        timeline::append_media(&mut project, info, vec![]);
+        let first = project.clips[0].id;
+        timeline::trim_clip(&mut project, first, Some(1.0), Some(5.0)).unwrap();
         project.name = "prueba".into();
         project.export.folder = std::env::temp_dir().to_string_lossy().into_owned();
         project.export.resolution = Resolution::P720;
@@ -270,15 +351,16 @@ mod tests {
             assert!(src.guess.is_some(), "screen");
             project.style.model = Some(CustomModel { path, animation, ..Default::default() });
         }
-        project.zooms.push(ZoomSegment { id: 1, start: 1.0, end: 4.0, scale: 2.0, x: 0.5, y: 0.2, auto: false });
-        project.touches.push(Touch { time: 1.5, duration: 0.1, x: 0.5, y: 0.2, end_x: 0.5, end_y: 0.2, kind: TouchKind::Tap });
+        timeline::add_zoom(&mut project, 0.0, 3.0, 2.0, 0.5, 0.2).unwrap();
+        timeline::add_move(&mut project, 6.0).unwrap();
+        timeline::add_device_preset(&mut project, timeline::DevicePreset::FullTurn, 9.0);
         let out = output_path(&project);
         let (tx, _rx) = crossbeam_channel::unbounded();
         run(&project, &out, &AtomicBool::new(false), &tx).expect("export");
         let probed = crate::media::probe(&out.to_string_lossy()).expect("output readable");
         assert_eq!((probed.width, probed.height), (1280, 720));
         assert!(probed.has_audio);
-        assert!((probed.duration - project.trimmed_duration()).abs() < 0.3);
+        assert!((probed.duration - timeline::duration(&project)).abs() < 0.3, "{} vs {}", probed.duration, timeline::duration(&project));
         println!("{}", out.display());
     }
 }

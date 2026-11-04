@@ -1,10 +1,18 @@
 //! Renders one output frame: background, device, the screen recording, camera zoom and touches.
 //! The same code drives the live preview and the export, so what you see is what you get.
 
-use crate::camera::CamState;
+use crate::timeline::{CameraValue, PoseValue};
 use crate::model::{FrameStyle, Style, Touch, TouchKind, VideoFit};
 use crate::model3d::{Lighting, ModelMeta, PreparedModel};
 use rayon::prelude::*;
+
+/// 2D camera framing: zoom factor and the point of the recording it centres on (0..1).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CamState {
+    pub scale: f32,
+    pub fx: f32,
+    pub fy: f32,
+}
 
 /// An RGBA8 image.
 pub struct Frame {
@@ -222,7 +230,10 @@ pub struct ComposeInput<'a> {
     pub screen: Option<&'a Mips>,
     pub video_w: f32,
     pub video_h: f32,
-    pub cam: CamState,
+    /// Camera at this instant (zoom, focus and angles added to the device's).
+    pub cam: CameraValue,
+    /// Device motion at this instant (offset, scale and angles).
+    pub pose: PoseValue,
     pub touches: &'a [Touch],
     pub time: f32,
     /// Seconds since the start of the (trimmed) video, for the intro and idle motion.
@@ -424,18 +435,32 @@ fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
-/// Device angle (tilt, turn, roll) and vertical offset at this instant: the style's angle,
-/// eased flat while zoomed in, plus the optional intro swing and idle sway.
-pub fn device_pose(style: &Style, cam: CamState, since_start: f32, min_dim: f32) -> (f32, f32, f32, f32) {
+/// Where the device is at an instant: angles in degrees, offset in pixels, scale.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DevicePose {
+    pub tilt: f32,
+    pub turn: f32,
+    pub roll: f32,
+    pub dx: f32,
+    pub dy: f32,
+    pub scale: f32,
+}
+
+/// The device at this instant: the style's angle (eased flat while zoomed in), plus the camera
+/// and device keyframes, the optional intro swing and idle sway.
+pub fn device_pose(style: &Style, cam: &CameraValue, pose: &PoseValue, since_start: f32, min_dim: f32) -> DevicePose {
     let (mut tilt, mut turn, mut roll) = (style.tilt, style.turn, style.roll);
     if style.straighten_on_zoom {
-        let k = 1.0 - smoothstep(1.0, 1.4, cam.scale);
+        let k = 1.0 - smoothstep(1.0, 1.4, cam.zoom);
         tilt *= k;
         turn *= k;
         roll *= k;
     }
+    tilt += cam.tilt + pose.tilt;
+    turn += cam.turn + pose.turn;
+    roll += cam.roll + pose.roll;
     let t = since_start.max(0.0);
-    let mut dy = 0.0;
+    let mut dy = pose.dy * min_dim;
     if style.float_motion {
         tilt += 1.8 * (t * 0.8).sin();
         turn += 2.6 * (t * 0.55 + 1.0).sin();
@@ -449,7 +474,7 @@ pub fn device_pose(style: &Style, cam: CamState, since_start: f32, min_dim: f32)
         tilt += 18.0 * rest;
         dy += 0.6 * min_dim * rest * rest;
     }
-    (tilt, turn, roll, dy)
+    DevicePose { tilt, turn, roll, dx: pose.dx * min_dim, dy, scale: pose.scale.max(0.05) }
 }
 
 /// Renders the frame into `out` (RGBA8, `ow * oh * 4` bytes).
@@ -461,7 +486,7 @@ pub fn compose(out: &mut [u8], ow: usize, oh: usize, inp: &ComposeInput) {
     let (cw, ch) = (ow as f32, oh as f32);
     let model = inp.model.filter(|_| style.frame == FrameStyle::Custom);
     let layout = Layout::new(cw, ch, style, inp.video_w, inp.video_h, model.map(|m| &m.meta));
-    let cam = layout.camera(inp.cam);
+    let cam = layout.camera(CamState { scale: inp.cam.zoom, fx: inp.cam.x, fy: inp.cam.y });
     let (s, tx, ty) = cam;
     let inv_s = 1.0 / s;
     let (ccx, ccy) = (cw * 0.5, ch * 0.5);
@@ -477,7 +502,7 @@ pub fn compose(out: &mut [u8], ow: usize, oh: usize, inp: &ComposeInput) {
 
     // 3D pose: the device is a slab whose front face sits at z = 0, seen in perspective from
     // the front. With no angle this reduces exactly to the flat 2D layout.
-    let (tilt, turn, roll, lift) = device_pose(style, inp.cam, inp.since_start, min_dim);
+    let DevicePose { tilt, turn, roll, dx, dy, scale: dev_scale } = device_pose(style, &inp.cam, &inp.pose, inp.since_start, min_dim);
     let angled = tilt.abs() > 0.01 || turn.abs() > 0.01 || roll.abs() > 0.01 || model.is_some();
     let rot = rotation(tilt, turn, roll);
     let focal = 1.15 * cw.max(ch);
@@ -584,6 +609,23 @@ pub fn compose(out: &mut [u8], ow: usize, oh: usize, inp: &ComposeInput) {
     let body_top = layout.body.y0;
     let body_h = layout.body.h().max(1.0);
 
+    // Back of the built-in device: a camera bar across the top with two lenses.
+    let mesh_free = model.is_none();
+    let (camera_bar, lenses) = if layout.framed {
+        let b = &layout.body;
+        if layout.portrait {
+            let (cy, h) = (b.y0 + b.h() * 0.13, b.h() * 0.065);
+            let bar = RRect { cx: b.cx(), cy, hx: b.w() * 0.42, hy: h * 0.5, r: h * 0.5 };
+            (Some(bar), vec![(b.cx() - b.w() * 0.25, cy, h * 0.32), (b.cx() - b.w() * 0.08, cy, h * 0.32)])
+        } else {
+            let (cx, w) = (b.x0 + b.w() * 0.13, b.w() * 0.065);
+            let bar = RRect { cx, cy: b.cy(), hx: w * 0.5, hy: b.h() * 0.42, r: w * 0.5 };
+            (Some(bar), vec![(cx, b.cy() - b.h() * 0.25, w * 0.32), (cx, b.cy() - b.h() * 0.08, w * 0.32)])
+        }
+    } else {
+        (None, Vec::new())
+    };
+
     const BAND: usize = 16;
     let lighting = Lighting { light, half: half_v };
     // Animated models: pose for this instant.
@@ -591,7 +633,7 @@ pub fn compose(out: &mut [u8], ow: usize, oh: usize, inp: &ComposeInput) {
         let cm = style.model.as_ref()?;
         let anim = cm.animation?;
         let d = m.animation_duration(anim)?.max(1e-3);
-        let t = inp.since_start.max(0.0);
+        let t = (inp.time - cm.animation_start).max(0.0);
         m.pose(anim, if cm.loop_animation { t.rem_euclid(d) } else { t.min(d) })
     });
     let projected = model.map(|m| {
@@ -600,7 +642,7 @@ pub fn compose(out: &mut [u8], ow: usize, oh: usize, inp: &ComposeInput) {
             |p| {
                 let w = apply(&rot, [mox + p[0] * unit, moy + p[1] * unit, p[2] * unit]);
                 let f = focal / (focal + nearest - w[2]);
-                let (x, y) = (lcx + w[0] * f, lcy + lift + w[1] * f);
+                let (x, y) = (lcx + dx + w[0] * f * dev_scale, lcy + dy + w[1] * f * dev_scale);
                 (ccx + (x - ccx) * s + tx, ccy + (y - ccy) * s + ty, f)
             },
             |n| apply(&rot, n),
@@ -640,22 +682,27 @@ pub fn compose(out: &mut [u8], ow: usize, oh: usize, inp: &ComposeInput) {
                 col = mix(col, white, glow);
 
                 // 2. Point of the device's front face under this pixel (camera zoom, then 3D pose).
-                let sx = (xf - ccx - tx) * inv_s + ccx;
-                let sy = (yf - ccy - ty) * inv_s + ccy - lift;
-                let (qx, qy, inv_s, ray) = if angled {
+                // Undo the device's own offset and scale around its centre.
+                let sx = lcx + ((xf - ccx - tx) * inv_s + ccx - lcx - dx) / dev_scale;
+                let sy = lcy + ((yf - ccy - ty) * inv_s + ccy - lcy - dy) / dev_scale;
+                let inv_s = inv_s / dev_scale;
+                // Seen from behind (a full turn), the built-in device shows its back face.
+                let (qx, qy, inv_s, ray, back) = if angled {
                     let dir = [sx - lcx, sy - lcy, -focal];
                     let d = apply_t(&rot, dir);
-                    if d[2] > -1e-4 {
+                    let back = d[2] > 0.0;
+                    let plane = if back && mesh_free { -depth } else { 0.0 };
+                    let t = (plane - eye[2]) / d[2];
+                    if d[2].abs() < 1e-4 || t <= 0.0 {
                         write_px(row, px, col, py);
                         continue;
                     }
-                    let t = -eye[2] / d[2];
                     let dlen = dot(dir, dir).sqrt();
                     let facing = (dot(face_n, dir) / dlen).abs().max(0.25);
                     let size = inv_s * t * dlen / focal / facing;
-                    (lcx + eye[0] + t * d[0], lcy + eye[1] + t * d[1], size, Some(d))
+                    (lcx + eye[0] + t * d[0], lcy + eye[1] + t * d[1], size, Some(d), back)
                 } else {
-                    (sx, sy, inv_s, None)
+                    (sx, sy, inv_s, None, false)
                 };
                 let cov = |d: f32| (0.5 - d / inv_s).clamp(0.0, 1.0);
 
@@ -679,9 +726,9 @@ pub fn compose(out: &mut [u8], ow: usize, oh: usize, inp: &ComposeInput) {
                 let d_body = body.sd(qx, qy);
                 if let (Some(d), None) = (ray, &mesh) {
                     if depth > 0.0 && d_body > -inv_s && d_body < depth * 2.0 + 2.0 * inv_s {
-                        // Walk the ray from the front face to the back face and find where it is
-                        // deepest inside the outline: that is the side wall it hits.
-                        let tb = (-depth - eye[2]) / d[2];
+                        // Walk the ray from the face it enters to the opposite one and find where
+                        // it is deepest inside the outline: that is the side wall it hits.
+                        let tb = ((if back { 0.0 } else { -depth }) - eye[2]) / d[2];
                         let (bx, by) = (lcx + eye[0] + tb * d[0], lcy + eye[1] + tb * d[1]);
                         let (mut best, mut bp) = (f32::MAX, (qx, qy));
                         for k in 1..=8 {
@@ -704,6 +751,29 @@ pub fn compose(out: &mut [u8], ow: usize, oh: usize, inp: &ComposeInput) {
                             col = mix(col, side, c);
                         }
                     }
+                }
+
+                if back {
+                    if mesh.is_none() && d_body < inv_s {
+                        let c = cov(d_body);
+                        let n = [-face_n[0], -face_n[1], -face_n[2]];
+                        let k = 0.45 + 0.55 * dot(n, light).max(0.0);
+                        let mut back_col = [metal[0] * k, metal[1] * k, metal[2] * k];
+                        if let Some(bar) = &camera_bar {
+                            let cb = cov(bar.sd(qx, qy));
+                            if cb > 0.0 {
+                                back_col = mix(back_col, [22.0, 22.0, 26.0], cb);
+                                for (lx, ly, lr) in &lenses {
+                                    let dl = ((qx - lx).powi(2) + (qy - ly).powi(2)).sqrt() - lr;
+                                    back_col = mix(back_col, [6.0, 8.0, 14.0], cov(dl));
+                                    back_col = mix(back_col, [70.0, 80.0, 100.0], cov((dl + lr * 0.35).abs() - lr * 0.06) * 0.6);
+                                }
+                            }
+                        }
+                        col = mix(col, back_col, c);
+                    }
+                    write_px(row, px, col, py);
+                    continue;
                 }
 
                 // 5. Device front
@@ -835,7 +905,8 @@ mod tests {
             screen: Some(&mips),
             video_w: 1080.0,
             video_h: 2400.0,
-            cam: CamState::IDENTITY,
+            cam: CameraValue::REST,
+            pose: PoseValue::REST,
             touches: &[],
             time: 0.0,
             since_start: 0.0,
@@ -901,12 +972,12 @@ mod pose_tests {
     #[test]
     fn straightens_when_zoomed_and_intro_settles() {
         let style = Style { turn: -28.0, tilt: 6.0, intro: true, ..Style::default() };
-        let zoomed = device_pose(&style, CamState { scale: 1.8, fx: 0.5, fy: 0.5 }, 5.0, 1080.0);
-        assert!(zoomed.0.abs() < 1e-3 && zoomed.1.abs() < 1e-3, "{zoomed:?}");
-        let start = device_pose(&style, CamState::IDENTITY, 0.0, 1080.0);
-        assert!(start.1 < -60.0 && start.3 > 500.0, "swings in from below, turned further: {start:?}");
-        let settled = device_pose(&style, CamState::IDENTITY, 3.0, 1080.0);
-        assert!((settled.1 + 28.0).abs() < 1e-3 && settled.3.abs() < 1e-3, "{settled:?}");
+        let zoomed = device_pose(&style, &CameraValue { zoom: 1.8, ..CameraValue::REST }, &PoseValue::REST, 5.0, 1080.0);
+        assert!(zoomed.tilt.abs() < 1e-3 && zoomed.turn.abs() < 1e-3, "{zoomed:?}");
+        let start = device_pose(&style, &CameraValue::REST, &PoseValue::REST, 0.0, 1080.0);
+        assert!(start.turn < -60.0 && start.dy > 500.0, "swings in from below, turned further: {start:?}");
+        let settled = device_pose(&style, &CameraValue::REST, &PoseValue::REST, 3.0, 1080.0);
+        assert!((settled.turn + 28.0).abs() < 1e-3 && settled.dy.abs() < 1e-3, "{settled:?}");
     }
 
     #[test]
@@ -914,7 +985,7 @@ mod pose_tests {
         let style = Style { tilt: 38.0, ..Style::default() };
         let (w, h) = (320usize, 180usize);
         let mut out = vec![0u8; w * h * 4];
-        let inp = ComposeInput { style: &style, screen: None, video_w: 1080.0, video_h: 2400.0, cam: CamState::IDENTITY, touches: &[], time: 0.0, since_start: 5.0, model: None, supersample: 1 };
+        let inp = ComposeInput { style: &style, screen: None, video_w: 1080.0, video_h: 2400.0, cam: CameraValue::REST, pose: PoseValue::REST, touches: &[], time: 0.0, since_start: 5.0, model: None, supersample: 1 };
         compose(&mut out, w, h, &inp);
         // Top and bottom rows are background (no dark device pixels).
         for y in [0, h - 1] {

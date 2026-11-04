@@ -1,6 +1,6 @@
 //! The 3D model gallery: models bundled with the app plus the ones the user imported.
 
-use crate::camera::CamState;
+use crate::timeline::{CameraValue, PoseValue};
 use crate::compositor::{compose, ComposeInput, Frame, Mips};
 use crate::model::{data_dir, Background, CustomModel, FrameStyle, Style};
 use crate::model3d::{self, ModelSource};
@@ -357,7 +357,8 @@ pub fn thumbnail(src: &ModelSource, w: usize, h: usize) -> Option<Vec<u8>> {
             screen: Some(&screen),
             video_w: 1080.0,
             video_h: 2400.0,
-            cam: CamState::IDENTITY,
+            cam: CameraValue::REST,
+            pose: PoseValue::REST,
             touches: &[],
             time: 0.0,
             since_start: 10.0,

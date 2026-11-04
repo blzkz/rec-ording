@@ -1,18 +1,23 @@
-use crate::camera::{auto_zooms, CamState, CameraTrack};
+mod inspector;
+mod sheets;
+mod timeline_ui;
+mod viewer;
+
 use crate::capture::{self, CaptureResult, Device, DeviceState, Method, RecordOptions, Recording, Tools};
-use crate::compositor::{compose, ComposeInput, Layout};
+use crate::compositor::{compose, CamState, ComposeInput, Layout};
 use crate::export::{self, ExportEvent};
+use crate::library::{self, LibraryModel};
 use crate::media::{self, DecodedFrame, PreviewDecoder, PREVIEW_FPS};
 use crate::model::*;
-use crate::library::{self, LibraryModel};
 use crate::model3d::{self, ModelSource, PreparedModel};
-use std::collections::HashMap;
 use crate::theme::{self, *};
+use crate::timeline::{self, CameraValue, DevicePreset, PoseValue};
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use egui::{
     Align, Align2, Color32, ColorImage, CursorIcon, Id, Key, Margin, Order, Pos2, Rect, RichText, Rounding, Sense,
     Stroke, TextureHandle, TextureOptions, Ui, UiBuilder, Vec2,
 };
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -43,6 +48,8 @@ enum Sheet {
     Export,
     RenameModel,
     DeleteModel,
+    Projects,
+    Assistant,
 }
 
 /// An imported model being renamed or deleted.
@@ -60,27 +67,14 @@ enum ExportUi {
     Failed(String),
 }
 
-#[derive(Clone, Copy, PartialEq)]
-enum Drag {
-    Scrub,
-    TrimStart,
-    TrimEnd,
-    ZoomStart(u64),
-    ZoomEnd(u64),
-    ZoomMove { id: u64, grab: f32 },
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum Hit {
-    Ruler,
-    Video,
-    TrimStart,
-    TrimEnd,
-    ZoomStart(u64),
-    ZoomEnd(u64),
-    ZoomBody(u64, f32),
-    ZoomEmpty,
+/// What is selected in the timeline (and shown in the inspector).
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Selection {
     None,
+    Clip(u64),
+    Camera { id: u64, key: Option<usize> },
+    Device { id: u64, key: Option<usize> },
+    Target(u64),
 }
 
 #[derive(PartialEq, Clone)]
@@ -88,36 +82,34 @@ struct RenderKey {
     time: f32,
     frame: usize,
     style: Style,
-    cam: (u32, u32, u32),
+    cam: [u32; 6],
+    pose: [u32; 6],
     size: (usize, usize),
+    video: (u32, u32),
     touches: usize,
     model: usize,
     supersample: usize,
 }
 
-/// Timeline geometry: maps seconds to x and back.
-struct Tl {
-    x0: f32,
-    x1: f32,
-    dur: f32,
-    ruler: Rect,
-    video: Rect,
-    zoom: Rect,
-}
-
-impl Tl {
-    fn x(&self, t: f32) -> f32 {
-        self.x0 + (t / self.dur) * (self.x1 - self.x0)
-    }
-    fn t(&self, x: f32) -> f32 {
-        ((x - self.x0) / (self.x1 - self.x0) * self.dur).clamp(0.0, self.dur)
-    }
+/// Preview resources of one recording.
+#[derive(Default)]
+struct MediaView {
+    proxy: Option<PathBuf>,
+    thumbs: Vec<TextureHandle>,
+    thumb_aspect: f32,
 }
 
 pub struct RecOrdingApp {
     project: Project,
-    last_saved: String,
+    project_path: PathBuf,
+    /// Revision of the project file as we last wrote or read it (the in-memory project keeps 0).
+    disk_revision: u64,
+    last_saved: Project,
     last_save_check: Instant,
+    last_disk_check: Instant,
+    undo: Vec<Project>,
+    redo: Vec<Project>,
+    committed: Project,
     tools: Tools,
     tx: Sender<AppEvent>,
     rx: Receiver<AppEvent>,
@@ -129,20 +121,19 @@ pub struct RecOrdingApp {
     last_tick: Instant,
     decoder: PreviewDecoder,
     gen: u64,
+    /// Timeline time = source time of the decoded recording + this offset.
+    gen_offset: f32,
+    decoder_source: Option<(String, (usize, usize))>,
+    playing_clip: Option<u64>,
     shown: Option<DecodedFrame>,
     queued: Option<DecodedFrame>,
     requested_time: Option<f32>,
-    preview_size: (usize, usize),
+    media_views: HashMap<u64, MediaView>,
 
     // Viewer
     viewer_tex: Option<TextureHandle>,
     viewer_buf: Vec<u8>,
     last_render: Option<RenderKey>,
-    cam_track: CameraTrack,
-    cam_sig: Vec<ZoomSegment>,
-    cam_dur: f32,
-    thumbs: Vec<TextureHandle>,
-    thumb_aspect: f32,
 
     // Imported 3D model: the loaded file, and the copy prepared for the current settings.
     model_cache: HashMap<String, Arc<ModelSource>>,
@@ -159,8 +150,11 @@ pub struct RecOrdingApp {
     model_edit: Option<ModelEdit>,
 
     // Editing
-    selected_zoom: Option<u64>,
-    drag: Option<Drag>,
+    selection: Selection,
+    drag: Option<timeline_ui::Drag>,
+    director_mode: bool,
+    /// Director box being drawn: start point in recording coordinates.
+    drawing_target: Option<(f32, f32)>,
 
     // Sheets
     sheet: Sheet,
@@ -174,6 +168,8 @@ pub struct RecOrdingApp {
     record_error: Option<String>,
     export_ui: ExportUi,
     export_rx: Option<Receiver<ExportEvent>>,
+    projects: Vec<ProjectEntry>,
+    new_project_name: String,
 
     toast: Option<(String, Instant)>,
 }
@@ -217,16 +213,31 @@ fn run_picker(zenity: &[&str], kdialog: &[&str]) -> Result<Option<String>, ()> {
     Err(())
 }
 
+/// Reads a project and returns it with the in-memory revision (0) plus its revision on disk.
+fn load_for_app(path: &std::path::Path) -> (Project, u64) {
+    let mut p = load_project(path).unwrap_or_default();
+    let rev = p.revision;
+    p.revision = 0;
+    (p, rev)
+}
+
 impl RecOrdingApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         theme::install(&cc.egui_ctx);
         let (tx, rx) = unbounded();
-        let project = load_last_project();
+        let project_path = current_project_path();
+        let (project, disk_revision) = load_for_app(&project_path);
         let notify_ctx = cc.egui_ctx.clone();
         let mut app = Self {
-            last_saved: serde_json::to_string(&project).unwrap_or_default(),
+            last_saved: project.clone(),
+            committed: project.clone(),
             project,
+            project_path,
+            disk_revision,
             last_save_check: Instant::now(),
+            last_disk_check: Instant::now(),
+            undo: Vec::new(),
+            redo: Vec::new(),
             tools: capture::detect_tools(),
             tx,
             rx,
@@ -236,18 +247,16 @@ impl RecOrdingApp {
             last_tick: Instant::now(),
             decoder: PreviewDecoder::new(move || notify_ctx.request_repaint()),
             gen: 0,
+            gen_offset: 0.0,
+            decoder_source: None,
+            playing_clip: None,
             shown: None,
             queued: None,
             requested_time: None,
-            preview_size: (2, 2),
+            media_views: HashMap::new(),
             viewer_tex: None,
             viewer_buf: Vec::new(),
             last_render: None,
-            cam_track: CameraTrack::empty(),
-            cam_sig: Vec::new(),
-            cam_dur: -1.0,
-            thumbs: Vec::new(),
-            thumb_aspect: 0.5,
             model_cache: HashMap::new(),
             model_prepared: None,
             model_loading: None,
@@ -258,8 +267,10 @@ impl RecOrdingApp {
             library_broken: Default::default(),
             importing: false,
             model_edit: None,
-            selected_zoom: None,
+            selection: Selection::None,
             drag: None,
+            director_mode: false,
+            drawing_target: None,
             sheet: Sheet::None,
             devices: Vec::new(),
             scanning: false,
@@ -271,15 +282,11 @@ impl RecOrdingApp {
             record_error: None,
             export_ui: ExportUi::Idle,
             export_rx: None,
+            projects: Vec::new(),
+            new_project_name: String::new(),
             toast: None,
         };
-        if let Some(m) = app.project.media.clone() {
-            app.time = app.project.trim_start;
-            app.open_media(&m);
-        }
-        if let Some(cm) = app.project.style.model.clone() {
-            app.load_model(cm.path);
-        }
+        app.project_opened();
         app.refresh_library();
         app
     }
@@ -288,19 +295,109 @@ impl RecOrdingApp {
         self.toast = Some((msg.into(), Instant::now()));
     }
 
+    // ---------- Projects ----------
+
+    /// Resets what depends on the open project (after opening, switching or reloading it).
+    fn project_opened(&mut self) {
+        self.time = self.time.min(timeline::duration(&self.project));
+        self.playing = false;
+        self.selection = Selection::None;
+        self.director_mode = false;
+        self.requested_time = None;
+        self.shown = None;
+        self.last_render = None;
+        let media: Vec<MediaInfo> = self.project.media.iter().map(|m| m.info.clone()).collect();
+        for info in media {
+            self.prepare_media(&info);
+        }
+        if let Some(cm) = self.project.style.model.clone() {
+            self.load_model(cm.path);
+        }
+    }
+
+    fn save_now(&mut self) {
+        let mut copy = self.project.clone();
+        copy.revision = self.disk_revision;
+        if save_project_to(&self.project_path, &mut copy).is_ok() {
+            self.disk_revision = copy.revision;
+            self.last_saved = self.project.clone();
+        }
+    }
+
+    fn open_project(&mut self, path: PathBuf) {
+        self.save_now();
+        set_current_project(&path);
+        let (p, rev) = load_for_app(&path);
+        self.project_path = path;
+        self.disk_revision = rev;
+        self.project = p;
+        self.last_saved = self.project.clone();
+        self.committed = self.project.clone();
+        self.undo.clear();
+        self.redo.clear();
+        self.time = 0.0;
+        self.project_opened();
+    }
+
+    fn new_project(&mut self, name: &str) {
+        match create_project(name, Some(&self.project)) {
+            Ok((path, _)) => {
+                self.open_project(path);
+                self.toast(format!("Proyecto «{}» creado", name.trim()));
+            }
+            Err(e) => self.toast(e),
+        }
+    }
+
+    /// Picks up changes made outside the app (the MCP server) to the open project, or another
+    /// project being opened.
+    fn check_disk(&mut self) {
+        if self.last_disk_check.elapsed() < Duration::from_millis(700) {
+            return;
+        }
+        self.last_disk_check = Instant::now();
+        let current = current_project_path();
+        if current != self.project_path {
+            self.open_project(current);
+            self.toast("Se ha abierto otro proyecto desde el asistente");
+            return;
+        }
+        let Ok(disk) = load_project(&self.project_path) else { return };
+        if disk.revision != self.disk_revision {
+            let mut p = disk;
+            self.disk_revision = p.revision;
+            p.revision = 0;
+            if p != self.project {
+                self.undo.push(std::mem::replace(&mut self.project, p));
+                self.redo.clear();
+                self.committed = self.project.clone();
+                self.last_saved = self.project.clone();
+                let duration = timeline::duration(&self.project);
+                self.time = self.time.min(duration);
+                self.requested_time = None;
+                self.last_render = None;
+                let media: Vec<MediaInfo> = self.project.media.iter().map(|m| m.info.clone()).collect();
+                for info in media {
+                    self.prepare_media(&info);
+                }
+                self.toast("Cambios del asistente aplicados");
+            }
+        }
+    }
+
     // ---------- Media ----------
 
-    fn open_media(&mut self, m: &MediaInfo) {
-        self.preview_size = media::preview_size(m);
-        self.decoder.set_source(&m.path, self.preview_size);
-        self.shown = None;
-        self.queued = None;
-        self.requested_time = None;
-        self.thumbs.clear();
-        self.thumb_aspect = m.width as f32 / m.height.max(1) as f32;
-        self.last_render = None;
-
-        let (tx, ctx, info) = (self.tx.clone(), self.ctx.clone(), m.clone());
+    /// Builds the preview proxy and filmstrip of a recording (once).
+    fn prepare_media(&mut self, info: &MediaInfo) {
+        let ids: Vec<u64> = self.project.media.iter().filter(|m| m.info.path == info.path).map(|m| m.id).collect();
+        let fresh: Vec<u64> = ids.iter().copied().filter(|id| !self.media_views.contains_key(id)).collect();
+        if fresh.is_empty() {
+            return;
+        }
+        for id in fresh {
+            self.media_views.insert(id, MediaView { thumb_aspect: info.width as f32 / info.height.max(1) as f32, ..Default::default() });
+        }
+        let (tx, ctx, info) = (self.tx.clone(), self.ctx.clone(), info.clone());
         thread::spawn(move || {
             let Ok(proxy) = media::build_proxy(&info) else { return };
             let _ = tx.send(AppEvent::ProxyReady { source: info.path.clone(), proxy: proxy.clone() });
@@ -311,6 +408,12 @@ impl RecOrdingApp {
                 ctx.request_repaint();
             }
         });
+    }
+
+    /// The recording shown at the current time: (media id, its info).
+    fn current_media(&self) -> Option<&Media> {
+        let c = timeline::locate(&self.project, self.time)?;
+        self.project.media(c.clip.media)
     }
 
     fn import(&mut self, path: PathBuf) {
@@ -515,31 +618,24 @@ impl RecOrdingApp {
                 AppEvent::MediaLoaded { info, touches, recorded } => {
                     self.saving_recording = false;
                     let n_touches = touches.len();
-                    self.project = self.project.with_new_media(info.clone(), touches);
-                    if n_touches > 0 {
-                        self.project.zooms = auto_zooms(
-                            &self.project.touches,
-                            self.project.style.auto_zoom_scale,
-                            0.0,
-                            info.duration,
-                            1,
-                        );
-                    }
-                    self.time = 0.0;
-                    self.playing = false;
-                    self.selected_zoom = None;
-                    self.open_media(&info);
+                    let was_empty = self.project.is_empty();
+                    let start = timeline::duration(&self.project);
+                    let clip = timeline::append_media(&mut self.project, info.clone(), touches);
+                    let scale = self.project.style.auto_zoom_scale;
+                    let zooms = if n_touches > 0 { timeline::regenerate_auto_zooms(&mut self.project, scale) } else { 0 };
+                    self.prepare_media(&info);
+                    self.seek(start);
+                    self.selection = Selection::Clip(clip);
                     if recorded {
                         self.sheet = Sheet::None;
-                        let z = self.project.zooms.len();
-                        self.toast(if n_touches > 0 {
-                            format!("Grabación lista · {n_touches} toques → {z} zooms automáticos")
-                        } else {
-                            "Grabación lista. Añade zooms con + Zoom o la tecla Z.".to_string()
-                        });
-                    } else {
-                        self.toast("Vídeo importado. Añade zooms con + Zoom o la tecla Z.");
                     }
+                    let what = if recorded { "Grabación" } else { "Vídeo" };
+                    let place = if was_empty { "lista" } else { "añadida al final" };
+                    self.toast(if n_touches > 0 {
+                        format!("{what} {place} · {n_touches} toques → {zooms} zooms automáticos")
+                    } else {
+                        format!("{what} {place}. Añade zooms con + Zoom o la tecla Z.")
+                    });
                 }
                 AppEvent::MediaFailed(e) => self.toast(e),
                 AppEvent::RecordingFailed(e) => {
@@ -548,22 +644,33 @@ impl RecOrdingApp {
                     self.sheet = Sheet::Record;
                 }
                 AppEvent::ProxyReady { source, proxy } => {
-                    if self.project.media.as_ref().is_some_and(|m| m.path == source) {
-                        self.decoder.set_source(&proxy.to_string_lossy(), self.preview_size);
-                        self.restart_decoding();
+                    let ids: Vec<u64> = self.project.media.iter().filter(|m| m.info.path == source).map(|m| m.id).collect();
+                    for id in &ids {
+                        self.media_views.entry(*id).or_default().proxy = Some(proxy.clone());
+                    }
+                    if !ids.is_empty() {
+                        // Switch to the light copy if this recording is the one on screen.
+                        if self.decoder_source.as_ref().is_some_and(|(p, _)| *p == source) {
+                            self.restart_decoding();
+                        }
                     }
                 }
                 AppEvent::Thumbnails { source, size, frames } => {
-                    if self.project.media.as_ref().is_some_and(|m| m.path == source) {
-                        self.thumbs = frames
+                    let ids: Vec<u64> = self.project.media.iter().filter(|m| m.info.path == source).map(|m| m.id).collect();
+                    if !ids.is_empty() {
+                        let thumbs: Vec<TextureHandle> = frames
                             .iter()
                             .enumerate()
                             .map(|(i, f)| {
                                 let img = ColorImage::from_rgba_unmultiplied([size.0, size.1], f);
-                                self.ctx.load_texture(format!("thumb-{i}"), img, TextureOptions::LINEAR)
+                                self.ctx.load_texture(format!("thumb-{source}-{i}"), img, TextureOptions::LINEAR)
                             })
                             .collect();
-                        self.thumb_aspect = size.0 as f32 / size.1 as f32;
+                        for id in ids {
+                            let v = self.media_views.entry(id).or_default();
+                            v.thumbs = thumbs.clone();
+                            v.thumb_aspect = size.0 as f32 / size.1 as f32;
+                        }
                     }
                 }
                 AppEvent::ImportPicked(p) => self.import(p),
@@ -669,31 +776,61 @@ impl RecOrdingApp {
 
     // ---------- Playback ----------
 
-    fn restart_decoding(&mut self) {
+    /// Where to decode for timeline second `t`: (file, preview size, source second, offset, clip).
+    fn decode_target(&self, t: f32) -> Option<(String, (usize, usize), f32, f32, u64)> {
+        let c = timeline::locate(&self.project, t)?;
+        let m = self.project.media(c.clip.media)?;
+        let path = self
+            .media_views
+            .get(&m.id)
+            .and_then(|v| v.proxy.as_ref())
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|| m.info.path.clone());
+        Some((path, media::preview_size(&m.info), timeline::source_time(&c, t), c.start - c.clip.source_in, c.clip.id))
+    }
+
+    /// Asks the decoder for the frame at the current time (or to play from it).
+    fn start_decode(&mut self, play: bool) {
+        let Some((path, size, src_t, offset, clip)) = self.decode_target(self.time) else { return };
+        if self.decoder_source.as_ref() != Some(&(path.clone(), size)) {
+            self.decoder.set_source(&path, size);
+            self.decoder_source = Some((path, size));
+        }
         self.gen += 1;
+        self.gen_offset = offset;
         self.queued = None;
+        self.playing_clip = Some(clip);
+        if play {
+            self.decoder.play(self.gen, src_t);
+        } else {
+            self.decoder.seek(self.gen, src_t);
+        }
+        self.requested_time = Some(self.time);
+    }
+
+    fn restart_decoding(&mut self) {
         if self.playing {
-            self.decoder.play(self.gen, self.time);
+            self.start_decode(true);
         } else {
             self.requested_time = None;
         }
     }
 
     fn toggle_play(&mut self) {
-        if self.project.media.is_none() {
+        if self.project.is_empty() {
             return;
         }
         if self.playing {
             self.playing = false;
             self.decoder.stop();
-            self.restart_decoding();
+            self.requested_time = None;
         } else {
-            if self.time >= self.project.trim_end - 0.05 {
-                self.time = self.project.trim_start;
+            if self.time >= timeline::duration(&self.project) - 0.05 {
+                self.time = 0.0;
             }
             self.playing = true;
             self.last_tick = Instant::now();
-            self.restart_decoding();
+            self.start_decode(true);
         }
     }
 
@@ -701,107 +838,47 @@ impl RecOrdingApp {
         if self.playing {
             self.playing = false;
             self.decoder.stop();
-            self.gen += 1;
         }
-        self.time = t.clamp(self.project.trim_start, self.project.trim_end.max(self.project.trim_start));
+        self.time = t.clamp(0.0, timeline::duration(&self.project));
+        self.requested_time = None;
     }
 
     fn tick(&mut self) {
         let now = Instant::now();
         let dt = (now - self.last_tick).as_secs_f32().min(0.1);
         self.last_tick = now;
+        let total = timeline::duration(&self.project);
         if self.playing {
             self.time += dt;
-            if self.time >= self.project.trim_end {
-                self.time = self.project.trim_end;
+            if self.time >= total {
+                self.time = total;
                 self.toggle_play();
+            } else if timeline::locate(&self.project, self.time).map(|c| c.clip.id) != self.playing_clip {
+                // Crossed into the next clip.
+                self.start_decode(true);
             }
             self.ctx.request_repaint();
         }
+        self.time = self.time.min(total);
 
         loop {
             let next = self.queued.take().or_else(|| self.decoder.frames.try_recv().ok());
-            let Some(f) = next else { break };
+            let Some(mut f) = next else { break };
             if f.gen != self.gen {
                 continue;
             }
+            f.time += self.gen_offset;
             if self.playing && f.time > self.time + 0.5 / PREVIEW_FPS {
+                f.time -= self.gen_offset;
                 self.queued = Some(f);
                 break;
             }
             self.shown = Some(f);
         }
 
-        if !self.playing && self.project.media.is_some() && self.requested_time != Some(self.time) {
-            self.gen += 1;
-            self.decoder.seek(self.gen, self.time);
-            self.requested_time = Some(self.time);
+        if !self.playing && !self.project.is_empty() && self.requested_time != Some(self.time) {
+            self.start_decode(false);
         }
-
-        let dur = self.project.duration();
-        if self.cam_sig != self.project.zooms || self.cam_dur != dur {
-            self.cam_track = CameraTrack::build(&self.project.zooms, 0.0, dur);
-            self.cam_sig = self.project.zooms.clone();
-            self.cam_dur = dur;
-        }
-    }
-
-    // ---------- Zooms ----------
-
-    fn add_zoom_at(&mut self, t: f32) {
-        let end = (t + 2.5).min(self.project.trim_end);
-        let start = (end - 2.5).max(self.project.trim_start).min(t);
-        if end - start < 0.3 {
-            return;
-        }
-        // Start from the nearest touch, if there is one.
-        let (x, y) = self
-            .project
-            .touches
-            .iter()
-            .filter(|tc| (tc.time - t).abs() < 1.5)
-            .min_by(|a, b| (a.time - t).abs().total_cmp(&(b.time - t).abs()))
-            .map(|tc| (tc.x, tc.y))
-            .unwrap_or((0.5, 0.5));
-        let id = self.project.next_zoom_id();
-        self.project.zooms.push(ZoomSegment {
-            id,
-            start,
-            end,
-            scale: self.project.style.auto_zoom_scale,
-            x,
-            y,
-            auto: false,
-        });
-        self.selected_zoom = Some(id);
-    }
-
-    fn delete_selected_zoom(&mut self) {
-        if let Some(id) = self.selected_zoom.take() {
-            self.project.zooms.retain(|z| z.id != id);
-        }
-    }
-
-    fn regenerate_auto_zooms(&mut self) {
-        let p = &self.project;
-        let mut zooms: Vec<ZoomSegment> = p.zooms.iter().filter(|z| !z.auto).cloned().collect();
-        let first = p.next_zoom_id();
-        zooms.extend(auto_zooms(&p.touches, p.style.auto_zoom_scale, 0.0, p.duration(), first));
-        zooms.sort_by(|a, b| a.start.total_cmp(&b.start));
-        self.project.zooms = zooms;
-        self.selected_zoom = None;
-    }
-
-    fn zoom_mut(&mut self, id: u64) -> Option<&mut ZoomSegment> {
-        self.project.zooms.iter_mut().find(|z| z.id == id)
-    }
-
-    fn editing_zoom(&self) -> Option<ZoomSegment> {
-        if self.playing {
-            return None;
-        }
-        let id = self.selected_zoom?;
-        self.project.zooms.iter().find(|z| z.id == id).copied()
     }
 
     // ---------- Recording & export ----------
@@ -867,10 +944,92 @@ impl RecOrdingApp {
             return;
         }
         self.last_save_check = Instant::now();
-        if let Ok(s) = serde_json::to_string(&self.project) {
-            if s != self.last_saved && save_project(&self.project).is_ok() {
-                self.last_saved = s;
+        if self.project != self.last_saved {
+            // If the assistant saved in the meantime, take its version first instead of
+            // overwriting it.
+            let newer = load_project(&self.project_path).map(|d| d.revision != self.disk_revision).unwrap_or(false);
+            if newer {
+                self.last_disk_check = Instant::now() - Duration::from_secs(1);
+                self.check_disk();
+                return;
             }
+            self.save_now();
+        }
+    }
+
+    /// Turns finished edits into undo steps (a slider drag counts once, on release).
+    fn commit_history(&mut self, ctx: &egui::Context) {
+        if ctx.input(|i| i.pointer.any_down()) || self.drag.is_some() {
+            return;
+        }
+        if self.project != self.committed {
+            let before = std::mem::replace(&mut self.committed, self.project.clone());
+            self.undo.push(before);
+            if self.undo.len() > 100 {
+                self.undo.remove(0);
+            }
+            self.redo.clear();
+        }
+    }
+
+    fn undo_redo(&mut self, undo: bool) {
+        let (from, to) = if undo { (&mut self.undo, &mut self.redo) } else { (&mut self.redo, &mut self.undo) };
+        let Some(prev) = from.pop() else {
+            self.toast(if undo { "No hay nada que deshacer" } else { "No hay nada que rehacer" });
+            return;
+        };
+        to.push(std::mem::replace(&mut self.project, prev));
+        self.committed = self.project.clone();
+        self.selection = Selection::None;
+        self.time = self.time.min(timeline::duration(&self.project));
+        self.requested_time = None;
+        let media: Vec<MediaInfo> = self.project.media.iter().map(|m| m.info.clone()).collect();
+        for info in media {
+            self.prepare_media(&info);
+        }
+    }
+
+    /// Deletes whatever is selected.
+    fn delete_selection(&mut self) {
+        let p = &mut self.project;
+        let r = match self.selection {
+            Selection::Clip(id) => timeline::delete_clip(p, id),
+            Selection::Camera { id, key: Some(k) } if p.camera.iter().any(|c| c.id == id && c.kind == CameraKind::Move) => timeline::delete_camera_key(p, id, k),
+            Selection::Camera { id, .. } => timeline::delete_camera_clip(p, id),
+            Selection::Device { id, .. } => timeline::delete_device_clip(p, id),
+            Selection::Target(id) => timeline::remove_target(p, id),
+            Selection::None => return,
+        };
+        if let Err(e) = r {
+            self.toast(e);
+        }
+        self.selection = Selection::None;
+        self.time = self.time.min(timeline::duration(&self.project));
+        self.requested_time = None;
+    }
+
+    fn add_zoom_at(&mut self, t: f32) {
+        let total = timeline::duration(&self.project);
+        let end = (t + 2.5).min(total);
+        let start = (end - 2.5).max(0.0).min(t);
+        // Start from the nearest touch, if there is one.
+        let (x, y) = timeline::timeline_touches(&self.project)
+            .iter()
+            .filter(|tc| (tc.time - t).abs() < 1.5)
+            .min_by(|a, b| (a.time - t).abs().total_cmp(&(b.time - t).abs()))
+            .map(|tc| (tc.x, tc.y))
+            .unwrap_or((0.5, 0.5));
+        let scale = self.project.style.auto_zoom_scale;
+        match timeline::add_zoom(&mut self.project, start, end, scale, x, y) {
+            Ok(id) => self.selection = Selection::Camera { id, key: None },
+            Err(e) => self.toast(e),
+        }
+    }
+
+    fn split_here(&mut self) {
+        match timeline::split_at(&mut self.project, self.time) {
+            Ok(id) => self.selection = Selection::Clip(id),
+            Err(e) => self.toast(e),
         }
     }
 
@@ -887,15 +1046,26 @@ impl RecOrdingApp {
             }
             return;
         }
-        if self.project.media.is_none() {
+        let (undo, redo) = ctx.input(|i| {
+            let z = i.key_pressed(Key::Z) && i.modifiers.command;
+            (z && !i.modifiers.shift, (z && i.modifiers.shift) || (i.key_pressed(Key::Y) && i.modifiers.command))
+        });
+        if undo {
+            self.undo_redo(true);
+        }
+        if redo {
+            self.undo_redo(false);
+        }
+        if self.project.is_empty() {
             return;
         }
-        let (space, del, esc, z, left, right, home, end, shift) = ctx.input(|i| {
+        let (space, del, esc, z, split, left, right, home, end, shift) = ctx.input(|i| {
             (
                 i.key_pressed(Key::Space),
                 i.key_pressed(Key::Delete) || i.key_pressed(Key::Backspace),
                 i.key_pressed(Key::Escape),
                 i.key_pressed(Key::Z) && !i.modifiers.command,
+                i.key_pressed(Key::B) && i.modifiers.command,
                 i.key_pressed(Key::ArrowLeft),
                 i.key_pressed(Key::ArrowRight),
                 i.key_pressed(Key::Home),
@@ -907,13 +1077,20 @@ impl RecOrdingApp {
             self.toggle_play();
         }
         if del {
-            self.delete_selected_zoom();
+            self.delete_selection();
         }
         if esc {
-            self.selected_zoom = None;
+            if self.selection != Selection::None {
+                self.selection = Selection::None;
+            } else {
+                self.director_mode = false;
+            }
         }
         if z {
             self.add_zoom_at(self.time);
+        }
+        if split {
+            self.split_here();
         }
         let step = if shift { 1.0 } else { 1.0 / PREVIEW_FPS };
         if left {
@@ -923,10 +1100,10 @@ impl RecOrdingApp {
             self.seek(self.time + step);
         }
         if home {
-            self.seek(self.project.trim_start);
+            self.seek(0.0);
         }
         if end {
-            self.seek(self.project.trim_end);
+            self.seek(timeline::duration(&self.project));
         }
     }
 }
@@ -936,13 +1113,16 @@ impl Drop for RecOrdingApp {
         if let Some(rec) = self.recording.take() {
             let _ = rec.stop_blocking();
         }
-        let _ = save_project(&self.project);
+        if self.project != self.last_saved {
+            self.save_now();
+        }
     }
 }
 
 impl eframe::App for RecOrdingApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.handle_events();
+        self.check_disk();
 
         let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().filter_map(|f| f.path.clone()).collect());
         if let Some(p) = dropped.into_iter().next() {
@@ -955,7 +1135,6 @@ impl eframe::App for RecOrdingApp {
         self.shortcuts(ctx);
         self.tick();
         self.sync_model();
-        self.autosave();
 
         if let Some(rec) = &mut self.recording {
             if rec.started.elapsed() > Duration::from_secs(2) && rec.check_exited().is_some() {
@@ -964,7 +1143,7 @@ impl eframe::App for RecOrdingApp {
         }
 
         self.toolbar(ctx);
-        if self.project.media.is_some() {
+        if !self.project.is_empty() {
             self.inspector(ctx);
             self.timeline(ctx);
             self.viewer(ctx);
@@ -976,6 +1155,8 @@ impl eframe::App for RecOrdingApp {
             Sheet::Record => self.record_sheet(ctx),
             Sheet::Export => self.export_sheet(ctx),
             Sheet::RenameModel | Sheet::DeleteModel => self.model_edit_sheet(ctx),
+            Sheet::Projects => self.projects_sheet(ctx),
+            Sheet::Assistant => self.assistant_sheet(ctx),
             Sheet::None => {}
         }
         if self.sheet == Sheet::Record && self.recording.is_none() {
@@ -987,11 +1168,15 @@ impl eframe::App for RecOrdingApp {
         if matches!(self.export_ui, ExportUi::Running { .. }) || self.recording.is_some() {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
+        // Keep polling for the assistant's edits.
+        ctx.request_repaint_after(Duration::from_millis(800));
 
         self.paint_toast(ctx);
         if ctx.input(|i| !i.raw.hovered_files.is_empty()) {
             self.paint_drop_overlay(ctx);
         }
+        self.commit_history(ctx);
+        self.autosave();
     }
 }
 
@@ -1037,7 +1222,20 @@ impl RecOrdingApp {
                     self.pick_video();
                 }
 
-                if self.project.media.is_some() {
+                if self.toolbar_button(&mut left, "Proyectos", |p, c, col| {
+                    for dy in [-4.0, 0.0, 4.0] {
+                        p.line_segment([c + Vec2::new(-6.0, dy), c + Vec2::new(6.0, dy)], Stroke::new(1.6_f32, col));
+                    }
+                })
+                .on_hover_text("Abrir, crear o cambiar de proyecto")
+                .clicked()
+                {
+                    self.projects = list_projects();
+                    self.new_project_name.clear();
+                    self.sheet = Sheet::Projects;
+                }
+
+                {
                     let center = Rect::from_center_size(full.center(), Vec2::new(280.0, 26.0));
                     let mut c = ui.new_child(UiBuilder::new().max_rect(center).layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight)));
                     c.add(
@@ -1052,12 +1250,23 @@ impl RecOrdingApp {
                 }
 
                 let mut right = ui.new_child(UiBuilder::new().max_rect(full).layout(egui::Layout::right_to_left(Align::Center)));
-                let can_export = self.project.media.is_some() && !busy;
+                let can_export = !self.project.is_empty() && !busy;
                 if primary_button(&mut right, "Exportar", can_export).clicked() {
                     self.sheet = Sheet::Export;
                     if !matches!(self.export_ui, ExportUi::Running { .. }) {
                         self.export_ui = ExportUi::Idle;
                     }
+                }
+                right.add_space(6.0);
+                if self
+                    .toolbar_button(&mut right, "Asistente", |p, c, col| {
+                        p.circle_stroke(c, 5.5, Stroke::new(1.5_f32, col));
+                        p.circle_filled(c, 1.8, col);
+                    })
+                    .on_hover_text("Conectar un agente (Claude, Cursor, Codex…) por MCP")
+                    .clicked()
+                {
+                    self.sheet = Sheet::Assistant;
                 }
             });
     }
@@ -1159,266 +1368,6 @@ impl RecOrdingApp {
         let g = p.layout(body.to_string(), regular(13.0), TEXT_2, r.width() - 52.0);
         p.galley(Pos2::new(r.left() + 26.0, r.top() + 132.0), g, TEXT_2);
         resp
-    }
-
-    // ----- Viewer -----
-
-    fn viewer(&mut self, ctx: &egui::Context) {
-        egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(VIEWER).inner_margin(Margin::same(16.0)))
-            .show(ctx, |ui| {
-                let full = ui.max_rect();
-                let top = Rect::from_min_size(full.min, Vec2::new(full.width(), 26.0));
-                let seg = Rect::from_center_size(top.center(), Vec2::new(240.0, 26.0));
-                let mut c = ui.new_child(UiBuilder::new().max_rect(seg));
-                let opts: Vec<(Aspect, &str)> = Aspect::ALL.iter().map(|a| (*a, a.label())).collect();
-                segmented(&mut c, &mut self.project.style.aspect, &opts, 240.0);
-                ui.painter().text(
-                    Pos2::new(seg.right() + 14.0, seg.center().y),
-                    Align2::LEFT_CENTER,
-                    self.project.style.aspect.hint(),
-                    regular(12.0),
-                    TEXT_3,
-                );
-
-                let transport = Rect::from_min_max(Pos2::new(full.left(), full.bottom() - 36.0), full.max);
-                let area = Rect::from_min_max(
-                    Pos2::new(full.left(), top.bottom() + 14.0),
-                    Pos2::new(full.right(), transport.top() - 10.0),
-                );
-                let ratio = self.project.style.aspect.ratio();
-                let mut w = area.width();
-                let mut h = w / ratio;
-                if h > area.height() {
-                    h = area.height();
-                    w = h * ratio;
-                }
-                let canvas = Rect::from_center_size(area.center(), Vec2::new(w.max(16.0), h.max(16.0)));
-                self.canvas(ui, canvas);
-                self.transport(ui, transport);
-            });
-    }
-
-    fn canvas(&mut self, ui: &mut Ui, canvas: Rect) {
-        let Some(media) = self.project.media.clone() else { return };
-        let ppp = ui.ctx().pixels_per_point();
-        let mut ow = (canvas.width() * ppp).round().max(16.0);
-        let mut oh = (canvas.height() * ppp).round().max(16.0);
-        let k = (1600.0 / ow.max(oh)).min(1.0);
-        ow = (ow * k).round();
-        oh = (oh * k).round();
-        let (ow, oh) = (ow as usize, oh as usize);
-
-        let editing = self.editing_zoom();
-        let cam = if editing.is_some() { CamState::IDENTITY } else { self.cam_track.sample(self.time) };
-        // While picking a zoom's focus, show the device straight on so clicks land where they look.
-        let style = if editing.is_some() { self.project.style.flattened() } else { self.project.style.clone() };
-        let key = RenderKey {
-            time: self.time,
-            frame: self.shown.as_ref().map(|f| Arc::as_ptr(&f.mips) as usize).unwrap_or(0),
-            style: style.clone(),
-            cam: (cam.scale.to_bits(), cam.fx.to_bits(), cam.fy.to_bits()),
-            size: (ow, oh),
-            touches: self.project.touches.len(),
-            model: self.active_model().map(|m| m as *const PreparedModel as usize).unwrap_or(0),
-            supersample: if self.playing { 1 } else { 2 },
-        };
-        if self.last_render.as_ref() != Some(&key) {
-            self.viewer_buf.resize(ow * oh * 4, 0);
-            compose(
-                &mut self.viewer_buf,
-                ow,
-                oh,
-                &ComposeInput {
-                    style: &style,
-                    screen: self.shown.as_ref().map(|f| f.mips.as_ref()),
-                    video_w: media.width as f32,
-                    video_h: media.height as f32,
-                    cam,
-                    touches: &self.project.touches,
-                    time: self.time,
-                    since_start: self.time - self.project.trim_start,
-                    model: self.model_prepared.as_ref().map(|(_, m)| m.as_ref()).filter(|_| style.frame == FrameStyle::Custom),
-                    supersample: key.supersample,
-                },
-            );
-            let img = ColorImage::from_rgba_unmultiplied([ow, oh], &self.viewer_buf);
-            match &mut self.viewer_tex {
-                Some(t) => t.set(img, TextureOptions::LINEAR),
-                None => self.viewer_tex = Some(ui.ctx().load_texture("viewer", img, TextureOptions::LINEAR)),
-            }
-            self.last_render = Some(key);
-        }
-
-        let p = ui.painter();
-        p.rect_filled(canvas.translate(Vec2::new(0.0, 8.0)).expand(2.0), Rounding::same(4.0), Color32::from_black_alpha(60));
-        if let Some(tex) = &self.viewer_tex {
-            p.image(tex.id(), canvas, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
-        }
-
-        let resp = ui.interact(canvas, Id::new("canvas"), Sense::click_and_drag());
-        let Some(z) = editing else { return };
-
-        // Editing a zoom: show the whole frame and the area the camera will frame.
-        let layout = Layout::new(
-            ow as f32,
-            oh as f32,
-            &self.project.style,
-            media.width as f32,
-            media.height as f32,
-            self.active_model().map(|m| &m.meta),
-        );
-        let cam = layout.camera(CamState { scale: z.scale, fx: z.x, fy: z.y });
-        let (ax, ay) = layout.to_scene(cam, 0.0, 0.0);
-        let (bx, by) = layout.to_scene(cam, ow as f32, oh as f32);
-        let to_pt = |x: f32, y: f32| {
-            Pos2::new(canvas.left() + x / ow as f32 * canvas.width(), canvas.top() + y / oh as f32 * canvas.height())
-        };
-        let region = Rect::from_two_pos(to_pt(ax, ay), to_pt(bx, by)).intersect(canvas);
-        let dim = Color32::from_black_alpha(120);
-        let p = ui.painter_at(canvas);
-        p.rect_filled(Rect::from_min_max(canvas.min, Pos2::new(canvas.right(), region.top())), 0.0, dim);
-        p.rect_filled(Rect::from_min_max(Pos2::new(canvas.left(), region.bottom()), canvas.max), 0.0, dim);
-        p.rect_filled(Rect::from_min_max(Pos2::new(canvas.left(), region.top()), Pos2::new(region.left(), region.bottom())), 0.0, dim);
-        p.rect_filled(Rect::from_min_max(Pos2::new(region.right(), region.top()), Pos2::new(canvas.right(), region.bottom())), 0.0, dim);
-        p.rect_stroke(region, Rounding::same(4.0), Stroke::new(2.0_f32, YELLOW));
-        let focus = to_pt(layout.video.x0 + z.x * layout.video.w(), layout.video.y0 + z.y * layout.video.h());
-        p.circle_filled(focus, 8.0, Color32::from_black_alpha(80));
-        p.circle_filled(focus, 6.0, YELLOW);
-        p.circle_stroke(focus, 6.0, Stroke::new(1.5_f32, Color32::WHITE));
-
-        let chip = format!("Zoom {:.1}×  ·  Haz clic donde quieras enfocar  ·  Esc para ver el resultado", z.scale).replace('.', ",");
-        let g = p.layout_no_wrap(chip, regular(12.0), Color32::WHITE);
-        let chip_rect = Rect::from_center_size(Pos2::new(canvas.center().x, canvas.top() + 20.0), g.size() + Vec2::new(20.0, 10.0));
-        p.rect_filled(chip_rect, Rounding::same(12.0), Color32::from_black_alpha(170));
-        p.galley(chip_rect.min + Vec2::new(10.0, 5.0), g, Color32::WHITE);
-
-        if resp.hovered() {
-            ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
-        }
-        if resp.clicked() || resp.dragged() {
-            if let Some(pos) = resp.interact_pointer_pos() {
-                let x = (pos.x - canvas.left()) / canvas.width() * ow as f32;
-                let y = (pos.y - canvas.top()) / canvas.height() * oh as f32;
-                let u = ((x - layout.video.x0) / layout.video.w()).clamp(0.0, 1.0);
-                let v = ((y - layout.video.y0) / layout.video.h()).clamp(0.0, 1.0);
-                if let Some(zm) = self.zoom_mut(z.id) {
-                    zm.x = u;
-                    zm.y = v;
-                    zm.auto = false;
-                }
-            }
-        }
-    }
-
-    fn icon_button(&self, ui: &mut Ui, rect: Rect, id: &str, filled: bool, paint: impl Fn(&egui::Painter, Pos2, Color32)) -> egui::Response {
-        let resp = ui.interact(rect, Id::new(("icon", id)), Sense::click()).on_hover_cursor(CursorIcon::PointingHand);
-        let h = ui.ctx().animate_bool(resp.id, resp.hovered());
-        let p = ui.painter();
-        if filled {
-            p.circle_filled(rect.center(), rect.width() / 2.0, lerp_color(Color32::from_rgb(58, 58, 63), Color32::from_rgb(76, 76, 82), h));
-        } else if h > 0.0 {
-            p.circle_filled(rect.center(), rect.width() / 2.0, Color32::from_white_alpha((14.0 * h) as u8));
-        }
-        paint(p, rect.center(), TEXT);
-        resp
-    }
-
-    fn transport(&mut self, ui: &mut Ui, rect: Rect) {
-        let c = rect.center();
-        let play = Rect::from_center_size(c, Vec2::splat(34.0));
-        let back = Rect::from_center_size(c - Vec2::new(44.0, 0.0), Vec2::splat(28.0));
-        let playing = self.playing;
-        if self
-            .icon_button(ui, play, "play", true, |p, c, col| {
-                if playing {
-                    icon_pause(p, c, 13.0, col)
-                } else {
-                    icon_play(p, c + Vec2::new(1.5, 0.0), 13.0, col)
-                }
-            })
-            .on_hover_text("Reproducir / pausar (Espacio)")
-            .clicked()
-        {
-            self.toggle_play();
-        }
-        if self.icon_button(ui, back, "start", false, |p, c, col| icon_to_start(p, c, 12.0, col)).on_hover_text("Ir al inicio (Inicio)").clicked() {
-            self.seek(self.project.trim_start);
-        }
-
-        let p = ui.painter();
-        let rel = self.time - self.project.trim_start;
-        p.text(
-            Pos2::new(rect.left(), c.y),
-            Align2::LEFT_CENTER,
-            format!("{}  /  {}", fmt_time(rel), fmt_time(self.project.trimmed_duration())),
-            medium(13.0),
-            TEXT,
-        );
-        let info = if self.project.touches.is_empty() {
-            format!("{} zooms", self.project.zooms.len())
-        } else {
-            format!("{} zooms  ·  {} toques", self.project.zooms.len(), self.project.touches.len())
-        };
-        p.text(Pos2::new(rect.right(), c.y), Align2::RIGHT_CENTER, info, regular(12.5), TEXT_3);
-    }
-
-    // ----- Inspector -----
-
-    fn inspector(&mut self, ctx: &egui::Context) {
-        egui::SidePanel::right("inspector")
-            .exact_width(304.0)
-            .resizable(false)
-            .frame(
-                egui::Frame::none()
-                    .fill(SIDEBAR)
-                    .inner_margin(Margin { left: 14.0, right: 14.0, top: 12.0, bottom: 12.0 })
-                    .stroke(Stroke::new(1.0_f32, Color32::from_rgb(18, 18, 20))),
-            )
-            .show(ctx, |ui| {
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 8.0;
-                    if let Some(z) = self.editing_zoom() {
-                        self.zoom_inspector(ui, z);
-                    }
-                    self.style_inspector(ui);
-                });
-            });
-    }
-
-    fn zoom_inspector(&mut self, ui: &mut Ui, z: ZoomSegment) {
-        let mut delete = false;
-        let mut close = false;
-        section(ui, "Zoom seleccionado", |ui| {
-            let mut scale = z.scale;
-            if slider_row(ui, "Nivel", &mut scale, 1.1..=3.5, |v| format!("{v:.1}×").replace('.', ",")) {
-                if let Some(zm) = self.zoom_mut(z.id) {
-                    zm.scale = scale;
-                    zm.auto = false;
-                }
-            }
-            ui.label(
-                RichText::new(format!("De {} a {} · {}", fmt_time(z.start), fmt_time(z.end), fmt_secs(z.end - z.start)))
-                    .color(TEXT_2)
-                    .font(regular(12.0)),
-            );
-            ui.label(RichText::new("Haz clic en la vista previa para elegir dónde enfocar. Arrastra el zoom en la línea de tiempo para moverlo o alargarlo.").color(TEXT_3).font(regular(12.0)));
-            ui.horizontal(|ui| {
-                if secondary_button(ui, "Listo").clicked() {
-                    close = true;
-                }
-                if ui.add(egui::Button::new(RichText::new("Eliminar").color(RED)).min_size(Vec2::new(0.0, 28.0))).clicked() {
-                    delete = true;
-                }
-            });
-        });
-        if delete {
-            self.delete_selected_zoom();
-        }
-        if close {
-            self.selected_zoom = None;
-        }
-        ui.add_space(6.0);
     }
 
     fn models_inspector(&mut self, ui: &mut Ui) {
@@ -1826,7 +1775,8 @@ impl RecOrdingApp {
             }
         });
 
-        let has_touches = !self.project.touches.is_empty();
+        let n_touches = timeline::timeline_touches(&self.project).len();
+        let has_touches = n_touches > 0;
         let mut regenerate = false;
         section(ui, "Zoom automático", |ui| {
             slider_row(ui, "Intensidad", &mut self.project.style.auto_zoom_scale, 1.2..=3.0, |v| {
@@ -1834,7 +1784,7 @@ impl RecOrdingApp {
             });
             if has_touches {
                 ui.label(
-                    RichText::new(format!("{} toques registrados en la grabación.", self.project.touches.len()))
+                    RichText::new(format!("{n_touches} toques registrados en las grabaciones."))
                         .color(TEXT_3)
                         .font(regular(12.0)),
                 );
@@ -1850,323 +1800,11 @@ impl RecOrdingApp {
             }
         });
         if regenerate {
-            self.regenerate_auto_zooms();
+            let scale = self.project.style.auto_zoom_scale;
+            let n = timeline::regenerate_auto_zooms(&mut self.project, scale);
+            self.selection = Selection::None;
+            self.toast(format!("{n} zooms automáticos"));
         }
-    }
-
-    // ----- Timeline -----
-
-    fn timeline(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::bottom("timeline")
-            .exact_height(200.0)
-            .frame(
-                egui::Frame::none()
-                    .fill(WINDOW)
-                    .inner_margin(Margin { left: 16.0, right: 16.0, top: 10.0, bottom: 14.0 })
-                    .stroke(Stroke::new(1.0_f32, Color32::from_rgb(16, 16, 18))),
-            )
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    if secondary_button(ui, "+ Zoom").on_hover_text("Añadir un zoom en el cursor (Z)").clicked() {
-                        self.add_zoom_at(self.time);
-                    }
-                    if self.selected_zoom.is_some() && secondary_button(ui, "Eliminar zoom").on_hover_text("Supr").clicked() {
-                        self.delete_selected_zoom();
-                    }
-                    ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                        let total = self.project.duration();
-                        let trimmed = self.project.trimmed_duration();
-                        let txt = if (total - trimmed).abs() > 0.05 {
-                            format!("Duración {} (recortado de {})", fmt_time(trimmed), fmt_time(total))
-                        } else {
-                            format!("Duración {}", fmt_time(trimmed))
-                        };
-                        ui.label(RichText::new(txt).color(TEXT_2).font(regular(12.5)));
-                    });
-                });
-                ui.add_space(4.0);
-                let body = ui.available_rect_before_wrap();
-                self.timeline_body(ui, body);
-            });
-    }
-
-    fn hit(&self, tl: &Tl, pos: Pos2) -> Hit {
-        const EDGE: f32 = 7.0;
-        if tl.ruler.contains(pos) {
-            return Hit::Ruler;
-        }
-        if tl.video.expand2(Vec2::new(0.0, 2.0)).contains(pos) {
-            let (a, b) = (tl.x(self.project.trim_start), tl.x(self.project.trim_end));
-            if (pos.x - a).abs() <= EDGE {
-                return Hit::TrimStart;
-            }
-            if (pos.x - b).abs() <= EDGE {
-                return Hit::TrimEnd;
-            }
-            return Hit::Video;
-        }
-        if tl.zoom.expand2(Vec2::new(0.0, 2.0)).contains(pos) {
-            // Topmost (last drawn) first.
-            for z in self.project.zooms.iter().rev() {
-                let (a, b) = (tl.x(z.start), tl.x(z.end));
-                if pos.x >= a - EDGE && pos.x <= b + EDGE {
-                    if (pos.x - b).abs() <= EDGE && b - a > 2.0 * EDGE {
-                        return Hit::ZoomEnd(z.id);
-                    }
-                    if (pos.x - a).abs() <= EDGE && b - a > 2.0 * EDGE {
-                        return Hit::ZoomStart(z.id);
-                    }
-                    if pos.x >= a && pos.x <= b {
-                        return Hit::ZoomBody(z.id, tl.t(pos.x) - z.start);
-                    }
-                }
-            }
-            return Hit::ZoomEmpty;
-        }
-        Hit::None
-    }
-
-    fn timeline_body(&mut self, ui: &mut Ui, body: Rect) {
-        let dur = self.project.duration().max(0.1);
-        let ruler = Rect::from_min_size(body.min, Vec2::new(body.width(), 18.0));
-        let video = Rect::from_min_size(Pos2::new(body.left(), ruler.bottom() + 6.0), Vec2::new(body.width(), 66.0));
-        let zoom = Rect::from_min_size(Pos2::new(body.left(), video.bottom() + 8.0), Vec2::new(body.width(), 32.0));
-        let tl = Tl { x0: body.left() + 1.0, x1: body.right() - 1.0, dur, ruler, video, zoom };
-
-        // Interaction first, so painting reflects this frame's changes.
-        let resp = ui.interact(Rect::from_min_max(ruler.min, zoom.max), Id::new("timeline"), Sense::click_and_drag());
-        let hover_hit = resp.hover_pos().map(|p| self.hit(&tl, p)).unwrap_or(Hit::None);
-        let active = self.drag.map(|d| match d {
-            Drag::TrimStart => Hit::TrimStart,
-            Drag::TrimEnd => Hit::TrimEnd,
-            Drag::ZoomStart(id) => Hit::ZoomStart(id),
-            Drag::ZoomEnd(id) => Hit::ZoomEnd(id),
-            Drag::ZoomMove { id, .. } => Hit::ZoomBody(id, 0.0),
-            Drag::Scrub => Hit::Ruler,
-        });
-        match active.unwrap_or(hover_hit) {
-            Hit::TrimStart | Hit::TrimEnd | Hit::ZoomStart(_) | Hit::ZoomEnd(_) => ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal),
-            Hit::ZoomBody(..) if self.drag.is_some() => ui.ctx().set_cursor_icon(CursorIcon::Grabbing),
-            Hit::ZoomBody(..) => ui.ctx().set_cursor_icon(CursorIcon::Grab),
-            _ => {}
-        }
-
-        if resp.drag_started() {
-            if let Some(origin) = ui.input(|i| i.pointer.press_origin()) {
-                self.drag = match self.hit(&tl, origin) {
-                    Hit::TrimStart => Some(Drag::TrimStart),
-                    Hit::TrimEnd => Some(Drag::TrimEnd),
-                    Hit::ZoomStart(id) => Some(Drag::ZoomStart(id)),
-                    Hit::ZoomEnd(id) => Some(Drag::ZoomEnd(id)),
-                    Hit::ZoomBody(id, grab) => Some(Drag::ZoomMove { id, grab }),
-                    Hit::Ruler | Hit::Video | Hit::ZoomEmpty => Some(Drag::Scrub),
-                    Hit::None => None,
-                };
-                if let Some(Drag::ZoomStart(id) | Drag::ZoomEnd(id) | Drag::ZoomMove { id, .. }) = self.drag {
-                    self.selected_zoom = Some(id);
-                }
-            }
-        }
-        if resp.dragged() {
-            if let (Some(d), Some(pos)) = (self.drag, resp.interact_pointer_pos()) {
-                let t = tl.t(pos.x);
-                match d {
-                    Drag::Scrub => self.seek(t),
-                    Drag::TrimStart => {
-                        self.project.trim_start = t.min(self.project.trim_end - 0.5).max(0.0);
-                        self.seek(self.project.trim_start);
-                    }
-                    Drag::TrimEnd => {
-                        self.project.trim_end = t.max(self.project.trim_start + 0.5).min(dur);
-                        self.seek(self.project.trim_end);
-                    }
-                    Drag::ZoomStart(id) => {
-                        if let Some(z) = self.zoom_mut(id) {
-                            z.start = t.min(z.end - 0.3).max(0.0);
-                            z.auto = false;
-                        }
-                    }
-                    Drag::ZoomEnd(id) => {
-                        if let Some(z) = self.zoom_mut(id) {
-                            z.end = t.max(z.start + 0.3).min(dur);
-                            z.auto = false;
-                        }
-                    }
-                    Drag::ZoomMove { id, grab } => {
-                        if let Some(z) = self.zoom_mut(id) {
-                            let len = z.end - z.start;
-                            z.start = (t - grab).clamp(0.0, (dur - len).max(0.0));
-                            z.end = z.start + len;
-                            z.auto = false;
-                        }
-                    }
-                }
-            }
-        }
-        if resp.drag_stopped() {
-            self.drag = None;
-        }
-        if resp.clicked() {
-            if let Some(pos) = resp.interact_pointer_pos() {
-                match self.hit(&tl, pos) {
-                    Hit::ZoomBody(id, _) | Hit::ZoomStart(id) | Hit::ZoomEnd(id) => self.selected_zoom = Some(id),
-                    Hit::ZoomEmpty => {
-                        self.selected_zoom = None;
-                        self.seek(tl.t(pos.x));
-                    }
-                    Hit::Ruler | Hit::Video => self.seek(tl.t(pos.x)),
-                    _ => {}
-                }
-            }
-        }
-        if resp.double_clicked() {
-            if let Some(pos) = resp.interact_pointer_pos() {
-                if self.hit(&tl, pos) == Hit::ZoomEmpty {
-                    self.add_zoom_at(tl.t(pos.x));
-                }
-            }
-        }
-
-        self.paint_timeline(ui, &tl, hover_hit);
-    }
-
-    fn paint_timeline(&self, ui: &Ui, tl: &Tl, hover: Hit) {
-        let p = ui.painter_at(Rect::from_min_max(tl.ruler.min - Vec2::new(0.0, 2.0), tl.zoom.max + Vec2::new(0.0, 2.0)));
-        let dur = tl.dur;
-
-        // Ruler
-        let px_per_s = (tl.x1 - tl.x0) / dur;
-        let step = [0.5f32, 1.0, 2.0, 5.0, 10.0, 15.0, 30.0, 60.0, 120.0, 300.0]
-            .into_iter()
-            .find(|s| s * px_per_s >= 70.0)
-            .unwrap_or(600.0);
-        let minor = if step >= 5.0 { step / 5.0 } else { step / 2.0 };
-        let mut t = 0.0;
-        while t <= dur + 1e-3 {
-            let x = tl.x(t);
-            let major = ((t / step).round() * step - t).abs() < 1e-3;
-            let h = if major { 7.0 } else { 4.0 };
-            p.line_segment(
-                [Pos2::new(x, tl.ruler.bottom() - h), Pos2::new(x, tl.ruler.bottom())],
-                Stroke::new(1.0_f32, if major { TEXT_3 } else { Color32::from_rgb(70, 70, 76) }),
-            );
-            if major {
-                let s = fmt_time(t);
-                let s = s.split(',').next().unwrap_or(&s).to_string();
-                p.text(Pos2::new(x + 4.0, tl.ruler.top()), Align2::LEFT_TOP, s, regular(10.5), TEXT_3);
-            }
-            t += minor;
-        }
-
-        // Video track: filmstrip, trimmed-away parts dimmed.
-        let full = Rect::from_min_max(Pos2::new(tl.x(0.0), tl.video.top()), Pos2::new(tl.x(dur), tl.video.bottom()));
-        let clip = Rect::from_min_max(
-            Pos2::new(tl.x(self.project.trim_start), tl.video.top()),
-            Pos2::new(tl.x(self.project.trim_end), tl.video.bottom()),
-        );
-        p.rect_filled(full, Rounding::same(7.0), CLIP.linear_multiply(0.55));
-        if !self.thumbs.is_empty() {
-            let tp = ui.painter_at(full.shrink(1.0));
-            let tile_w = (tl.video.height() * self.thumb_aspect).max(8.0);
-            let mut x = full.left();
-            while x < full.right() {
-                let t = tl.t(x + tile_w * 0.5);
-                let idx = ((t / dur) * self.thumbs.len() as f32).floor() as usize;
-                let tex = &self.thumbs[idx.min(self.thumbs.len() - 1)];
-                tp.image(
-                    tex.id(),
-                    Rect::from_min_size(Pos2::new(x, full.top()), Vec2::new(tile_w, full.height())),
-                    Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                    Color32::WHITE,
-                );
-                x += tile_w;
-            }
-        }
-        let shade = Color32::from_black_alpha(165);
-        if clip.left() > full.left() {
-            p.rect_filled(Rect::from_min_max(full.min, Pos2::new(clip.left(), full.bottom())), Rounding::same(7.0), shade);
-        }
-        if clip.right() < full.right() {
-            p.rect_filled(Rect::from_min_max(Pos2::new(clip.right(), full.top()), full.max), Rounding::same(7.0), shade);
-        }
-        // Round the filmstrip corners by drawing the track colour over them.
-        p.rect_stroke(full.expand(1.5), Rounding::same(8.5), Stroke::new(3.0_f32, WINDOW));
-
-        let trim_active = matches!(self.drag, Some(Drag::TrimStart | Drag::TrimEnd))
-            || matches!(hover, Hit::TrimStart | Hit::TrimEnd | Hit::Video);
-        if trim_active {
-            p.rect_stroke(clip, Rounding::same(7.0), Stroke::new(2.0_f32, YELLOW));
-            for x in [clip.left(), clip.right()] {
-                p.rect_filled(Rect::from_center_size(Pos2::new(x, clip.center().y), Vec2::new(5.0, 26.0)), Rounding::same(2.5), YELLOW);
-            }
-        } else {
-            p.rect_stroke(clip, Rounding::same(7.0), Stroke::new(1.0_f32, Color32::from_white_alpha(60)));
-        }
-        let name = self
-            .project
-            .media
-            .as_ref()
-            .and_then(|m| std::path::Path::new(&m.path).file_stem().map(|s| s.to_string_lossy().into_owned()))
-            .unwrap_or_default();
-        let g = p.layout_no_wrap(name, regular(11.0), Color32::WHITE);
-        let label = Rect::from_min_size(clip.min + Vec2::new(6.0, 5.0), g.size() + Vec2::new(10.0, 4.0));
-        if label.right() < clip.right() - 4.0 {
-            p.rect_filled(label, Rounding::same(4.0), Color32::from_black_alpha(140));
-            p.galley(label.min + Vec2::new(5.0, 2.0), g, Color32::WHITE);
-        }
-
-        // Touches
-        let ty = tl.video.bottom() - 9.0;
-        for t in &self.project.touches {
-            let x = tl.x(t.time);
-            if t.kind == TouchKind::Swipe {
-                let x2 = tl.x(t.time + t.duration).max(x + 4.0);
-                p.line_segment([Pos2::new(x, ty), Pos2::new(x2, ty)], Stroke::new(4.0_f32, Color32::from_white_alpha(170)));
-            }
-            p.circle_filled(Pos2::new(x, ty), 3.5, Color32::WHITE);
-            p.circle_stroke(Pos2::new(x, ty), 3.5, Stroke::new(1.0_f32, Color32::from_black_alpha(120)));
-        }
-
-        // Zoom track
-        p.rect_filled(tl.zoom, Rounding::same(7.0), TRACK);
-        if self.project.zooms.is_empty() {
-            p.text(
-                tl.zoom.center(),
-                Align2::CENTER_CENTER,
-                "Sin zooms · pulsa + Zoom, la tecla Z o haz doble clic aquí",
-                regular(12.0),
-                TEXT_3,
-            );
-        }
-        for z in &self.project.zooms {
-            let r = Rect::from_min_max(Pos2::new(tl.x(z.start), tl.zoom.top() + 2.0), Pos2::new(tl.x(z.end), tl.zoom.bottom() - 2.0));
-            let selected = self.selected_zoom == Some(z.id);
-            let hovered = matches!(hover, Hit::ZoomBody(id, _) | Hit::ZoomStart(id) | Hit::ZoomEnd(id) if id == z.id);
-            let fill = if selected || hovered { lerp_color(PURPLE, Color32::WHITE, 0.12) } else { PURPLE };
-            p.rect_filled(r, Rounding::same(6.0), fill);
-            if selected {
-                p.rect_stroke(r, Rounding::same(6.0), Stroke::new(2.0_f32, YELLOW));
-            }
-            let label = format!("{:.1}×", z.scale).replace('.', ",");
-            if r.width() > 34.0 {
-                p.text(r.left_center() + Vec2::new(8.0, 0.0), Align2::LEFT_CENTER, label, medium(11.5), Color32::WHITE);
-            }
-            if z.auto && r.width() > 80.0 {
-                p.text(r.right_center() - Vec2::new(8.0, 0.0), Align2::RIGHT_CENTER, "auto", regular(10.5), Color32::from_white_alpha(150));
-            }
-        }
-
-        // Playhead
-        let x = tl.x(self.time);
-        p.line_segment([Pos2::new(x, tl.ruler.top() + 4.0), Pos2::new(x, tl.zoom.bottom())], Stroke::new(1.5_f32, RED));
-        let head = vec![
-            Pos2::new(x - 5.0, tl.ruler.top()),
-            Pos2::new(x + 5.0, tl.ruler.top()),
-            Pos2::new(x + 5.0, tl.ruler.top() + 6.0),
-            Pos2::new(x, tl.ruler.top() + 11.0),
-            Pos2::new(x - 5.0, tl.ruler.top() + 6.0),
-        ];
-        p.add(egui::Shape::convex_polygon(head, RED, Stroke::NONE));
     }
 
     // ----- Sheets -----
@@ -2329,7 +1967,8 @@ impl RecOrdingApp {
 
     fn export_sheet(&mut self, ctx: &egui::Context) {
         let mut action: Option<&str> = None;
-        let media = self.project.media.clone();
+        let has_audio = self.project.media.iter().any(|m| m.info.has_audio);
+        let dur = timeline::duration(&self.project);
         Self::sheet_window(ctx, "export", 460.0, |ui| match &self.export_ui {
             ExportUi::Running { fraction, eta, .. } => {
                 ui.label(RichText::new("Exportando…").font(medium(20.0)).color(TEXT));
@@ -2391,7 +2030,6 @@ impl RecOrdingApp {
                 let style = &mut self.project.style;
                 ui.label(RichText::new("Exportar vídeo").font(medium(20.0)).color(TEXT));
                 let (w, h) = s.dimensions(style.aspect);
-                let dur = self.project.trim_end - self.project.trim_start;
                 ui.label(
                     RichText::new(format!("{} × {} px · {} fps · {}", w, h, if s.format == ExportFormat::Gif { s.fps.min(25) } else { s.fps }, fmt_time(dur)))
                         .color(TEXT_2),
@@ -2420,7 +2058,7 @@ impl RecOrdingApp {
                     let opts: Vec<(Quality, &str)> = Quality::ALL.iter().map(|q| (*q, q.label())).collect();
                     segmented(ui, &mut s.quality, &opts, cw);
                 });
-                if media.as_ref().is_some_and(|m| m.has_audio) && s.format != ExportFormat::Gif {
+                if has_audio && s.format != ExportFormat::Gif {
                     form_row(ui, "Sonido", |ui| {
                         toggle(ui, &mut s.include_audio);
                     });

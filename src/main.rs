@@ -1,15 +1,20 @@
 mod app;
-mod camera;
 mod capture;
 mod compositor;
 mod export;
 mod library;
+mod mcp;
 mod media;
 mod model;
 mod model3d;
 mod theme;
+mod timeline;
 
 fn main() -> eframe::Result<()> {
+    if std::env::args().any(|a| a == "--mcp") {
+        mcp::run();
+        return Ok(());
+    }
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("rec-ording")
