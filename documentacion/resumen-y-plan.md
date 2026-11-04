@@ -55,6 +55,8 @@ Se han retirado, de momento, el servidor MCP, el autoactualizador, los subtítul
 
 ## Ideas para siguientes versiones
 
+- **Plan detallado para la siguiente sesión**: Director, pista de cámara con giros animables, varias pistas y servidor MCP en [`plan-director-mcp-pistas.md`](plan-director-mcp-pistas.md).
+
 - Títulos y textos animados sobre el vídeo (intro, llamada a la acción).
 - Desenfocar zonas sensibles (correos, tokens).
 - Fondos con imagen propia.
