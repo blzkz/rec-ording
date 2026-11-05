@@ -13,6 +13,7 @@ mod media;
 mod model;
 mod model3d;
 mod platform;
+mod post;
 mod text;
 mod theme;
 mod timeline;
@@ -20,7 +21,7 @@ mod update;
 
 fn main() -> eframe::Result<()> {
     if std::env::args().any(|a| a == "--mcp") {
-        mcp::run();
+        mcp::run(std::env::args().any(|a| a == "--resumed"));
         return Ok(());
     }
     update::cleanup();

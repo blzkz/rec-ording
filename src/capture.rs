@@ -78,6 +78,31 @@ pub enum Method {
 pub struct RecordOptions {
     pub audio: bool,
     pub mirror: bool,
+    /// Android's demo mode while recording: fixed clock, full battery, no notifications.
+    pub clean_status_bar: bool,
+}
+
+/// A gesture played on the phone with `adb shell input`. Coordinates are 0..1 of the screen as
+/// it is recorded (0,0 top left).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Gesture {
+    Tap { x: f32, y: f32 },
+    /// Also a long press, when it starts and ends in the same place.
+    Swipe { x0: f32, y0: f32, x1: f32, y1: f32, duration: f32 },
+    Text(String),
+    Key(String),
+    Wait(f32),
+}
+
+/// A gesture played during the recording, timed on the host clock.
+#[derive(Debug, Clone, Copy)]
+struct Played {
+    at: Instant,
+    duration: f32,
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
 }
 
 /// A touch in the touch panel's own coordinates, timed with the device's kernel clock.
@@ -110,7 +135,9 @@ pub struct Recording {
     rec_started: Arc<Mutex<Option<Instant>>>,
     log: Arc<Mutex<Vec<String>>>,
     touch_log: Arc<Mutex<TouchLog>>,
+    played: Mutex<Vec<Played>>,
     rotation: u8,
+    demo: bool,
 }
 
 pub enum CaptureResult {
@@ -325,6 +352,9 @@ pub fn start(serial: &str, opts: &RecordOptions, tools: Tools) -> Result<Recordi
     let log = Arc::new(Mutex::new(Vec::new()));
     let rec_started = Arc::new(Mutex::new(None));
     let rotation = display_rotation(serial);
+    if opts.clean_status_bar {
+        demo_mode(serial, true);
+    }
 
     let (method, mut recorder) = if tools.scrcpy {
         // scrcpy logs to stdout, which is block-buffered on a pipe; stdbuf makes it line-buffered
@@ -388,11 +418,128 @@ pub fn start(serial: &str, opts: &RecordOptions, tools: Tools) -> Result<Recordi
         rec_started,
         log,
         touch_log,
+        played: Mutex::new(Vec::new()),
         rotation,
+        demo: opts.clean_status_bar,
     })
 }
 
+/// Turns Android's demo mode on (fixed 9:41, full battery and signal, no notifications) or off.
+pub fn demo_mode(serial: &str, on: bool) {
+    let shell = |cmd: &str| {
+        let _ = adb(serial).args(["shell", cmd]).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    };
+    let demo = |args: &str| shell(&format!("am broadcast -a com.android.systemui.demo -e command {args}"));
+    if on {
+        shell("settings put global sysui_demo_allowed 1");
+        demo("enter");
+        demo("clock -e hhmm 0941");
+        demo("battery -e level 100 -e plugged false -e powersave false");
+        demo("network -e wifi show -e level 4 -e mobile show -e datatype none -e level 4");
+        demo("notifications -e visible false");
+        demo("status -e bluetooth hide -e alarm hide -e volume hide -e location hide -e mute hide -e speakerphone hide -e zen hide -e sync hide -e tty hide -e eri hide");
+    } else {
+        demo("exit");
+    }
+}
+
+/// The screen size in pixels as it is shown now (width and height swap when turned).
+fn screen_size(serial: &str) -> Option<(f32, f32)> {
+    let out = adb_output(serial, &["shell", "wm", "size"]);
+    let size = |line: &str| -> Option<(f32, f32)> {
+        let (w, h) = line.split(':').nth(1)?.trim().split_once('x')?;
+        Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
+    };
+    let (w, h) = out.lines().filter(|l| l.contains("Override size")).find_map(size).or_else(|| out.lines().find_map(size))?;
+    Some(if display_rotation(serial) % 2 == 1 { (h, w) } else { (w, h) })
+}
+
+/// Quotes a string for the phone's shell.
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+fn keycode(key: &str) -> String {
+    let k = key.trim();
+    let name = match k.to_lowercase().as_str() {
+        "back" | "atrás" => "BACK",
+        "home" | "inicio" => "HOME",
+        "enter" | "intro" => "ENTER",
+        "delete" | "backspace" | "borrar" => "DEL",
+        "tab" => "TAB",
+        "recents" | "app_switch" | "recientes" => "APP_SWITCH",
+        "menu" => "MENU",
+        "search" => "SEARCH",
+        "volume_up" => "VOLUME_UP",
+        "volume_down" => "VOLUME_DOWN",
+        "power" => "POWER",
+        "up" => "DPAD_UP",
+        "down" => "DPAD_DOWN",
+        "left" => "DPAD_LEFT",
+        "right" => "DPAD_RIGHT",
+        _ => "",
+    };
+    if !name.is_empty() {
+        format!("KEYCODE_{name}")
+    } else if k.chars().all(|c| c.is_ascii_digit()) || k.starts_with("KEYCODE_") {
+        k.to_string()
+    } else {
+        format!("KEYCODE_{}", k.to_uppercase())
+    }
+}
+
+/// Plays gestures on a phone one after another. `touched` gets each tap and swipe as it lands
+/// on the screen. `input` takes a moment to start on the phone, so a gesture lands at the end
+/// of its command: that is when it is timed.
+pub fn play(serial: &str, gestures: &[Gesture], mut touched: impl FnMut(Instant, f32, [f32; 4])) -> Result<usize, String> {
+    let needs_size = gestures.iter().any(|g| matches!(g, Gesture::Tap { .. } | Gesture::Swipe { .. }));
+    let (w, h) = if needs_size { screen_size(serial).ok_or("No se pudo leer el tamaño de la pantalla del móvil")? } else { (1.0, 1.0) };
+    let px = |x: f32, y: f32| ((x.clamp(0.0, 1.0) * (w - 1.0)).round() as i32, (y.clamp(0.0, 1.0) * (h - 1.0)).round() as i32);
+    let run = |cmd: String| -> Result<Instant, String> {
+        let out = adb(serial).args(["shell", &cmd]).output().map_err(|e| format!("adb: {e}"))?;
+        let err = String::from_utf8_lossy(&out.stderr);
+        if !out.status.success() || err.contains("Exception") || err.contains("Error") {
+            return Err(format!("El móvil no aceptó «{cmd}»: {}", err.trim()));
+        }
+        Ok(Instant::now())
+    };
+    let mut done = 0;
+    for g in gestures {
+        match g {
+            Gesture::Tap { x, y } => {
+                let (a, b) = px(*x, *y);
+                let end = run(format!("input tap {a} {b}"))?;
+                touched(end - Duration::from_millis(80), 0.1, [*x, *y, *x, *y]);
+            }
+            Gesture::Swipe { x0, y0, x1, y1, duration } => {
+                let d = duration.clamp(0.05, 10.0);
+                let ((a, b), (c, e)) = (px(*x0, *y0), px(*x1, *y1));
+                let end = run(format!("input swipe {a} {b} {c} {e} {}", (d * 1000.0) as u32))?;
+                touched(end - Duration::from_secs_f32(d + 0.05), d, [*x0, *y0, *x1, *y1]);
+            }
+            Gesture::Text(t) => {
+                // `input text` takes %s for spaces.
+                run(format!("input text {}", shell_quote(&t.replace(' ', "%s"))))?;
+            }
+            Gesture::Key(k) => {
+                run(format!("input keyevent {}", keycode(k)))?;
+            }
+            Gesture::Wait(s) => thread::sleep(Duration::from_secs_f32(s.clamp(0.0, 30.0))),
+        }
+        done += 1;
+    }
+    Ok(done)
+}
+
 impl Recording {
+    /// Plays gestures on the phone being recorded and keeps them as touches of the recording.
+    pub fn play(&self, gestures: &[Gesture]) -> Result<usize, String> {
+        play(&self.serial, gestures, |at, duration, [x0, y0, x1, y1]| {
+            self.played.lock().unwrap().push(Played { at, duration, x0, y0, x1, y1 });
+            self.touch_count.fetch_add(1, Ordering::Relaxed);
+        })
+    }
+
     pub fn tracks_touches(&self) -> bool {
         self.getevent.is_some()
     }
@@ -449,6 +596,9 @@ impl Recording {
         }
         let _ = self.recorder.kill();
         let _ = self.recorder.wait();
+        if self.demo {
+            demo_mode(&self.serial, false);
+        }
         if let Some(mut g) = self.getevent.take() {
             let _ = g.kill();
             let _ = g.wait();
@@ -521,7 +671,25 @@ impl Recording {
                     kind: if moved > 0.04 { TouchKind::Swipe } else { TouchKind::Tap },
                 })
             })
-            .collect();
+            .collect::<Vec<_>>();
+        let mut touches = touches;
+        for g in self.played.lock().unwrap().iter() {
+            let time = (g.at.duration_since(self.base).as_secs_f64() - video_start) as f32;
+            if time < -0.3 {
+                continue;
+            }
+            let moved = ((g.x1 - g.x0).powi(2) + (g.y1 - g.y0).powi(2)).sqrt();
+            touches.push(Touch {
+                time: time.max(0.0),
+                duration: g.duration.clamp(0.05, 3.0),
+                x: g.x0,
+                y: g.y0,
+                end_x: g.x1,
+                end_y: g.y1,
+                kind: if moved > 0.04 { TouchKind::Swipe } else { TouchKind::Tap },
+            });
+        }
+        touches.sort_by(|a, b| a.time.total_cmp(&b.time));
 
         CaptureResult::Done { path: self.path.clone(), touches }
     }
@@ -578,7 +746,7 @@ mod tests {
     #[ignore]
     fn records_from_device() {
         let Ok(serial) = std::env::var("REC_TEST_SERIAL") else { return };
-        let rec = start(&serial, &RecordOptions { audio: false, mirror: false }, detect_tools()).expect("start");
+        let rec = start(&serial, &RecordOptions { audio: false, mirror: false, clean_status_bar: false }, detect_tools()).expect("start");
         assert!(rec.tracks_touches(), "touchscreen not found");
         thread::sleep(Duration::from_secs(4));
         assert!(rec.rec_started.lock().unwrap().is_some(), "recorder never reported it started");
@@ -591,6 +759,26 @@ mod tests {
             }
             CaptureResult::Failed(e) => panic!("{e}"),
         }
+    }
+
+    #[test]
+    fn gesture_commands() {
+        assert_eq!(keycode("back"), "KEYCODE_BACK");
+        assert_eq!(keycode("Borrar"), "KEYCODE_DEL");
+        assert_eq!(keycode("66"), "66");
+        assert_eq!(keycode("volume_mute"), "KEYCODE_VOLUME_MUTE");
+        assert_eq!(shell_quote("it's"), "'it'\\''s'");
+    }
+
+    /// Needs a phone: sends a key that does nothing and reads the screen size.
+    #[test]
+    #[ignore]
+    fn plays_on_device() {
+        let serial = list_devices().into_iter().find(|d| d.state == DeviceState::Ready).expect("no device").serial;
+        assert!(screen_size(&serial).is_some());
+        let mut n = 0;
+        assert_eq!(play(&serial, &[Gesture::Key("unknown".into()), Gesture::Wait(0.1)], |_, _, _| n += 1), Ok(2));
+        assert_eq!(n, 0);
     }
 
     #[test]

@@ -3,6 +3,39 @@
 
 use super::*;
 
+/// The preview drawn on the window's graphics card, straight into a texture egui shows.
+pub(super) struct GpuView {
+    comp: crate::gpu::GpuCompositor,
+    tex: Option<egui::TextureId>,
+    /// Size, supersampling and model it was made for.
+    key: (usize, usize, usize, usize),
+}
+
+/// Draws the frame on the card; the texture to show, or why it could not.
+#[allow(clippy::too_many_arguments)]
+fn draw_on_gpu(
+    state: &eframe::egui_wgpu::RenderState,
+    view: &mut Option<GpuView>,
+    inp: &ComposeInput,
+    ow: usize,
+    oh: usize,
+    model_key: usize,
+    post: &crate::post::Post,
+) -> Result<egui::TextureId, String> {
+    let key = (ow, oh, inp.supersample, model_key);
+    if view.as_ref().map(|v| v.key) != Some(key) {
+        if let Some(tex) = view.take().and_then(|v| v.tex) {
+            state.renderer.write().free_texture(&tex);
+        }
+        let comp = crate::gpu::GpuCompositor::on_device(state.device.clone(), state.queue.clone(), String::new(), ow, oh, inp.supersample, inp.model)?;
+        *view = Some(GpuView { comp, tex: None, key });
+    }
+    let v = view.as_mut().unwrap();
+    let overlay = crate::text::overlay(ow, oh, inp.style, inp.texts);
+    let shown = v.comp.compose_display(inp, overlay.as_ref(), post)?;
+    Ok(*v.tex.get_or_insert_with(|| state.renderer.write().register_native_texture(&state.device, shown, wgpu::FilterMode::Linear)))
+}
+
 /// What the viewer lets the user point at, besides watching.
 enum Pointing {
     /// Choose where a zoom (or keyframe) looks: the zoom level and focus being edited.
@@ -112,16 +145,27 @@ impl RecOrdingApp {
             (timeline::camera_at(&self.project, self.time), timeline::pose_at(&self.project, self.time), self.project.style.clone())
         };
         let touches = timeline::timeline_touches(&self.project);
-        // Titles are hidden while framing; motion blur only shows when paused (it costs a few
-        // renders per frame).
+        // Titles are hidden while framing. On the CPU, motion blur and full antialiasing only
+        // show when paused (they cost a few renders per frame); the graphics card always does them.
+        let gpu = self.gpu_state.is_some();
+        let full = !self.playing || gpu;
         let texts = if flat { Vec::new() } else { timeline::texts_at(&self.project, self.time) };
-        let blur = if flat || self.playing { Vec::new() } else { timeline::shutter(&self.project, self.time, self.project.export.fps as f32) };
+        let blur = if flat || !full { Vec::new() } else { timeline::shutter(&self.project, self.time, self.project.export.fps as f32) };
         let text_hash = {
             use std::hash::{Hash, Hasher};
             let mut h = std::collections::hash_map::DefaultHasher::new();
             format!("{:?}", self.project.texts).hash(&mut h);
             (texts.len(), blur.len(), h.finish())
         };
+        // The dissolve from the previous clip, when playback crossed the cut.
+        let from = match (&self.dissolve, timeline::locate(&self.project, self.time)) {
+            (Some((prev, id)), Some(c)) if !flat && c.clip.id == *id && self.time - c.start < style.finish.crossfade => {
+                let k = ((self.time - c.start) / style.finish.crossfade).clamp(0.0, 1.0);
+                Some((prev.as_ref(), 1.0 - k * k * (3.0 - 2.0 * k)))
+            }
+            _ => None,
+        };
+        let post = if flat { crate::post::Post::NONE } else { crate::post::at(&style, self.time, timeline::duration(&self.project), PREVIEW_FPS) };
         let bits = |v: [f32; 6]| v.map(f32::to_bits);
         let key = RenderKey {
             time: self.time,
@@ -133,43 +177,60 @@ impl RecOrdingApp {
             video: (media.width, media.height),
             touches: touches.len(),
             model: self.active_model().map(|m| m as *const PreparedModel as usize).unwrap_or(0),
-            supersample: if self.playing { 1 } else { 2 },
+            supersample: if full { style.finish.antialias.supersample() } else { 1 },
             texts: text_hash,
+            from: from.map(|(m, w)| (m as *const Mips as usize, w.to_bits())).unwrap_or((0, 0)),
         };
         if self.last_render.as_ref() != Some(&key) {
-            self.viewer_buf.resize(ow * oh * 4, 0);
-            compose(
-                &mut self.viewer_buf,
-                ow,
-                oh,
-                &ComposeInput {
-                    style: &style,
-                    screen: self.shown.as_ref().map(|f| f.mips.as_ref()),
-                    video_w: media.width as f32,
-                    video_h: media.height as f32,
-                    cam,
-                    pose,
-                    touches: &touches,
-                    time: self.time,
-                    since_start: self.time,
-                    model: self.model_prepared.as_ref().map(|(_, m)| m.as_ref()).filter(|_| style.frame == FrameStyle::Custom),
-                    supersample: key.supersample,
-                    texts: &texts,
-                    blur: &blur,
+            let inp = ComposeInput {
+                style: &style,
+                screen: self.shown.as_ref().map(|f| f.mips.as_ref()),
+                video_w: media.width as f32,
+                video_h: media.height as f32,
+                cam,
+                pose,
+                touches: &touches,
+                time: self.time,
+                since_start: self.time,
+                model: self.model_prepared.as_ref().map(|(_, m)| m.as_ref()).filter(|_| style.frame == FrameStyle::Custom),
+                supersample: key.supersample,
+                texts: &texts,
+                blur: &blur,
+                from,
+            };
+            let on_gpu = match &self.gpu_state {
+                Some(state) => match draw_on_gpu(state, &mut self.gpu_view, &inp, ow, oh, key.model, &post) {
+                    Ok(id) => Some(id),
+                    Err(e) => {
+                        // Back to the CPU for good: the card is not up to it.
+                        eprintln!("rec·ording: la vista previa vuelve al procesador: {e}");
+                        if let Some(tex) = self.gpu_view.take().and_then(|v| v.tex) {
+                            state.renderer.write().free_texture(&tex);
+                        }
+                        None
+                    }
                 },
-            );
-            let img = ColorImage::from_rgba_unmultiplied([ow, oh], &self.viewer_buf);
-            match &mut self.viewer_tex {
-                Some(t) => t.set(img, TextureOptions::LINEAR),
-                None => self.viewer_tex = Some(ui.ctx().load_texture("viewer", img, TextureOptions::LINEAR)),
+                None => None,
+            };
+            if on_gpu.is_none() {
+                self.gpu_state = None;
+                self.viewer_buf.resize(ow * oh * 4, 0);
+                compose(&mut self.viewer_buf, ow, oh, &inp);
+                crate::post::apply(&mut self.viewer_buf, ow, oh, &post);
+                let img = ColorImage::from_rgba_unmultiplied([ow, oh], &self.viewer_buf);
+                match &mut self.viewer_tex {
+                    Some(t) => t.set(img, TextureOptions::LINEAR),
+                    None => self.viewer_tex = Some(ui.ctx().load_texture("viewer", img, TextureOptions::LINEAR)),
+                }
             }
+            self.viewer_shown = on_gpu.or(self.viewer_tex.as_ref().map(|t| t.id()));
             self.last_render = Some(key);
         }
 
         let p = ui.painter();
         p.rect_filled(canvas.translate(Vec2::new(0.0, 8.0)).expand(2.0), Rounding::same(4.0), Color32::from_black_alpha(60));
-        if let Some(tex) = &self.viewer_tex {
-            p.image(tex.id(), canvas, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+        if let Some(tex) = self.viewer_shown {
+            p.image(tex, canvas, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
         }
 
         let resp = ui.interact(canvas, Id::new("canvas"), Sense::click_and_drag());

@@ -98,16 +98,30 @@ Se han retirado, de momento, el servidor MCP, el autoactualizador, los subtítul
 - `get_hardware`: qué tarjeta gráfica dibuja y qué codificador por hardware hay.
 - `get_project` incluye el ajuste `hardware` de la exportación.
 
+## v0.9.0: luz, acabado, montaje y vista previa en la tarjeta
+
+Todo el plan de `plan-iluminacion-postproceso.md`, más las mejoras pedidas tras montar el vídeo de Form PDF Reader:
+
+- **Iluminación** con seis estilos (Estudio, Suave, Dramática, Contraluz, Cálida y Fría), dirección, intensidad y reflejo. Un conjunto de luces (principal, relleno, contorno y ambiente) en el marco integrado y en los modelos 3D, y la sombra sigue a la luz.
+- **Acabado**: desenfoque de movimiento ajustable (también en zooms, encuadres y animaciones de modelos), bordes Normal, Alta o Máxima (supersampling y mips trilineales), viñeta, grano, fundidos de entrada y salida (imagen y sonido) y fundido entre clips.
+- **Vista previa en la tarjeta gráfica**: el mismo compositor que la exportación, en el dispositivo de la ventana y sin leer la imagen de vuelta. Con desenfoque y bordes completos también al reproducir. Si la tarjeta falla, vuelve sola al procesador (`REC_CPU_PREVIEW=1` lo fuerza).
+- **Tiempos reales de la grabación**: con la pantalla quieta no hay fotogramas; ahora se mantiene el último en vez de saltar al siguiente, en la exportación, `render_frame` y la vista previa.
+- **Montaje**: velocidad por clip, congelar fotograma, cambiar el vídeo de un clip conservando todo, y que recortar, mover o borrar clips mantenga cada zoom, texto y movimiento en su momento de la grabación (borrar un clip dice qué se pierde).
+- **Marcas** de cambios de pantalla en la pista de vídeo; textos, zooms y movimientos se ajustan a ellas.
+- **Textos** que el móvil mira al apartarse (`face_text`) y duración del movimiento; curva elegible en los movimientos del móvil.
+- **Grabación**: barra de estado limpia (modo demo de Android) y `play_gestures` para tocar y escribir en el móvil desde el agente, registrando cada gesto.
+- **MCP**: parámetro `project` y nombre del proyecto en cada respuesta, `batch`, `export_texts`/`import_texts`, `set_clip_speed`, `freeze_frame`, `set_freeze_duration`, `replace_clip_video`, `detect_marks` y `mark`, `render_strip`, `render_preview`, `play_gestures`, iluminación y acabado en `set_style`, y reinicio automático con `notifications/tools/list_changed` al actualizar.
+
 ## Ideas para siguientes versiones
 
-- **Siguiente sesión:** iluminación con estilos (Estudio, Suave, Dramática, Contraluz…) y postprocesado (desenfoque de movimiento ajustable, antialiasing, vista previa en la tarjeta gráfica). Ver `plan-iluminacion-postproceso.md`.
+- Luz animada con fotogramas clave (un barrido de luz durante un giro).
+- Resplandor de la pantalla, profundidad de campo y corrección de color.
+- Pellizcar en `play_gestures` (adb solo inyecta un dedo; haría falta una pantalla táctil virtual).
 
 - Desenfocar zonas sensibles (correos, tokens).
 - Fondos con imagen propia.
-- Recortar y acelerar tramos intermedios (no solo el inicio y el final).
 - Música de fondo (lo que queda de la fase F7 del plan).
 - Tarjeta final con el icono de la app y la insignia de Google Play.
 - Exportar aún más rápido: solapar el trabajo de la tarjeta de un fotograma con la preparación del siguiente.
-- Vista previa dibujada en la tarjeta gráfica.
 - Control en vivo por MCP (socket local) en lugar de por archivo.
 - Grabar el escritorio además del móvil.

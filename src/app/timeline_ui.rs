@@ -437,7 +437,8 @@ impl RecOrdingApp {
             }
             Drag::ClipMove { .. } => {}
             Drag::CamMove { id, grab } => {
-                let _ = timeline::move_camera_clip(&mut self.project, id, t - grab);
+                let start = timeline::snap_to_mark(&self.project, t - grab, 0.12);
+                let _ = timeline::move_camera_clip(&mut self.project, id, start);
             }
             Drag::CamStart { id, end } => {
                 let _ = timeline::resize_camera_clip(&mut self.project, id, t.min(end - 0.5), end);
@@ -457,13 +458,16 @@ impl RecOrdingApp {
                 }
             }
             Drag::DevMove { id, grab } => {
-                if let Some(c) = self.project.device.iter_mut().find(|c| c.id == id) {
-                    c.start = (t - grab).clamp(0.0, (total - c.duration()).max(0.0));
+                if let Some(len) = self.project.device.iter().find(|c| c.id == id).map(|c| c.duration()) {
+                    let start = timeline::snap_to_mark(&self.project, (t - grab).clamp(0.0, (total - len).max(0.0)), 0.12);
+                    if let Some(c) = self.project.device.iter_mut().find(|c| c.id == id) {
+                        c.start = start;
+                    }
                 }
             }
             Drag::TextMove { id, grab } => {
                 if let Some(len) = self.project.texts.iter().find(|c| c.id == id).map(|c| c.duration) {
-                    let start = (t - grab).clamp(0.0, (total - len).max(0.0));
+                    let start = timeline::snap_to_mark(&self.project, (t - grab).clamp(0.0, (total - len).max(0.0)), 0.12);
                     let _ = timeline::place_text(&mut self.project, id, start, start + len);
                 }
             }
@@ -532,7 +536,7 @@ impl RecOrdingApp {
                     let tile_w = (tl.video.height() * view.thumb_aspect).max(8.0);
                     let mut x = r.left();
                     while x < r.right() {
-                        let src = c.clip.source_in + (tl.t(x + tile_w * 0.5) - c.start);
+                        let src = timeline::source_time(&c, tl.t(x + tile_w * 0.5));
                         let idx = ((src / m.info.duration.max(0.1)) * view.thumbs.len() as f32).floor().max(0.0) as usize;
                         let tex = &view.thumbs[idx.min(view.thumbs.len() - 1)];
                         tp.image(tex.id(), Rect::from_min_size(Pos2::new(x, r.top()), Vec2::new(tile_w, r.height())), Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
@@ -562,6 +566,13 @@ impl RecOrdingApp {
         }
         if let Some(x) = drop_x {
             p.line_segment([Pos2::new(x, tl.video.top() - 3.0), Pos2::new(x, tl.video.bottom() + 3.0)], Stroke::new(3.0_f32, ACCENT));
+        }
+
+        // Screen changes (things snap to them)
+        for m in timeline::timeline_marks(&self.project) {
+            let x = tl.x(m);
+            let tip = vec![Pos2::new(x - 4.0, tl.video.top() - 1.0), Pos2::new(x + 4.0, tl.video.top() - 1.0), Pos2::new(x, tl.video.top() + 5.0)];
+            p.add(egui::Shape::convex_polygon(tip, Color32::from_white_alpha(210), Stroke::new(1.0_f32, Color32::from_black_alpha(120))));
         }
 
         // Touches

@@ -9,6 +9,10 @@ use std::ops::Range;
 use std::sync::{Arc, Mutex};
 use wgpu::util::DeviceExt;
 
+/// Sizes of the uniform blocks (vec4s), as in compose.wgsl and model.wgsl.
+const SCENE_VEC4S: usize = 41;
+const MODEL_VEC4S: usize = 19;
+
 /// Touch indicators the shader takes per frame (more are dropped).
 const MAX_INDICATORS: usize = 64;
 
@@ -148,8 +152,8 @@ struct GpuModel {
 }
 
 pub struct GpuCompositor {
-    device: wgpu::Device,
-    queue: wgpu::Queue,
+    device: Arc<wgpu::Device>,
+    queue: Arc<wgpu::Queue>,
     error: Arc<Mutex<Option<String>>>,
     /// For people: "AMD Radeon RX 9070 XT (Vulkan)".
     pub name: String,
@@ -158,8 +162,10 @@ pub struct GpuCompositor {
     ss: usize,
     scene: wgpu::Buffer,
     inds: wgpu::Buffer,
-    video: Target,
-    video_key: (usize, usize, usize),
+    /// The recording at two mip levels, and the previous clip's last frame (dissolves), with
+    /// what each one holds.
+    videos: [Target; 3],
+    video_keys: [(usize, usize, usize); 3],
     video_sampler: wgpu::Sampler,
     model_layer: Target,
     depth: Option<Target>,
@@ -186,6 +192,9 @@ pub struct GpuCompositor {
     planes: [Target; 3],
     plane_rows: [usize; 2],
     yuv_readback: wgpu::Buffer,
+    /// The finished frame for the window (the preview): written as RGBA, read as sRGB.
+    display: Option<(Target, wgpu::TextureView)>,
+    display_pipeline: wgpu::RenderPipeline,
 }
 
 impl GpuCompositor {
@@ -194,9 +203,10 @@ impl GpuCompositor {
     pub fn new(ow: usize, oh: usize, ss: usize, model: Option<&PreparedModel>) -> Result<Self, String> {
         let adapter = adapter()?;
         let info = adapter.get_info();
-        let ss = ss.clamp(1, 3);
         let max_dim = adapter.limits().max_texture_dimension_2d as usize;
-        if ow * ss > max_dim || oh * ss > max_dim {
+        // As many samples as the card's largest texture allows (4K at 4×4 does not fit).
+        let ss = ss.clamp(1, 4).min(max_dim / ow.max(oh).max(1));
+        if ss == 0 {
             return Err("El vídeo es demasiado grande para la tarjeta gráfica".into());
         }
         let (device, queue) = pollster::block_on(adapter.request_device(
@@ -209,20 +219,34 @@ impl GpuCompositor {
             None,
         ))
         .map_err(|e| format!("No se pudo usar la tarjeta gráfica: {e}"))?;
+        Self::build(Arc::new(device), Arc::new(queue), card_name(&info), ow, oh, ss, model)
+    }
+
+    /// Like `new`, on a device that already exists: the window's, for the preview.
+    pub fn on_device(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>, name: String, ow: usize, oh: usize, ss: usize, model: Option<&PreparedModel>) -> Result<Self, String> {
+        let max_dim = device.limits().max_texture_dimension_2d as usize;
+        let ss = ss.clamp(1, 4).min(max_dim / ow.max(oh).max(1));
+        if ss == 0 {
+            return Err("La vista previa es demasiado grande para la tarjeta gráfica".into());
+        }
+        Self::build(device, queue, name, ow, oh, ss, model)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>, name: String, ow: usize, oh: usize, ss: usize, model: Option<&PreparedModel>) -> Result<Self, String> {
         let error = Arc::new(Mutex::new(None));
         let sink = error.clone();
         device.on_uncaptured_error(Box::new(move |e| {
             sink.lock().unwrap().get_or_insert_with(|| e.to_string());
         }));
 
-        let name = card_name(&info);
         let (w, h) = (ow as u32, oh as u32);
         use wgpu::TextureUsages as U;
         let render = U::RENDER_ATTACHMENT | U::TEXTURE_BINDING;
 
-        let scene = device.create_buffer(&wgpu::BufferDescriptor { label: Some("scene"), size: 32 * 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let scene = device.create_buffer(&wgpu::BufferDescriptor { label: Some("scene"), size: (SCENE_VEC4S * 16) as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let inds = device.create_buffer(&wgpu::BufferDescriptor { label: Some("touches"), size: (MAX_INDICATORS * 48) as u64, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-        let video = upload_rgba(&device, &queue, "video", 1, 1, &[18, 18, 20, 255]);
+        let videos = [0, 1, 2].map(|_| upload_rgba(&device, &queue, "video", 1, 1, &[18, 18, 20, 255]));
         let video_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
@@ -252,6 +276,8 @@ impl GpuCompositor {
                 texture(2, FLOAT),
                 sampler(3),
                 texture(4, UNFILTERED),
+                texture(5, FLOAT),
+                texture(6, FLOAT),
             ],
         });
         let compose_pipeline = fullscreen_pipeline(&device, &compose_module, &compose_layout, "fs", &[wgpu::TextureFormat::Rgba8Unorm]);
@@ -278,8 +304,8 @@ impl GpuCompositor {
         let accumulate_pipeline = fullscreen_pipeline(&device, &blur_module, &blur_layout, "accumulate", &[wgpu::TextureFormat::Rgba32Uint]);
         let resolve_pipeline = fullscreen_pipeline(&device, &blur_module, &blur_layout, "resolve", &[wgpu::TextureFormat::Rgba8Unorm]);
 
-        let model = model.map(|m| GpuModel::new(&device, &queue, m, &video, &video_sampler));
-        let compose_group = Self::compose_group(&device, &compose_layout, &scene, &inds, &video, &video_sampler, &model_layer);
+        let model = model.map(|m| GpuModel::new(&device, &queue, m, &videos, &video_sampler));
+        let compose_group = Self::compose_group(&device, &compose_layout, &scene, &inds, &videos, &video_sampler, &model_layer);
 
         let padded_row = (ow * 4).div_ceil(256) * 256;
         let readback = device.create_buffer(&wgpu::BufferDescriptor {
@@ -296,7 +322,7 @@ impl GpuCompositor {
             label: Some("finish"),
             entries: &[texture(0, UNFILTERED), texture(1, UNFILTERED), uniform(2, wgpu::ShaderStages::FRAGMENT)],
         });
-        let finish = device.create_buffer(&wgpu::BufferDescriptor { label: Some("finish"), size: 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let finish = device.create_buffer(&wgpu::BufferDescriptor { label: Some("finish"), size: 48, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let finish_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("finish"),
             layout: &finish_layout,
@@ -309,6 +335,7 @@ impl GpuCompositor {
         let r8 = wgpu::TextureFormat::R8Unorm;
         let luma_pipeline = fullscreen_pipeline(&device, &finish_module, &finish_layout, "luma", &[r8]);
         let chroma_pipeline = fullscreen_pipeline(&device, &finish_module, &finish_layout, "chroma", &[r8, r8]);
+        let display_pipeline = fullscreen_pipeline(&device, &finish_module, &finish_layout, "rgba", &[wgpu::TextureFormat::Rgba8Unorm]);
         let planes = [
             target(&device, "y", w, h, r8, U::RENDER_ATTACHMENT | U::COPY_SRC),
             target(&device, "u", w / 2, h / 2, r8, U::RENDER_ATTACHMENT | U::COPY_SRC),
@@ -332,8 +359,8 @@ impl GpuCompositor {
             ss,
             scene,
             inds,
-            video,
-            video_key: (0, 1, 1),
+            videos,
+            video_keys: [(0, 1, 1); 3],
             video_sampler,
             model_layer,
             depth,
@@ -358,6 +385,8 @@ impl GpuCompositor {
             planes,
             plane_rows,
             yuv_readback,
+            display: None,
+            display_pipeline,
         };
         gpu.check()?;
         Ok(gpu)
@@ -368,7 +397,7 @@ impl GpuCompositor {
         layout: &wgpu::BindGroupLayout,
         scene: &wgpu::Buffer,
         inds: &wgpu::Buffer,
-        video: &Target,
+        videos: &[Target; 3],
         video_sampler: &wgpu::Sampler,
         model_layer: &Target,
     ) -> wgpu::BindGroup {
@@ -378,9 +407,11 @@ impl GpuCompositor {
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: scene.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: inds.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&video.view) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&videos[0].view) },
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(video_sampler) },
                 wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&model_layer.view) },
+                wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&videos[1].view) },
+                wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(&videos[2].view) },
             ],
         })
     }
@@ -392,35 +423,40 @@ impl GpuCompositor {
         }
     }
 
-    /// Puts the recording's frame (at the mip level the scene picked) on the card, unless it is
-    /// already there.
-    fn upload_video(&mut self, frame: Option<&Frame>) {
-        let Some(f) = frame else {
-            return;
-        };
-        let key = (f.data.as_ptr() as usize, f.w, f.h);
-        if key == self.video_key {
-            return;
+    /// Puts the recording's frames the scene uses on the card (both mip levels, and the previous
+    /// clip's during a dissolve), unless they are already there.
+    fn upload_video(&mut self, frames: [Option<&Frame>; 3]) {
+        let mut recreated = false;
+        for (k, frame) in frames.into_iter().enumerate() {
+            let Some(f) = frame else { continue };
+            let key = (f.data.as_ptr() as usize, f.w, f.h);
+            if key == self.video_keys[k] {
+                continue;
+            }
+            if (f.w, f.h) != (self.video_keys[k].1, self.video_keys[k].2) {
+                self.videos[k] = target(&self.device, "video", f.w as u32, f.h as u32, wgpu::TextureFormat::Rgba8Unorm, wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST);
+                recreated = true;
+            }
+            self.queue.write_texture(
+                wgpu::ImageCopyTexture { texture: &self.videos[k].tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                &f.data,
+                wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(f.w as u32 * 4), rows_per_image: Some(f.h as u32) },
+                wgpu::Extent3d { width: f.w as u32, height: f.h as u32, depth_or_array_layers: 1 },
+            );
+            self.video_keys[k] = key;
         }
-        if (f.w, f.h) != (self.video_key.1, self.video_key.2) {
-            self.video = target(&self.device, "video", f.w as u32, f.h as u32, wgpu::TextureFormat::Rgba8Unorm, wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST);
-            self.compose_group = Self::compose_group(&self.device, &self.compose_layout, &self.scene, &self.inds, &self.video, &self.video_sampler, &self.model_layer);
+        if recreated {
+            self.compose_group = Self::compose_group(&self.device, &self.compose_layout, &self.scene, &self.inds, &self.videos, &self.video_sampler, &self.model_layer);
             if let Some(m) = &mut self.model {
-                m.frame_group = GpuModel::frame_group(&self.device, &m.frame_layout, &m.frame, &self.video, &self.video_sampler);
+                m.frame_group = GpuModel::frame_group(&self.device, &m.frame_layout, &m.frame, &self.videos, &self.video_sampler);
             }
         }
-        self.queue.write_texture(
-            wgpu::ImageCopyTexture { texture: &self.video.tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-            &f.data,
-            wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(f.w as u32 * 4), rows_per_image: Some(f.h as u32) },
-            wgpu::Extent3d { width: f.w as u32, height: f.h as u32, depth_or_array_layers: 1 },
-        );
-        self.video_key = key;
     }
 
     /// Records the passes that draw `sc` into `view`.
     fn draw(&mut self, enc: &mut wgpu::CommandEncoder, sc: &Scene, view_out: bool) {
-        self.upload_video(sc.mip);
+        // The second level only matters when blending; the previous clip only during a dissolve.
+        self.upload_video([sc.mip, sc.mip2.filter(|_| sc.mip_mix > 0.0), sc.from.map(|f| f.0)]);
         let has_mesh = self.model.is_some() && sc.model.is_some();
         if has_mesh {
             let model = self.model.as_ref().unwrap();
@@ -491,25 +527,14 @@ impl GpuCompositor {
 
     /// The finished frame for the encoder: everything plus the titles (`overlay`), as YUV 4:2:0
     /// (BT.709, TV range) in `out` (`ow * oh * 3 / 2` bytes: Y, then U, then V).
-    pub fn compose_yuv(&mut self, out: &mut [u8], inp: &ComposeInput, overlay: Option<&crate::text::Overlay>) -> Result<(), String> {
+    /// `post`: vignette, fades and grain over everything.
+    pub fn compose_yuv(&mut self, out: &mut [u8], inp: &ComposeInput, overlay: Option<&crate::text::Overlay>, post: &crate::post::Post) -> Result<(), String> {
         let (ow, oh) = (self.ow, self.oh);
         if out.len() != ow * oh * 3 / 2 {
             return Err("Tamaño de imagen inesperado".into());
         }
         self.render(inp);
-        let rect = match overlay {
-            Some(o) => {
-                self.queue.write_texture(
-                    wgpu::ImageCopyTexture { texture: &self.overlay.tex, mip_level: 0, origin: wgpu::Origin3d { x: o.x as u32, y: o.y as u32, z: 0 }, aspect: wgpu::TextureAspect::All },
-                    &o.data,
-                    wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(o.w as u32 * 4), rows_per_image: Some(o.h as u32) },
-                    wgpu::Extent3d { width: o.w as u32, height: o.h as u32, depth_or_array_layers: 1 },
-                );
-                [o.x as f32, o.y as f32, (o.x + o.w) as f32, (o.y + o.h) as f32]
-            }
-            None => [0.0; 4],
-        };
-        self.queue.write_buffer(&self.finish, 0, bytes(&[rect]));
+        self.write_finish(overlay, post);
         let mut enc = self.device.create_command_encoder(&Default::default());
         {
             let mut p = pass(&mut enc, &self.planes[0].view, None);
@@ -555,6 +580,58 @@ impl GpuCompositor {
             unpad(&data[offsets[1]..], cr, ow / 2, oh / 2, u);
             unpad(&data[offsets[2]..], cr, ow / 2, oh / 2, v);
         })
+    }
+
+    /// Puts the titles (`overlay`) and the finishing for finish.wgsl on the card.
+    fn write_finish(&mut self, overlay: Option<&crate::text::Overlay>, post: &crate::post::Post) {
+        let rect = match overlay {
+            Some(o) => {
+                self.queue.write_texture(
+                    wgpu::ImageCopyTexture { texture: &self.overlay.tex, mip_level: 0, origin: wgpu::Origin3d { x: o.x as u32, y: o.y as u32, z: 0 }, aspect: wgpu::TextureAspect::All },
+                    &o.data,
+                    wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(o.w as u32 * 4), rows_per_image: Some(o.h as u32) },
+                    wgpu::Extent3d { width: o.w as u32, height: o.h as u32, depth_or_array_layers: 1 },
+                );
+                [o.x as f32, o.y as f32, (o.x + o.w) as f32, (o.y + o.h) as f32]
+            }
+            None => [0.0; 4],
+        };
+        let fin = [rect, [post.vignette, post.grain, post.fade, post.frame as f32], [self.ow as f32, self.oh as f32, 0.0, 0.0]];
+        self.queue.write_buffer(&self.finish, 0, bytes(&fin));
+    }
+
+    /// The finished frame (titles and finishing included) drawn into a texture for the window,
+    /// with nothing read back. Returns the view to show; it reads as sRGB, like egui's own
+    /// textures, so the colours come out as they are.
+    pub fn compose_display(&mut self, inp: &ComposeInput, overlay: Option<&crate::text::Overlay>, post: &crate::post::Post) -> Result<&wgpu::TextureView, String> {
+        self.render(inp);
+        self.write_finish(overlay, post);
+        if self.display.is_none() {
+            let tex = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("display"),
+                size: wgpu::Extent3d { width: self.ow as u32, height: self.oh as u32, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[wgpu::TextureFormat::Rgba8UnormSrgb],
+            });
+            let view = tex.create_view(&Default::default());
+            let srgb = tex.create_view(&wgpu::TextureViewDescriptor { format: Some(wgpu::TextureFormat::Rgba8UnormSrgb), ..Default::default() });
+            self.display = Some((Target { tex, view }, srgb));
+        }
+        let (target, _) = self.display.as_ref().unwrap();
+        let mut enc = self.device.create_command_encoder(&Default::default());
+        {
+            let mut p = pass(&mut enc, &target.view, None);
+            p.set_pipeline(&self.display_pipeline);
+            p.set_bind_group(0, &self.finish_group, &[]);
+            p.draw(0..3, 0..1);
+        }
+        self.queue.submit([enc.finish()]);
+        self.check()?;
+        Ok(&self.display.as_ref().unwrap().1)
     }
 
     /// Draws the frame (all subframes, for motion blur) into `out`.
@@ -660,6 +737,7 @@ pub fn detected() -> Option<Option<String>> {
 /// Packs the scene for compose.wgsl (same order as its `Scene` struct).
 fn scene_uniform(sc: &Scene, ss: usize, has_mesh: bool) -> Vec<Vec4> {
     let l = &sc.layout;
+    let r = &sc.rig;
     let b = |v: bool| if v { 1.0 } else { 0.0 };
     let rr = |r: &crate::compositor::RRect| [r.cx, r.cy, r.hx, r.hy];
     let btn = |i: usize| sc.buttons.get(i).map(|r| (rr(r), [r.r, 1.0, 0.0, 0.0])).unwrap_or(([0.0; 4], [0.0; 4]));
@@ -677,17 +755,17 @@ fn scene_uniform(sc: &Scene, ss: usize, has_mesh: bool) -> Vec<Vec4> {
         row(0),
         row(1),
         row(2),
-        [sc.eye[0], sc.eye[1], sc.eye[2], sc.face_light],
+        [sc.eye[0], sc.eye[1], sc.eye[2], 0.0],
         [sc.face_n[0], sc.face_n[1], sc.face_n[2], sc.sheen_amount],
-        [sc.light[0], sc.light[1], sc.light[2], sc.rim],
-        [sc.half_v[0], sc.half_v[1], sc.half_v[2], sc.sc_short],
+        v3(r.key, sc.rim),
+        v3(r.half, sc.sc_short),
         [sc.bg_a[0], sc.bg_a[1], sc.bg_a[2], sc.half_extent],
         [sc.bg_b[0], sc.bg_b[1], sc.bg_b[2], sc.diag],
         [sc.gdx, sc.gdy, sc.body_top, sc.body_h],
         rr(&sc.body),
         rr(&sc.screen),
         [sc.body.r, sc.screen.r, sc.shadow_alpha, sc.shadow_blur],
-        [sc.shadow_body.cy, sc.contact.cy, 0.0, 0.0],
+        [sc.shadow_body.cy, sc.contact.cy, sc.shadow_body.cx, 0.0],
         [l.screen.x0, l.screen.y0, l.screen.w(), l.screen.h()],
         [sc.metal[0], sc.metal[1], sc.metal[2], 0.0],
         [b(sc.angled), b(sc.mesh_free), b(l.framed), b(sc.tablet)],
@@ -702,7 +780,20 @@ fn scene_uniform(sc: &Scene, ss: usize, has_mesh: bool) -> Vec<Vec4> {
         barb,
         lens(0),
         lens(1),
+        v3(r.key_col, 0.0),
+        v3(r.fill, 0.0),
+        v3(r.fill_col, 0.0),
+        v3(r.rim, 0.0),
+        v3(r.rim_col, 0.0),
+        v3(r.amb, 0.0),
+        v3(r.rim_half, r.spec),
+        v3(sc.face_col, sc.mip_mix),
+        [sc.from.map(|f| f.1).unwrap_or(0.0), 0.0, 0.0, 0.0],
     ]
+}
+
+fn v3(v: [f32; 3], w: f32) -> Vec4 {
+    [v[0], v[1], v[2], w]
 }
 
 fn indicator_data(sc: &Scene) -> Vec<Vec4> {
@@ -717,7 +808,7 @@ fn indicator_data(sc: &Scene) -> Vec<Vec4> {
 }
 
 impl GpuModel {
-    fn new(device: &wgpu::Device, queue: &wgpu::Queue, m: &PreparedModel, video: &Target, video_sampler: &wgpu::Sampler) -> Self {
+    fn new(device: &wgpu::Device, queue: &wgpu::Queue, m: &PreparedModel, videos: &[Target; 3], video_sampler: &wgpu::Sampler) -> Self {
         let vbuf = |label: &str, data: &[u8]| {
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(label), contents: data, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST })
         };
@@ -815,12 +906,12 @@ impl GpuModel {
             })
             .collect();
 
-        let frame = device.create_buffer(&wgpu::BufferDescriptor { label: Some("model frame"), size: 11 * 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let frame = device.create_buffer(&wgpu::BufferDescriptor { label: Some("model frame"), size: (MODEL_VEC4S * 16) as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let frame_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("model frame"),
-            entries: &[uniform(0, both), texture(1, FLOAT), sampler(2)],
+            entries: &[uniform(0, both), texture(1, FLOAT), sampler(2), texture(3, FLOAT), texture(4, FLOAT)],
         });
-        let frame_group = Self::frame_group(device, &frame_layout, &frame, video, video_sampler);
+        let frame_group = Self::frame_group(device, &frame_layout, &frame, videos, video_sampler);
 
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("model"), source: wgpu::ShaderSource::Wgsl(include_str!("model.wgsl").into()) });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[&frame_layout, &material_layout], push_constant_ranges: &[] });
@@ -882,33 +973,43 @@ impl GpuModel {
         }
     }
 
-    fn frame_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, frame: &wgpu::Buffer, video: &Target, video_sampler: &wgpu::Sampler) -> wgpu::BindGroup {
+    fn frame_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, frame: &wgpu::Buffer, videos: &[Target; 3], video_sampler: &wgpu::Sampler) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("model frame"),
             layout,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: frame.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&video.view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&videos[0].view) },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(video_sampler) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&videos[1].view) },
+                wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&videos[2].view) },
             ],
         })
     }
 
     fn write_frame(&self, queue: &wgpu::Queue, sc: &Scene) {
         let (l, r) = (&sc.layout, &sc.rot);
-        let lt = sc.lighting();
-        let v: [Vec4; 11] = [
+        let g = &sc.rig;
+        let v: [Vec4; MODEL_VEC4S] = [
             [r[0][0], r[0][1], r[0][2], sc.mox],
             [r[1][0], r[1][1], r[1][2], sc.moy],
             [r[2][0], r[2][1], r[2][2], sc.unit],
             [sc.focal, sc.nearest, sc.dev_scale, sc.s],
             [sc.lcx + sc.dx, sc.lcy + sc.dy, sc.ccx, sc.ccy],
             [sc.tx, sc.ty, sc.cw, sc.ch],
-            [lt.light[0], lt.light[1], lt.light[2], 0.0],
-            [lt.half[0], lt.half[1], lt.half[2], 0.0],
+            v3(g.key, 0.0),
+            v3(g.key_col, 0.0),
+            v3(g.fill, 0.0),
+            v3(g.fill_col, 0.0),
+            v3(g.rim, 0.0),
+            v3(g.rim_col, 0.0),
+            v3(g.top, 0.0),
+            v3(g.bottom, 0.0),
+            v3(g.half, 0.0),
+            v3(g.rim_half, g.spec),
             [l.screen.x0, l.screen.y0, l.screen.w(), l.screen.h()],
             [l.video.x0, l.video.y0, l.video.w(), l.video.h()],
-            [if sc.mip.is_some() { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0],
+            [if sc.mip.is_some() { 1.0 } else { 0.0 }, sc.mip_mix, sc.from.map(|f| f.1).unwrap_or(0.0), 0.0],
         ];
         queue.write_buffer(&self.frame, 0, bytes(&v));
     }
@@ -984,6 +1085,7 @@ mod tests {
             supersample: 2,
             texts: &[],
             blur: &[],
+            from: None,
         }
     }
 
@@ -1056,6 +1158,28 @@ mod tests {
         let none = Style { frame: FrameStyle::None, ..base.clone() };
         check(&mut gpu, "frameless", &input(&none, &mips, &tap, None), w, h);
 
+        // Every lighting style, turned and from behind, with the light moved round.
+        for light in crate::model::LightStyle::ALL {
+            let lit = Style { turn: 28.0, tilt: 10.0, straighten_on_zoom: false, lighting: crate::model::Lighting { style: light, angle: 20.0, intensity: 1.2, glare: 1.5 }, ..base.clone() };
+            check(&mut gpu, &format!("light-{light:?}"), &input(&lit, &mips, &[], None), w, h);
+            let behind = Style { turn: 150.0, ..lit.clone() };
+            check(&mut gpu, &format!("light-{light:?}-back"), &input(&behind, &mips, &[], None), w, h);
+            let flat = Style { turn: 0.0, tilt: 0.0, ..lit };
+            check(&mut gpu, &format!("light-{light:?}-flat"), &input(&flat, &mips, &[], None), w, h);
+        }
+
+        // Mip blending off and on, and a dissolve from another clip.
+        let other = recording(400, 900);
+        for aa in crate::model::Antialias::ALL {
+            let st = Style { finish: crate::model::Finish { antialias: aa, ..Default::default() }, ..base.clone() };
+            let mut z = input(&st, &mips, &[], None);
+            z.cam = CameraValue { zoom: 1.3, x: 0.4, y: 0.6, ..CameraValue::REST };
+            check(&mut gpu, &format!("aa-{aa:?}"), &z, w, h);
+        }
+        let mut dissolve = input(&base, &mips, &[], None);
+        dissolve.from = Some((&other, 0.4));
+        check(&mut gpu, "dissolve", &dissolve, w, h);
+
         // Motion blur over a quick turn.
         let blur: Vec<(f32, CameraValue, PoseValue)> = (0..5).map(|i| (2.0 + i as f32 * 0.002, CameraValue::REST, PoseValue { turn: 60.0 + i as f32 * 3.0, ..PoseValue::REST })).collect();
         let mut moving = input(&base, &mips, &[], None);
@@ -1082,6 +1206,10 @@ mod tests {
         check(&mut gpu, "model-turned", &input(&turned, &mips, &[], Some(&model)), w, h);
         let back = Style { turn: 180.0, ..custom.clone() };
         check(&mut gpu, "model-back", &input(&back, &mips, &[], Some(&model)), w, h);
+        for light in crate::model::LightStyle::ALL {
+            let lit = Style { turn: 30.0, lighting: crate::model::Lighting { style: light, angle: -30.0, intensity: 1.1, glare: 1.0 }, ..custom.clone() };
+            check(&mut gpu, &format!("model-light-{light:?}"), &input(&lit, &mips, &[], Some(&model)), w, h);
+        }
         let mut zoomed = input(&custom, &mips, &[], Some(&model));
         zoomed.cam = CameraValue { zoom: 1.8, x: 0.5, y: 0.25, ..CameraValue::REST };
         check(&mut gpu, "model-zoom", &zoomed, w, h);
@@ -1126,22 +1254,67 @@ mod tests {
         let b = TextClip { title: "Sobre la grabación".into(), place: TextPlace::Center, color: TextColor::Dark, ..TextClip::default() };
         let shown = [crate::text::Shown { clip: &a, local: 1.5 }, crate::text::Shown { clip: &b, local: 1.5 }];
         let blur: Vec<(f32, CameraValue, PoseValue)> = (0..4).map(|i| (2.0, CameraValue::REST, PoseValue { turn: 10.0 + i as f32 * 4.0, ..PoseValue::REST })).collect();
-        for (name, texts, blur) in [("plain", &[][..], &[][..]), ("titles", &shown[..], &[][..]), ("titles-blur", &shown[..], &blur[..])] {
+        let finished = crate::post::Post { vignette: 0.6, grain: 0.5, fade: 0.7, frame: 12 };
+        for (name, texts, blur, post) in [
+            ("plain", &[][..], &[][..], crate::post::Post::NONE),
+            ("titles", &shown[..], &[][..], crate::post::Post::NONE),
+            ("titles-blur", &shown[..], &blur[..], crate::post::Post::NONE),
+            ("finish", &shown[..], &[][..], finished),
+        ] {
             let mut inp = input(&style, &mips, &[], None);
             inp.texts = texts;
             inp.blur = blur;
             let mut cpu = vec![0u8; w * h * 4];
             compose(&mut cpu, w, h, &inp);
+            crate::post::apply(&mut cpu, w, h, &post);
             let expected = yuv(&cpu, w, h);
             let mut got = vec![0u8; w * h * 3 / 2];
             let overlay = crate::text::overlay(w, h, &style, texts);
-            gpu.compose_yuv(&mut got, &inp, overlay.as_ref()).unwrap();
+            gpu.compose_yuv(&mut got, &inp, overlay.as_ref(), &post).unwrap();
             let diffs: Vec<u32> = expected.iter().zip(&got).map(|(a, b)| (*a as i32 - *b as i32).unsigned_abs()).collect();
             let mean = diffs.iter().map(|&d| d as f64).sum::<f64>() / diffs.len() as f64;
             let big = diffs.iter().filter(|&&d| d > 4).count() as f64 / diffs.len() as f64;
             println!("{name}: mean {mean:.3}, off by > 4: {:.3} %", big * 100.0);
             assert!(mean < 0.3 && big < 0.002, "{name}: mean {mean}, {:.2} % off by > 4", big * 100.0);
         }
+    }
+
+    /// The preview's texture (titles and finishing on the card) matches the CPU frame.
+    #[test]
+    fn display_matches_the_cpu() {
+        use crate::model::{TextClip, TextColor};
+        let (w, h) = (640, 360);
+        let mut gpu = match GpuCompositor::new(w, h, 2, None) {
+            Ok(g) => g,
+            Err(e) => return eprintln!("sin tarjeta gráfica, se omite: {e}"),
+        };
+        let mips = recording(540, 1200);
+        let style = Style { turn: 20.0, straighten_on_zoom: false, ..Style::default() };
+        let a = TextClip { title: "Camina.".into(), subtitle: "Tus pasos te mueven.".into(), color: TextColor::Light, ..TextClip::default() };
+        let shown = [crate::text::Shown { clip: &a, local: 1.5 }];
+        let post = crate::post::Post { vignette: 0.6, grain: 0.5, fade: 0.8, frame: 3 };
+        let mut inp = input(&style, &mips, &[], None);
+        inp.texts = &shown;
+        let mut cpu = vec![0u8; w * h * 4];
+        compose(&mut cpu, w, h, &inp);
+        crate::post::apply(&mut cpu, w, h, &post);
+        let overlay = crate::text::overlay(w, h, &style, &shown);
+        gpu.compose_display(&inp, overlay.as_ref(), &post).unwrap();
+        let mut enc = gpu.device.create_command_encoder(&Default::default());
+        enc.copy_texture_to_buffer(
+            wgpu::ImageCopyTexture { texture: &gpu.display.as_ref().unwrap().0.tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::ImageCopyBuffer { buffer: &gpu.readback, layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(gpu.padded_row as u32), rows_per_image: Some(h as u32) } },
+            wgpu::Extent3d { width: w as u32, height: h as u32, depth_or_array_layers: 1 },
+        );
+        gpu.queue.submit([enc.finish()]);
+        let mut got = vec![0u8; w * h * 4];
+        let row = gpu.padded_row;
+        gpu.download(&gpu.readback, |d| unpad(d, row, w * 4, h, &mut got)).unwrap();
+        let diffs: Vec<u32> = cpu.iter().zip(&got).map(|(a, b)| (*a as i32 - *b as i32).unsigned_abs()).collect();
+        let mean = diffs.iter().map(|&d| d as f64).sum::<f64>() / diffs.len() as f64;
+        let big = diffs.iter().filter(|&&d| d > 4).count() as f64 / diffs.len() as f64;
+        println!("display: mean {mean:.3}, off by > 4: {:.3} %", big * 100.0);
+        assert!(mean < 0.4 && big < 0.003, "mean {mean}, {:.2} % off by > 4", big * 100.0);
     }
 
     /// Time per 1080p frame, CPU against GPU: cargo test gpu_speed -- --ignored --nocapture

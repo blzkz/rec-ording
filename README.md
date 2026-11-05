@@ -8,20 +8,21 @@ Pensado para la ficha de Google Play, YouTube, Reels/Shorts o redes, sin pasar p
 
 ## Cómo se usa
 
-1. **Graba.** Conecta el móvil por USB (con la depuración USB activada), pulsa **Grabar** y usa tu app con normalidad. rec-ording registra dónde tocas.
+1. **Graba.** Conecta el móvil por USB (con la depuración USB activada), pulsa **Grabar** y usa tu app con normalidad. rec-ording registra dónde tocas. Con **Barra de estado limpia** (activada por defecto) el móvil muestra las 9:41, la batería llena y ninguna notificación mientras grabas, y vuelve a la normalidad al terminar.
    ¿Ya tienes una grabación? Pulsa **Importar** o arrastra el vídeo a la ventana.
 2. **Ajusta.** Elige formato (16:9, 9:16, 1:1, 4:5), modelo (redondeado, recto, curvo, tablet o sin marco) y color del dispositivo, fondo, margen y sombra.
    En **Modelos 3D** tienes una galería de móviles en 3D (cinco incluidos, gratuitos) y puedes **importar** los tuyos en `.glb`, `.gltf` o directamente el `.zip` de la descarga (las texturas y `.bin` sueltos se copian a tu galería con el modelo; si el modelo no se puede usar, no se añade). Con clic derecho sobre un modelo importado puedes renombrarlo o eliminarlo: rec-ording busca la pantalla, endereza el modelo y proyecta tu grabación en ella. En «Ajustes del modelo» eliges la pieza que hace de pantalla, cómo encaja el vídeo (**Rellenar** recortando, **Encajar** con bandas negras o **Estirar**) y, si el modelo trae animaciones, cuál reproducir y si se repite. Los modelos con licencia CC BY piden mencionar a su autor al publicar el vídeo (ver `assets/models/CREDITS.md`).
    En **Ángulo 3D** puedes girar e inclinar el móvil (con cantos y reflejos reales), hacer que se enderece al hacer zoom, que flote suavemente o que entre girando al empezar.
    Los zooms se crean solos a partir de los toques; puedes moverlos, alargarlos, cambiar su nivel o elegir dónde enfocan haciendo clic en la vista previa.
 3. **Monta.** La línea de tiempo tiene cuatro pistas:
-   - **Vídeo**: varias grabaciones seguidas. Arrastra los bordes de un clip para recortarlo, el clip para cambiarlo de orden, y **Dividir** (Ctrl+B) para cortarlo en el cursor. **Añadir vídeo** pone otro al final.
+   - **Vídeo**: varias grabaciones seguidas. Arrastra los bordes de un clip para recortarlo, el clip para cambiarlo de orden, y **Dividir** (Ctrl+B) para cortarlo en el cursor. **Añadir vídeo** pone otro al final. En el panel del clip puedes cambiar su **velocidad** (de 0,25× a 4×), **congelar un fotograma** el tiempo que quieras o **cambiar su vídeo** por otra grabación sin perder recortes ni lo que hay encima. Las pequeñas marcas blancas señalan los cambios de pantalla (scroll, teclado, diálogos): los textos, zooms y movimientos se ajustan a ellas al arrastrarlos, y todo lo que hay en la línea de tiempo sigue a su momento de la grabación al recortar o mover clips.
    - **Cámara**: zooms, **movimientos** con fotogramas clave (zoom, encuadre, inclinación, giro y rotación, con llegada en muelle, suave, lineal o corte) y planos del **Director**. Así puedes girar el móvil a mitad del vídeo.
    - **Móvil**: movimientos del dispositivo: **giro 360°** sobre el eje vertical, **voltereta 360°** sobre el horizontal, entrada girando, caída desde arriba, asomarse desde abajo, saltito y salida. En los giros eliges vueltas, sentido y duración; si los pones junto a un cambio de clip, se centran en él y el corte ocurre mientras se ve la parte de atrás del móvil. Los movimientos rápidos llevan desenfoque de movimiento.
-   - **Texto**: títulos al estilo de los anuncios de Apple, junto al móvil (que se aparta para dejarles sitio), arriba, abajo o en el centro. Un titular (una línea por salto de línea) y, si quieres, una línea más pequeña debajo; tamaño grande para cifras («100 / ciudades reales.»). Entran apareciendo, palabra a palabra o línea a línea (las anteriores se atenúan). **+ Texto**, la tecla T o doble clic en la pista.
+   - **Texto**: títulos al estilo de los anuncios de Apple, junto al móvil (que se aparta para dejarles sitio y, si quieres, gira un poco para mirarlos), arriba, abajo o en el centro. Un titular (una línea por salto de línea) y, si quieres, una línea más pequeña debajo; tamaño grande para cifras («100 / ciudades reales.»). Entran apareciendo, palabra a palabra o línea a línea (las anteriores se atenúan). **+ Texto**, la tecla T o doble clic en la pista.
    El **Director** funciona como en Matte: mueve el cursor a cada momento importante, arrastra sobre la vista previa lo que debe verse y pulsa **Generar planos**. Elige movimiento 3D (ángulos y órbitas) o 2D (zoom plano), su intensidad, y pide **otra toma** de un plano si no te convence.
    Todo se puede deshacer (Ctrl+Z) y rehacer (Ctrl+Mayús+Z). Con **Proyectos** creas y cambias de proyecto.
-4. **Exporta** en MP4 (H.264 o HEVC) o GIF, a 720p, 1080p o 4K, a 30 o 60 fps, con el sonido del móvil. Si tienes una tarjeta gráfica, la exportación la usa para dibujar los fotogramas (Vulkan, DirectX 12 o Metal) y para codificar el vídeo (NVENC en NVIDIA, VAAPI en AMD e Intel en Linux, AMF o Quick Sync en Windows); si algo falla, se vuelve a hacer con el procesador. Un vídeo de 16 s a 1080p60 con un modelo 3D tarda unos 6 s en lugar de 40 s. Todas las exportaciones salen en BT.709 (rango TV) y etiquetadas, se hagan con la tarjeta o con el procesador. La vista previa se sigue dibujando con el procesador, con el mismo resultado.
+   En **Iluminación** eliges la luz del móvil: **Estudio**, **Suave**, **Dramática**, **Contraluz**, **Cálida** o **Fría**, con su dirección, intensidad y el reflejo de la pantalla. La sombra sigue a la luz. En **Acabado**: desenfoque de movimiento (también en zooms y animaciones), calidad de los bordes, viñeta, grano, fundido de entrada y a negro, y fundido entre clips.
+4. **Exporta** en MP4 (H.264 o HEVC) o GIF, a 720p, 1080p o 4K, a 30 o 60 fps, con el sonido del móvil. Si tienes una tarjeta gráfica, la exportación la usa para dibujar los fotogramas (Vulkan, DirectX 12 o Metal) y para codificar el vídeo (NVENC en NVIDIA, VAAPI en AMD e Intel en Linux, AMF o Quick Sync en Windows); si algo falla, se vuelve a hacer con el procesador. Un vídeo de 16 s a 1080p60 con un modelo 3D tarda unos 6 s en lugar de 40 s. Todas las exportaciones salen en BT.709 (rango TV) y etiquetadas, se hagan con la tarjeta o con el procesador. La vista previa también se dibuja en la tarjeta gráfica, con el desenfoque y los bordes de la exportación incluso mientras se reproduce (sin tarjeta, la dibuja el procesador con el mismo resultado).
 
 ### Atajos
 
@@ -58,7 +59,15 @@ Un agente (Claude, Cursor, Codex…) puede montar el vídeo por ti con `rec-ordi
 claude mcp add rec-ording -- /usr/bin/rec-ording --mcp
 ```
 
-Herramientas: proyectos (`get_project`, `create_project`, `open_project`, `undo`…), grabar e importar, editar clips, zooms y fotogramas clave de cámara, Director, dispositivo y modelos 3D, movimientos del móvil con giros de 360° (`add_device_motion`, `update_device_motion`), títulos (`add_text`, `update_text`, `delete_text`), estilo, `render_frame` (devuelve una imagen del resultado), `get_hardware` (qué tarjeta gráfica y codificador hay) y `export` (con `hardware` para usar la tarjeta o no).
+Herramientas: proyectos (`get_project`, `create_project`, `open_project`, `undo`…), grabar e importar, editar clips (también velocidad, `freeze_frame` y `replace_clip_video`), zooms y fotogramas clave de cámara, Director, dispositivo y modelos 3D, movimientos del móvil con giros de 360° (`add_device_motion`, `update_device_motion`), títulos (`add_text`, `update_text`, `delete_text`, `export_texts`, `import_texts`), estilo con iluminación y acabado (`set_style`), `render_frame` (devuelve una imagen del resultado), `render_strip` (varios momentos en una imagen), `render_preview` (un vídeo corto de un tramo), `get_hardware` (qué tarjeta gráfica y codificador hay) y `export` (con `hardware` para usar la tarjeta o no).
+
+Además:
+
+- Todas las herramientas aceptan `project` para trabajar en un proyecto concreto aunque en la app haya otro abierto, y cada respuesta dice en qué proyecto se hizo.
+- `batch` hace varias operaciones en una llamada y se deshace de una vez.
+- `play_gestures` toca, desliza y escribe en el móvil mientras graba; cada gesto queda apuntado como un toque (con su círculo y su zoom automático).
+- `detect_marks` busca los cambios de pantalla, y las herramientas que colocan algo en el tiempo aceptan `mark` en lugar de segundos.
+- Al instalar una versión nueva, el servidor se reinicia solo y avisa al cliente de que las herramientas han cambiado.
 
 ## Instalación
 
@@ -109,7 +118,7 @@ Aplicación nativa en Rust con [egui](https://github.com/emilk/egui).
 
 | Módulo | Qué hace |
 | --- | --- |
-| `capture.rs` | Graba con scrcpy (o `adb screenrecord`) y lee los toques de la pantalla táctil con `getevent`, sincronizados con el vídeo. |
+| `capture.rs` | Graba con scrcpy (o `adb screenrecord`) y lee los toques de la pantalla táctil con `getevent`, sincronizados con el vídeo. También hace gestos con `adb shell input` y pone el modo demo de Android. |
 | `timeline.rs` | Línea de tiempo: clips, cámara y movimientos del móvil por fotogramas clave, zoom automático, Director y todas las operaciones de edición (las usan la app y el MCP). |
 | `mcp.rs` | Servidor MCP (`rec-ording --mcp`). |
 | `compositor.rs` | Dibuja cada fotograma: fondo, sombra, el móvil en 3D (perspectiva, grosor e iluminación), la grabación y los toques. La vista previa y la exportación usan el mismo código. |
@@ -119,7 +128,8 @@ Aplicación nativa en Rust con [egui](https://github.com/emilk/egui).
 | `export.rs` | Decodifica la grabación, compone cada fotograma y codifica el resultado con ffmpeg. |
 | `app/`, `theme.rs` | Interfaz: visor, línea de tiempo, inspector y hojas. |
 | `text.rs` | Títulos: maquetación con Inter Display (incluida en `assets/fonts`, licencia OFL), animaciones de entrada y salida, y el sitio que el móvil les deja. |
-| `gpu/` | El compositor en la tarjeta gráfica (wgpu): los mismos cálculos que `compositor.rs` en shaders WGSL, para exportar mucho más rápido. Un test compara sus fotogramas con los del procesador. |
+| `gpu/` | El compositor en la tarjeta gráfica (wgpu): los mismos cálculos que `compositor.rs` en shaders WGSL. Dibuja la exportación y la vista previa (en la misma tarjeta que la ventana, sin copiar la imagen de vuelta). Los tests comparan sus fotogramas con los del procesador. |
+| `post.rs` | El acabado: viñeta, grano y fundidos, igual en el procesador y en la tarjeta. |
 | `hwenc.rs` | Codificación con la tarjeta gráfica (NVENC, AMF, Quick Sync, VAAPI): prueba qué funciona en el equipo. |
 | `update.rs` | Busca versiones nuevas en las releases y las instala (pacman en Linux, reemplazando la carpeta en Windows). |
 | `platform.rs` | Lo que cambia entre Linux y Windows: carpetas, diálogos de archivos, abrir archivos y lanzar herramientas sin ventana de consola. |

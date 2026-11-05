@@ -11,17 +11,17 @@ struct Scene {
     rot0: vec4<f32>,      // rotation rows
     rot1: vec4<f32>,
     rot2: vec4<f32>,
-    eye: vec4<f32>,       // xyz, face_light
+    eye: vec4<f32>,       // xyz
     face_n: vec4<f32>,    // xyz, sheen_amount
-    light: vec4<f32>,     // xyz, rim
-    half_v: vec4<f32>,    // xyz, sc_short
+    light: vec4<f32>,     // key light direction, rim (bezel band width)
+    half_v: vec4<f32>,    // key half vector, sc_short
     bg_a: vec4<f32>,      // rgb, half_extent
     bg_b: vec4<f32>,      // rgb, diag
     grad: vec4<f32>,      // gdx, gdy, body_top, body_h
     body: vec4<f32>,      // cx, cy, hx, hy
     screen: vec4<f32>,    // cx, cy, hx, hy
     radii: vec4<f32>,     // body r, screen r, shadow alpha, shadow blur
-    shadow: vec4<f32>,    // shadow body cy, contact cy
+    shadow: vec4<f32>,    // shadow body cy, contact cy, shadow body cx
     scr_rect: vec4<f32>,  // screen x0, y0, w, h
     metal: vec4<f32>,     // rgb
     flags: vec4<f32>,     // angled, mesh_free, framed, tablet
@@ -36,6 +36,15 @@ struct Scene {
     barb: vec4<f32>,
     lens0: vec4<f32>,     // x, y, r, enabled
     lens1: vec4<f32>,
+    key_col: vec4<f32>,   // the rest of the light rig (see model3d::LightRig)
+    fill: vec4<f32>,
+    fill_col: vec4<f32>,
+    rim_l: vec4<f32>,
+    rim_col: vec4<f32>,
+    amb: vec4<f32>,
+    rim_half: vec4<f32>,  // xyz, highlight strength
+    face_col: vec4<f32>,  // light on the frame's face, mip blend
+    misc2: vec4<f32>,     // dissolve weight of the previous clip
 }
 
 struct Indicator {
@@ -49,6 +58,8 @@ struct Indicator {
 @group(0) @binding(2) var video: texture_2d<f32>;
 @group(0) @binding(3) var video_sampler: sampler;
 @group(0) @binding(4) var model_layer: texture_2d<f32>;
+@group(0) @binding(5) var video2: texture_2d<f32>;
+@group(0) @binding(6) var video_from: texture_2d<f32>;
 
 const WHITE = vec3<f32>(255.0, 255.0, 255.0);
 
@@ -117,11 +128,25 @@ fn with_model(col: vec3<f32>, px: u32, py: u32) -> vec3<f32> {
     return col;
 }
 
+// The recording: blended between mip levels, and with the previous clip during a dissolve.
 fn sample_video(u: f32, v: f32) -> vec3<f32> {
     if sc.flags2.z < 0.5 {
         return vec3<f32>(18.0, 18.0, 20.0);
     }
-    return textureSampleLevel(video, video_sampler, vec2<f32>(u, v), 0.0).rgb * 255.0;
+    let uv = vec2<f32>(u, v);
+    var c = textureSampleLevel(video, video_sampler, uv, 0.0).rgb * 255.0;
+    if sc.face_col.w > 0.0 {
+        c = mix(c, textureSampleLevel(video2, video_sampler, uv, 0.0).rgb * 255.0, sc.face_col.w);
+    }
+    if sc.misc2.x > 0.0 {
+        c = mix(c, textureSampleLevel(video_from, video_sampler, uv, 0.0).rgb * 255.0, sc.misc2.x);
+    }
+    return c;
+}
+
+// Light from the key, fill and rim lights on a surface facing n, per channel.
+fn diffuse(n: vec3<f32>) -> vec3<f32> {
+    return max(dot(n, sc.light.xyz), 0.0) * sc.key_col.rgb + max(dot(n, sc.fill.xyz), 0.0) * sc.fill_col.rgb + max(dot(n, sc.rim_l.xyz), 0.0) * sc.rim_col.rgb;
 }
 
 @fragment
@@ -184,7 +209,7 @@ fn fs(@builtin(position) fp: vec4<f32>) -> @location(0) vec4<f32> {
     let shadow_alpha = sc.radii.z;
     if shadow_alpha > 0.0 {
         let blur = sc.radii.w;
-        let sd1 = sd_rrect(vec4<f32>(sc.body.x, sc.shadow.x, sc.body.zw), sc.radii.x, q);
+        let sd1 = sd_rrect(vec4<f32>(sc.shadow.z, sc.shadow.x, sc.body.zw), sc.radii.x, q);
         let a = shadow_alpha * (1.0 - smoothstep(-blur, blur, sd1));
         let sd2 = sd_rrect(vec4<f32>(sc.body.x, sc.shadow.y, sc.body.zw), sc.radii.x, q);
         let a2 = shadow_alpha * 0.5 * (1.0 - smoothstep(-blur * 0.12, blur * 0.12, sd2));
@@ -216,10 +241,8 @@ fn fs(@builtin(position) fp: vec4<f32>) -> @location(0) vec4<f32> {
             if c > 0.0 {
                 let n2 = normal_rrect(sc.body, sc.radii.x, bp);
                 let n = rot_apply(vec3<f32>(n2, 0.0));
-                let diffuse = max(dot(n, sc.light.xyz), 0.0);
-                let spec = pow(max(dot(n, sc.half_v.xyz), 0.0), 30.0) * 140.0;
-                let k = 0.3 + 0.75 * diffuse;
-                col = mix(col, sc.metal.rgb * k + vec3<f32>(spec), c);
+                let spec = (pow(max(dot(n, sc.half_v.xyz), 0.0), 30.0) * sc.key_col.rgb + pow(max(dot(n, sc.rim_half.xyz), 0.0), 30.0) * sc.rim_col.rgb) * 140.0 * sc.rim_half.w;
+                col = mix(col, sc.metal.rgb * (0.3 * sc.amb.rgb + 0.75 * diffuse(n)) + spec, c);
             }
         }
     }
@@ -227,8 +250,7 @@ fn fs(@builtin(position) fp: vec4<f32>) -> @location(0) vec4<f32> {
     if back {
         if !has_mesh && d_body < inv_s {
             let c = clamp(0.5 - d_body / inv_s, 0.0, 1.0);
-            let k = 0.45 + 0.55 * max(dot(-sc.face_n.xyz, sc.light.xyz), 0.0);
-            var back_col = sc.metal.rgb * k;
+            var back_col = sc.metal.rgb * (0.45 * sc.amb.rgb + 0.55 * diffuse(-sc.face_n.xyz));
             if sc.barb.y > 0.5 {
                 let cb = clamp(0.5 - sd_rrect(sc.bar, sc.barb.x, q) / inv_s, 0.0, 1.0);
                 if cb > 0.0 {
@@ -251,8 +273,8 @@ fn fs(@builtin(position) fp: vec4<f32>) -> @location(0) vec4<f32> {
 
     // 5. Device front
     if framed && !has_mesh {
-        let shade = (1.12 - 0.3 * clamp((q.y - sc.grad.z) / sc.grad.w, 0.0, 1.0)) * sc.eye.w;
-        let metal_px = sc.metal.rgb * shade;
+        let shade = 1.12 - 0.3 * clamp((q.y - sc.grad.z) / sc.grad.w, 0.0, 1.0);
+        let metal_px = sc.metal.rgb * shade * sc.face_col.rgb;
         for (var i = 0; i < 2; i++) {
             let r = select(sc.btn1, sc.btn0, i == 0);
             let rb = select(sc.btn1b, sc.btn0b, i == 0);

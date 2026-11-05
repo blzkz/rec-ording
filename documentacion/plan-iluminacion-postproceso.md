@@ -2,6 +2,8 @@
 
 Apuntado el 2026-11-05 para la siguiente sesión. Partimos de la v0.8.5.
 
+**Estado: hecho en la v0.9.0** (2026-11-05), salvo la luz animada con fotogramas clave y los extras que quedaron en ideas (bloom, profundidad de campo, corrección de color). Pellizcar en `play_gestures` no se puede con `adb shell input`, que solo inyecta un dedo.
+
 ## Punto de partida
 
 **Iluminación.** Hay una sola luz fija para todo:
@@ -100,7 +102,37 @@ Con más luces, supersampling y desenfoque, la vista previa en el procesador ir�
 | P5 | Desenfoque de movimiento ajustable, también en zooms, animaciones y reproducción | Vídeo de prueba con giros y zooms |
 | P6 | Extras elegidos (viñeta, grano, *bloom*…) | Capturas |
 
-## Decisiones para mañana
+## 4. Mejoras del vídeo de Form PDF Reader
+
+Notas de otro agente que montó por MCP el vídeo promocional de Form PDF Reader (rec·ording 0.7.0 y 0.8.5, Pixel 7), ordenadas por impacto. Cómo las abordamos:
+
+| # | Problema | Solución prevista |
+| --- | --- | --- |
+| 1 | Con la pantalla quieta la grabación no guarda fotogramas; al recortar en un hueco, el clip empieza en el siguiente fotograma que existe y todo queda desplazado | Descodificar respetando los tiempos reales (mantener el último fotograma durante los huecos) al exportar, en `render_frame` y en la vista previa |
+| 2 | Los toques inyectados (`adb shell input`, pantallas virtuales) no se registran: ni círculos ni zooms automáticos | Herramienta `play_gestures` que toca, desliza y escribe en el móvil mientras graba y registra cada gesto |
+| 3 | Las herramientas actúan sobre el proyecto abierto, que puede cambiar por detrás | Parámetro `project` opcional en todas las herramientas y el nombre del proyecto en cada respuesta |
+| 4 | No se puede congelar un fotograma ni cambiar la velocidad de un clip | Clips congelados (`freeze_frame`) y velocidad por clip (`set_clip_speed`), también en la interfaz |
+| 5 | Sin fundidos ni transiciones (se añadían con ffmpeg después) | Fundido de entrada y a negro al final (imagen y sonido) y fundido entre clips |
+| 6 | El móvil no mira al texto; las curvas de los movimientos son fijas | Opción `face_text` en los textos y curva (`ease`) elegible en los movimientos del móvil |
+| 7 | Sustituir el vídeo de un clip obliga a borrarlo; borrar un clip se llevaba zooms que no eran suyos | `replace_clip_video` que conserva recortes y línea de tiempo; borrar un clip solo quita lo que estaba dentro de él y lo dice |
+| 8 | Muchas llamadas para una animación | Herramienta `batch`: varias operaciones en una llamada, un solo paso de deshacer |
+| 9 | Revisar con fotogramas sueltos no basta | `render_strip` (varios tiempos en una imagen, con el tiempo escrito) y `render_preview` (vídeo o GIF corto de un tramo) |
+| 10 | Textos y zooms anclados a segundos fijos | Marcas automáticas de cambios de pantalla, visibles en la pista; los textos y zooms se pueden anclar a ellas y se mueven solos al recortar |
+| 11 | Textos editados con un script aparte | `export_texts` / `import_texts` en JSON |
+| 12 | Barra de estado sucia en la grabación | Modo demo de Android al grabar (hora fija, batería llena, sin notificaciones), activable |
+| 13 | Al actualizar rec·ording, un cliente MCP conectado ve las herramientas antiguas | El servidor se reinicia solo con el ejecutable nuevo y avisa con `notifications/tools/list_changed` |
+
+## Decisiones tomadas (2026-11-05)
+
+Al pedir hacer el plan completo sin parar, se tomaron estas decisiones:
+
+1. Estilos de luz: **Estudio** (por defecto, el actual), **Suave**, **Dramática**, **Contraluz**, **Cálida** y **Fría**, con dirección, intensidad y brillo de pantalla. La luz animada por fotogramas clave queda para más adelante.
+2. Iluminación y acabado son **globales al proyecto** (en el estilo).
+3. Antialiasing: **Alta** por defecto (el ajuste se guarda en la exportación); Normal y Máxima disponibles.
+4. Extras: **viñeta**, **grano** y **fundidos**; el resto (bloom, profundidad de campo, corrección de color) queda en ideas.
+5. Se empieza por las mejoras de montaje y MCP, luego luz y acabado, y la vista previa en la tarjeta al final, cuando ya tiene todo lo que mostrar.
+
+## Decisiones que se plantearon
 
 1. ¿Qué estilos de luz queremos (la tabla de arriba es una propuesta)? ¿Animar la luz con fotogramas clave ahora o más adelante?
 2. ¿Iluminación y acabado son globales al proyecto o se pueden cambiar a lo largo del vídeo?

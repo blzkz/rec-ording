@@ -75,6 +75,9 @@ pub struct Media {
     pub info: MediaInfo,
     #[serde(default)]
     pub touches: Vec<Touch>,
+    /// Moments where the screen changes (scroll, keyboard, a dialog…), recording seconds.
+    #[serde(default)]
+    pub marks: Vec<f32>,
 }
 
 /// A piece of a recording on the video track.
@@ -84,11 +87,29 @@ pub struct Clip {
     pub media: u64,
     pub source_in: f32,
     pub source_out: f32,
+    /// Playback speed (2 = twice as fast).
+    #[serde(default = "one")]
+    pub speed: f32,
+    /// A still of the frame at `source_in`, held for this many seconds.
+    #[serde(default)]
+    pub freeze: Option<f32>,
+}
+
+fn one() -> f32 {
+    1.0
 }
 
 impl Clip {
+    pub fn new(id: u64, media: u64, source_in: f32, source_out: f32) -> Self {
+        Clip { id, media, source_in, source_out, speed: 1.0, freeze: None }
+    }
+
+    /// Seconds it lasts on the timeline.
     pub fn duration(&self) -> f32 {
-        (self.source_out - self.source_in).max(0.0)
+        match self.freeze {
+            Some(secs) => secs.max(0.0),
+            None => (self.source_out - self.source_in).max(0.0) / self.speed.max(0.01),
+        }
     }
 }
 
@@ -214,6 +235,153 @@ impl DeviceClip {
     }
 }
 
+/// How much motion blur fast movement gets: the part of each frame the shutter stays open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum MotionBlur {
+    Off,
+    Soft,
+    /// Half a frame, like a film camera.
+    #[default]
+    Cinematic,
+    Strong,
+}
+
+impl MotionBlur {
+    pub const ALL: [MotionBlur; 4] = [MotionBlur::Off, MotionBlur::Soft, MotionBlur::Cinematic, MotionBlur::Strong];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            MotionBlur::Off => "No",
+            MotionBlur::Soft => "Suave",
+            MotionBlur::Cinematic => "Cine",
+            MotionBlur::Strong => "Intenso",
+        }
+    }
+
+    /// Open shutter, in frames.
+    pub fn shutter(self) -> f32 {
+        match self {
+            MotionBlur::Off => 0.0,
+            MotionBlur::Soft => 0.25,
+            MotionBlur::Cinematic => 0.5,
+            MotionBlur::Strong => 0.75,
+        }
+    }
+}
+
+/// How clean edges and fine detail come out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum Antialias {
+    /// 2×2 samples on 3D models; the recording from the nearest mip level.
+    Normal,
+    /// 3×3 samples and the recording blended between mip levels.
+    #[default]
+    High,
+    /// 4×4 samples.
+    Max,
+}
+
+impl Antialias {
+    pub const ALL: [Antialias; 3] = [Antialias::Normal, Antialias::High, Antialias::Max];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Antialias::Normal => "Normal",
+            Antialias::High => "Alta",
+            Antialias::Max => "Máxima",
+        }
+    }
+
+    /// Samples per side of each pixel for 3D models.
+    pub fn supersample(self) -> usize {
+        match self {
+            Antialias::Normal => 2,
+            Antialias::High => 3,
+            Antialias::Max => 4,
+        }
+    }
+
+    /// Blend between mip levels of the recording (no jumps in sharpness during zooms).
+    pub fn trilinear(self) -> bool {
+        self != Antialias::Normal
+    }
+}
+
+/// The finishing touches over the whole picture.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Finish {
+    pub motion_blur: MotionBlur,
+    pub antialias: Antialias,
+    /// Darker corners, 0..1.
+    pub vignette: f32,
+    /// Film grain, 0..1.
+    pub grain: f32,
+    /// Seconds fading in from black at the start and out to black at the end (picture and sound).
+    pub fade_in: f32,
+    pub fade_out: f32,
+    /// Seconds the recording dissolves into the next clip at each cut (0 = straight cut).
+    pub crossfade: f32,
+}
+
+impl Default for Finish {
+    fn default() -> Self {
+        Finish { motion_blur: MotionBlur::Cinematic, antialias: Antialias::High, vignette: 0.0, grain: 0.0, fade_in: 0.0, fade_out: 0.0, crossfade: 0.0 }
+    }
+}
+
+/// Lighting styles for the device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum LightStyle {
+    /// Soft key light from the top left (as before).
+    #[default]
+    Studio,
+    /// Large and diffuse: clean product shots.
+    Soft,
+    /// Strong side light, little fill and a rim light that cuts the edges out of dark backgrounds.
+    Dramatic,
+    /// Light from behind: a dark device with a bright outline.
+    Backlit,
+    /// Sunset colours.
+    Warm,
+    /// Blue neon.
+    Cool,
+}
+
+impl LightStyle {
+    pub const ALL: [LightStyle; 6] = [LightStyle::Studio, LightStyle::Soft, LightStyle::Dramatic, LightStyle::Backlit, LightStyle::Warm, LightStyle::Cool];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            LightStyle::Studio => "Estudio",
+            LightStyle::Soft => "Suave",
+            LightStyle::Dramatic => "Dramática",
+            LightStyle::Backlit => "Contraluz",
+            LightStyle::Warm => "Cálida",
+            LightStyle::Cool => "Fría",
+        }
+    }
+}
+
+/// The light on the device: a style, plus where it comes from and how strong it is.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Lighting {
+    pub style: LightStyle,
+    /// Turns the light around the device, degrees (0 = the style's own direction).
+    pub angle: f32,
+    /// 0.5..1.5
+    pub intensity: f32,
+    /// Reflection on the screen glass, 0..2 (1 = the style's).
+    pub glare: f32,
+}
+
+impl Default for Lighting {
+    fn default() -> Self {
+        Lighting { style: LightStyle::Studio, angle: 0.0, intensity: 1.0, glare: 1.0 }
+    }
+}
+
 /// Where a title sits; beside the device it pushes the device to the other side.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum TextPlace {
@@ -320,6 +488,10 @@ pub struct TextClip {
     pub color: TextColor,
     /// Moves the device aside while the title is on screen.
     pub make_room: bool,
+    /// The device also turns a little towards the title.
+    pub face_text: bool,
+    /// Seconds the device takes to move aside (and back).
+    pub move_time: f32,
 }
 
 impl Default for TextClip {
@@ -335,6 +507,8 @@ impl Default for TextClip {
             reveal: TextReveal::Fade,
             color: TextColor::Auto,
             make_room: true,
+            face_text: false,
+            move_time: 0.7,
         }
     }
 }
@@ -603,6 +777,10 @@ pub struct Style {
     pub video_fit: VideoFit,
     /// With `Fill`, which part of the recording stays visible along the cropped side (0..1).
     pub fit_pan: f32,
+    /// Light on the device.
+    pub lighting: Lighting,
+    /// Motion blur, antialiasing, vignette, grain and fades.
+    pub finish: Finish,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -694,6 +872,8 @@ impl Default for Style {
             model: None,
             video_fit: VideoFit::Fill,
             fit_pan: 0.5,
+            lighting: Lighting::default(),
+            finish: Finish::default(),
         }
     }
 }
@@ -1014,8 +1194,8 @@ fn migrate_v3(v: serde_json::Value) -> Result<Project, String> {
     };
     if let Some(info) = old.media.filter(|m| Path::new(&m.path).exists()) {
         let end = if old.trim_end > old.trim_start { old.trim_end } else { info.duration };
-        p.media.push(Media { id: 1, info, touches: old.touches });
-        p.clips.push(Clip { id: 2, media: 1, source_in: old.trim_start, source_out: end });
+        p.media.push(Media { id: 1, info, touches: old.touches, marks: Vec::new() });
+        p.clips.push(Clip::new(2, 1, old.trim_start, end));
         // Zoom segments were in the recording's time; the clip starts at its trim.
         let mut id = 3;
         for z in old.zooms {

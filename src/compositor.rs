@@ -3,7 +3,7 @@
 
 use crate::timeline::{CameraValue, PoseValue};
 use crate::model::{FrameStyle, Style, Touch, TouchKind, VideoFit};
-use crate::model3d::{Lighting, ModelMeta, Pose, PreparedModel};
+use crate::model3d::{LightRig, ModelMeta, Pose, PreparedModel};
 use rayon::prelude::*;
 
 /// 2D camera framing: zoom factor and the point of the recording it centres on (0..1).
@@ -45,9 +45,15 @@ impl Mips {
         self.levels[0].w
     }
 
-    fn level_for(&self, src_px_per_out_px: f32) -> &Frame {
-        let lvl = if src_px_per_out_px > 1.0 { src_px_per_out_px.log2().floor() as usize } else { 0 };
-        &self.levels[lvl.min(self.levels.len() - 1)]
+    /// The mip levels around `src_px_per_out_px` and how far towards the smaller one to blend
+    /// (always 0 without `trilinear`: just the larger one).
+    pub(crate) fn levels_for(&self, src_px_per_out_px: f32, trilinear: bool) -> (&Frame, &Frame, f32) {
+        let lod = if src_px_per_out_px > 1.0 { src_px_per_out_px.log2() } else { 0.0 };
+        let last = self.levels.len() - 1;
+        let lvl = (lod.floor() as usize).min(last);
+        let next = (lvl + 1).min(last);
+        let mix = if trilinear && next != lvl { lod - lvl as f32 } else { 0.0 };
+        (&self.levels[lvl], &self.levels[next], mix)
     }
 }
 
@@ -247,6 +253,9 @@ pub struct ComposeInput<'a> {
     pub texts: &'a [crate::text::Shown<'a>],
     /// Instants averaged for motion blur (see `timeline::shutter`); empty for none.
     pub blur: &'a [(f32, CameraValue, PoseValue)],
+    /// During a dissolve between clips: the last frame of the previous clip and how much of it
+    /// still shows (1 → 0).
+    pub from: Option<(&'a Mips, f32)>,
 }
 
 pub(crate) struct Indicator {
@@ -549,9 +558,9 @@ pub(crate) struct Scene<'a> {
     pub nearest: f32,
     pub eye: [f32; 3],
     pub face_n: [f32; 3],
-    pub light: [f32; 3],
-    pub half_v: [f32; 3],
-    pub face_light: f32,
+    pub rig: LightRig,
+    /// Light on the built-in frame's face, per channel.
+    pub face_col: [f32; 3],
     pub sheen_amount: f32,
     pub depth: f32,
     pub body: RRect,
@@ -568,8 +577,12 @@ pub(crate) struct Scene<'a> {
     pub sc_short: f32,
     pub hole: Option<(f32, f32, f32)>,
     pub curved: bool,
-    /// The recording at the mip level that suits this zoom.
+    /// The recording at the mip levels that suit this zoom, and how much of the smaller one.
     pub mip: Option<&'a Frame>,
+    pub mip2: Option<&'a Frame>,
+    pub mip_mix: f32,
+    /// Dissolve from the previous clip: its frame and weight.
+    pub from: Option<(&'a Frame, f32)>,
     pub inds: Vec<Indicator>,
     pub body_top: f32,
     pub body_h: f32,
@@ -629,15 +642,13 @@ impl<'a> Scene<'a> {
         };
         let eye = apply_t(&rot, [0.0, 0.0, focal + nearest]);
         let face_n = apply(&rot, [0.0, 0.0, 1.0]);
-        let light = {
-            let l = [-0.45f32, -0.65, 0.6];
-            let n = dot(l, l).sqrt();
-            [l[0] / n, l[1] / n, l[2] / n]
-        };
-        let half_v = {
-            let h = [light[0], light[1], light[2] + 1.0];
-            let n = dot(h, h).sqrt();
-            [h[0] / n, h[1] / n, h[2] / n]
+        let rig = LightRig::new(&style.lighting);
+        // The face of the built-in frame: lit by every light (not clamped, as it always was).
+        let face_col = if angled || rig.shade_flat {
+            let (dk, df, dr) = (dot(face_n, rig.key), dot(face_n, rig.fill), dot(face_n, rig.rim));
+            [0, 1, 2].map(|c| 0.86 * rig.amb[c] + 0.24 * (dk * rig.key_col[c] + df * rig.fill_col[c] + dr * rig.rim_col[c]))
+        } else {
+            [1.0; 3]
         };
 
         let tablet = layout.frame == FrameStyle::Tablet;
@@ -679,10 +690,9 @@ impl<'a> Scene<'a> {
             Some(if layout.portrait { (sc.cx(), sc.y0 + off, sc_short * 0.024) } else { (sc.x0 + off, sc.cy(), sc_short * 0.024) })
         };
 
-        let mip = inp.screen.map(|m| {
-            let ratio = m.width() as f32 / (layout.video.w() * s).max(1.0);
-            m.level_for(ratio)
-        });
+        let trilinear = style.finish.antialias.trilinear();
+        let levels = inp.screen.map(|m| m.levels_for(m.width() as f32 / (layout.video.w() * s).max(1.0), trilinear));
+        let from = inp.from.map(|(m, w)| (m.levels_for(m.width() as f32 / (layout.video.w() * s).max(1.0), false).0, w.clamp(0.0, 1.0)));
 
         // Back of the built-in device: a camera bar across the top with two lenses.
         let (camera_bar, lenses) = if layout.framed {
@@ -740,16 +750,20 @@ impl<'a> Scene<'a> {
             nearest,
             eye,
             face_n,
-            light,
-            half_v,
-            face_light: if angled { 0.86 + 0.24 * dot(face_n, light) } else { 1.0 },
-            sheen_amount: ((tilt.abs() + turn.abs()) / 30.0).min(1.0) * 0.07,
+            face_col,
+            sheen_amount: ((tilt.abs() + turn.abs()) / 30.0).min(1.0) * 0.07 * rig.glare,
+            rig,
             depth: layout.depth,
             body: RRect::of(&layout.body, layout.body_r),
             screen: RRect::of(&layout.screen, layout.screen_r),
-            shadow_alpha: style.shadow.clamp(0.0, 1.0) * 0.55,
-            shadow_blur: 0.06 * min_dim,
-            shadow_body: RRect { cy: layout.body.cy() + 0.025 * min_dim, ..RRect::of(&layout.body, layout.body_r) },
+            shadow_alpha: style.shadow.clamp(0.0, 1.0) * 0.55 * rig.shadow[3],
+            shadow_blur: 0.06 * min_dim * rig.shadow[2],
+            // The shadow falls away from the key light.
+            shadow_body: RRect {
+                cx: layout.body.cx() + rig.shadow[0] * min_dim,
+                cy: layout.body.cy() + rig.shadow[1] * min_dim,
+                ..RRect::of(&layout.body, layout.body_r)
+            },
             contact: RRect { cy: layout.body.cy() + 0.006 * min_dim, ..RRect::of(&layout.body, layout.body_r) },
             metal: rgbf(style.frame_color.rgb()),
             rim: layout.bezel * 0.34,
@@ -759,7 +773,10 @@ impl<'a> Scene<'a> {
             sc_short,
             hole,
             curved: layout.frame == FrameStyle::Curved,
-            mip,
+            mip: levels.map(|l| l.0),
+            mip2: levels.map(|l| l.1),
+            mip_mix: levels.map(|l| l.2).unwrap_or(0.0),
+            from,
             inds: indicators(&layout, style, inp.touches, inp.time),
             body_top: layout.body.y0,
             body_h: layout.body.h().max(1.0),
@@ -781,8 +798,20 @@ impl<'a> Scene<'a> {
         (self.ccx + (x - self.ccx) * self.s + self.tx, self.ccy + (y - self.ccy) * self.s + self.ty, f)
     }
 
-    pub fn lighting(&self) -> Lighting {
-        Lighting { light: self.light, half: self.half_v }
+    /// The recording's colour at (u, v): blended between mip levels, and with the previous
+    /// clip during a dissolve.
+    pub fn video(&self, u: f32, v: f32) -> [f32; 3] {
+        let Some(f) = self.mip else {
+            return [18.0, 18.0, 20.0];
+        };
+        let mut c = sample(f, u, v);
+        if let (Some(f2), true) = (self.mip2, self.mip_mix > 0.0) {
+            c = mix(c, sample(f2, u, v), self.mip_mix);
+        }
+        if let Some((prev, w)) = self.from {
+            c = mix(c, sample(prev, u, v), w);
+        }
+        c
     }
 
     /// Point on the model's screen (u, v in 0..1) → the recording; black outside it (`VideoFit::Fit`).
@@ -793,10 +822,7 @@ impl<'a> Scene<'a> {
         if !(-0.002..=1.002).contains(&vu) || !(-0.002..=1.002).contains(&vv) {
             return [0.0, 0.0, 0.0];
         }
-        match self.mip {
-            Some(f) => sample(f, vu.clamp(0.0, 1.0), vv.clamp(0.0, 1.0)),
-            None => [18.0, 18.0, 20.0],
-        }
+        self.video(vu.clamp(0.0, 1.0), vv.clamp(0.0, 1.0))
     }
 }
 
@@ -808,19 +834,20 @@ fn compose_scene(out: &mut [u8], ow: usize, oh: usize, inp: &ComposeInput) {
     let (bg_a, bg_b, gdx, gdy, half_extent, diag) = (sc.bg_a, sc.bg_b, sc.gdx, sc.gdy, sc.half_extent, sc.diag);
     let (tilt, turn, dx, dy, dev_scale, angled) = (sc.tilt, sc.turn, sc.dx, sc.dy, sc.dev_scale, sc.angled);
     let (rot, focal, lcx, lcy, eye, face_n) = (sc.rot, sc.focal, sc.lcx, sc.lcy, sc.eye, sc.face_n);
-    let (light, half_v, face_light, sheen_amount, depth) = (sc.light, sc.half_v, sc.face_light, sc.sheen_amount, sc.depth);
+    let (rig, face_col, sheen_amount, depth) = (sc.rig, sc.face_col, sc.sheen_amount, sc.depth);
     let (body, screen, shadow_body, contact) = (&sc.body, &sc.screen, &sc.shadow_body, &sc.contact);
     let (shadow_alpha, shadow_blur) = (sc.shadow_alpha, sc.shadow_blur);
     let (metal, rim, glass, tablet, buttons) = (sc.metal, sc.rim, sc.glass, sc.tablet, &sc.buttons);
-    let (sc_short, hole, curved, mip, inds) = (sc.sc_short, sc.hole, sc.curved, sc.mip, &sc.inds);
+    let (sc_short, hole, curved, inds) = (sc.sc_short, sc.hole, sc.curved, &sc.inds);
     let (body_top, body_h, mesh_free, camera_bar, lenses) = (sc.body_top, sc.body_h, sc.mesh_free, &sc.camera_bar, &sc.lenses);
     let white = [255.0, 255.0, 255.0];
     let _ = s;
 
     const BAND: usize = 16;
-    let lighting = sc.lighting();
-    let projected = sc.model.map(|m| m.project(sc.pose.as_ref(), |p| sc.place(p), |n| apply(&rot, n), ow, oh, inp.supersample.clamp(1, 3), BAND));
+    let lighting = sc.rig;
+    let projected = sc.model.map(|m| m.project(sc.pose.as_ref(), |p| sc.place(p), |n| apply(&rot, n), ow, oh, inp.supersample.clamp(1, 4), BAND));
     let screen_color = |u: f32, v: f32| sc.screen_color(u, v);
+    let sc_video = |u: f32, v: f32| sc.video(u, v);
 
     out.par_chunks_mut(ow * 4 * BAND).enumerate().for_each(|(band_idx, chunk)| {
         let rows = chunk.len() / (ow * 4);
@@ -905,10 +932,9 @@ fn compose_scene(out: &mut [u8], ow: usize, oh: usize, inp: &ComposeInput) {
                         if c > 0.0 {
                             let (nx, ny) = body.normal(bp.0, bp.1);
                             let n = apply(&rot, [nx, ny, 0.0]);
-                            let diffuse = dot(n, light).max(0.0);
-                            let spec = dot(n, half_v).max(0.0).powi(30) * 140.0;
-                            let k = 0.3 + 0.75 * diffuse;
-                            let side = [metal[0] * k + spec, metal[1] * k + spec, metal[2] * k + spec];
+                            let d = rig.diffuse(n);
+                            let (sk, sr) = (dot(n, rig.half).max(0.0).powi(30), dot(n, rig.rim_half).max(0.0).powi(30));
+                            let side = [0, 1, 2].map(|c| metal[c] * (0.3 * rig.amb[c] + 0.75 * d[c]) + (sk * rig.key_col[c] + sr * rig.rim_col[c]) * 140.0 * rig.spec);
                             col = mix(col, side, c);
                         }
                     }
@@ -918,8 +944,8 @@ fn compose_scene(out: &mut [u8], ow: usize, oh: usize, inp: &ComposeInput) {
                     if mesh.is_none() && d_body < inv_s {
                         let c = cov(d_body);
                         let n = [-face_n[0], -face_n[1], -face_n[2]];
-                        let k = 0.45 + 0.55 * dot(n, light).max(0.0);
-                        let mut back_col = [metal[0] * k, metal[1] * k, metal[2] * k];
+                        let d = rig.diffuse(n);
+                        let mut back_col = [0, 1, 2].map(|c| metal[c] * (0.45 * rig.amb[c] + 0.55 * d[c]));
                         if let Some(bar) = &camera_bar {
                             let cb = cov(bar.sd(qx, qy));
                             if cb > 0.0 {
@@ -939,8 +965,8 @@ fn compose_scene(out: &mut [u8], ow: usize, oh: usize, inp: &ComposeInput) {
 
                 // 5. Device front
                 if layout.framed && mesh.is_none() {
-                    let shade = (1.12 - 0.3 * ((qy - body_top) / body_h).clamp(0.0, 1.0)) * face_light;
-                    let metal_px = [metal[0] * shade, metal[1] * shade, metal[2] * shade];
+                    let shade = 1.12 - 0.3 * ((qy - body_top) / body_h).clamp(0.0, 1.0);
+                    let metal_px = [0, 1, 2].map(|c| metal[c] * shade * face_col[c]);
                     for b in buttons {
                         let c = cov(b.sd(qx, qy));
                         if c > 0.0 {
@@ -971,10 +997,7 @@ fn compose_scene(out: &mut [u8], ow: usize, oh: usize, inp: &ComposeInput) {
                 if c > 0.0 {
                     let u = (qx - layout.screen.x0) / layout.screen.w();
                     let v = (qy - layout.screen.y0) / layout.screen.h();
-                    let mut sc = match mip {
-                        Some(f) => sample(f, u, v),
-                        None => [18.0, 18.0, 20.0],
-                    };
+                    let mut sc = sc_video(u, v);
                     if curved {
                         // Glass curving away along the long edges.
                         let e = if layout.portrait { u.min(1.0 - u) * layout.screen.w() } else { v.min(1.0 - v) * layout.screen.h() };
@@ -1075,6 +1098,7 @@ mod tests {
             supersample: 1,
             texts: &[],
             blur: &[],
+            from: None,
         };
         compose(&mut out, w, h, &inp);
         let px = |x: usize, y: usize| &out[(y * w + x) * 4..(y * w + x) * 4 + 4];
@@ -1148,7 +1172,7 @@ mod pose_tests {
         let style = Style { tilt: 38.0, ..Style::default() };
         let (w, h) = (320usize, 180usize);
         let mut out = vec![0u8; w * h * 4];
-        let inp = ComposeInput { style: &style, screen: None, video_w: 1080.0, video_h: 2400.0, cam: CameraValue::REST, pose: PoseValue::REST, touches: &[], time: 0.0, since_start: 5.0, model: None, supersample: 1, texts: &[], blur: &[] };
+        let inp = ComposeInput { style: &style, screen: None, video_w: 1080.0, video_h: 2400.0, cam: CameraValue::REST, pose: PoseValue::REST, touches: &[], time: 0.0, since_start: 5.0, model: None, supersample: 1, texts: &[], blur: &[], from: None };
         compose(&mut out, w, h, &inp);
         // Top and bottom rows are background (no dark device pixels).
         for y in [0, h - 1] {

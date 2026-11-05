@@ -901,10 +901,123 @@ impl PreparedModel {
 
 // ---------- Rasterizer ----------
 
-/// Light used for the model (directions in device/world space, unit length).
-pub struct Lighting {
-    pub light: [f32; 3],
+/// The lights on the device: directions in world space (unit length), colours as multipliers
+/// (intensity included). Shared by the model and the built-in frame, on the CPU and the GPU.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LightRig {
+    pub key: [f32; 3],
+    pub key_col: [f32; 3],
+    pub fill: [f32; 3],
+    pub fill_col: [f32; 3],
+    pub rim: [f32; 3],
+    pub rim_col: [f32; 3],
+    /// Ambient light from above and from below (3D models).
+    pub top: [f32; 3],
+    pub bottom: [f32; 3],
+    /// Ambient light on the built-in frame.
+    pub amb: [f32; 3],
+    /// Half vectors of the key and rim lights (for highlights).
     pub half: [f32; 3],
+    pub rim_half: [f32; 3],
+    /// Strength of the highlights.
+    pub spec: f32,
+    /// Reflection on the screen glass.
+    pub glare: f32,
+    /// Shadow: offset x and y (fractions of the frame's short side), blur and opacity factors.
+    pub shadow: [f32; 4],
+    /// Light the built-in frame even when it faces the camera straight on (every style but Studio,
+    /// which keeps its flat look).
+    pub shade_flat: bool,
+}
+
+fn unit(v: [f32; 3]) -> [f32; 3] {
+    let n = dot(v, v).sqrt().max(1e-6);
+    [v[0] / n, v[1] / n, v[2] / n]
+}
+
+impl LightRig {
+    pub fn new(l: &crate::model::Lighting) -> Self {
+        use crate::model::LightStyle as S;
+        let w = [1.0, 1.0, 1.0];
+        let k = |v: [f32; 3], s: f32| [v[0] * s, v[1] * s, v[2] * s];
+        // (key, key colour, fill, fill colour, rim, rim colour, top, bottom, amb, spec, glare, shadow)
+        let (key, key_col, fill, fill_col, rim, rim_col, top, bottom, amb, spec, glare, shadow) = match l.style {
+            S::Studio => ([-0.45, -0.65, 0.6], w, [0.0, 0.0, 1.0], [0.0; 3], [0.0, 0.0, -1.0], [0.0; 3], w, [0.0; 3], w, 1.0, 1.0, [0.0, 0.025, 1.0, 1.0]),
+            S::Soft => ([-0.3, -0.7, 0.65], k(w, 0.7), [0.5, -0.2, 0.85], k(w, 0.35), [0.0, 0.0, -1.0], [0.0; 3], k(w, 1.25), k(w, 0.35), k(w, 1.08), 0.4, 0.6, [0.0, 0.02, 1.7, 0.7]),
+            S::Dramatic => (
+                [-0.85, -0.35, 0.4],
+                k(w, 1.25),
+                [0.6, 0.2, 0.75],
+                k(w, 0.08),
+                [0.75, -0.45, -0.5],
+                k(w, 1.4),
+                k(w, 0.45),
+                k(w, 0.05),
+                k(w, 0.62),
+                1.4,
+                1.3,
+                [0.035, 0.03, 0.8, 1.2],
+            ),
+            S::Backlit => ([0.1, -0.5, -0.85], w, [0.0, 0.0, 1.0], k(w, 0.15), [0.0, -0.3, -0.95], k(w, 1.6), k(w, 0.35), k(w, 0.05), k(w, 0.5), 1.0, 0.5, [0.0, 0.045, 1.3, 0.9]),
+            S::Warm => (
+                [-0.6, -0.5, 0.62],
+                [1.1, 0.86, 0.6],
+                [0.6, 0.1, 0.8],
+                [0.17, 0.2, 0.3],
+                [0.7, -0.5, -0.5],
+                [0.8, 0.48, 0.28],
+                [1.0, 0.85, 0.7],
+                [0.25, 0.15, 0.1],
+                [1.0, 0.9, 0.8],
+                1.1,
+                1.0,
+                [0.03, 0.025, 1.0, 1.0],
+            ),
+            S::Cool => (
+                [-0.5, -0.6, 0.62],
+                [0.7, 0.85, 1.05],
+                [0.6, 0.1, 0.8],
+                [0.32, 0.18, 0.35],
+                [0.7, -0.4, -0.55],
+                [0.48, 0.96, 1.2],
+                [0.75, 0.85, 1.0],
+                [0.15, 0.1, 0.25],
+                [0.85, 0.92, 1.05],
+                1.2,
+                1.1,
+                [0.03, 0.025, 1.0, 1.0],
+            ),
+        };
+        // Turn the lights (and the shadow) around the device.
+        let (sa, ca) = l.angle.to_radians().sin_cos();
+        let turn = |v: [f32; 3]| unit([v[0] * ca - v[1] * sa, v[0] * sa + v[1] * ca, v[2]]);
+        let (key, fill, rim) = (turn(key), turn(fill), turn(rim));
+        let i = l.intensity.clamp(0.2, 2.0);
+        let half_of = |v: [f32; 3]| unit([v[0], v[1], v[2] + 1.0]);
+        LightRig {
+            key,
+            key_col: k(key_col, i),
+            fill,
+            fill_col: k(fill_col, i),
+            rim,
+            rim_col: k(rim_col, i),
+            top,
+            bottom,
+            amb,
+            half: half_of(key),
+            rim_half: half_of(rim),
+            spec,
+            glare: glare * l.glare.clamp(0.0, 3.0),
+            shadow: [shadow[0] * ca - shadow[1] * sa, shadow[0] * sa + shadow[1] * ca, shadow[2], shadow[3]],
+            shade_flat: l.style != S::Studio,
+        }
+    }
+
+    /// Light reaching a surface facing `n` from the three lights, per channel.
+    pub fn diffuse(&self, n: [f32; 3]) -> [f32; 3] {
+        let (dk, df, dr) = (dot(n, self.key).max(0.0), dot(n, self.fill).max(0.0), dot(n, self.rim).max(0.0));
+        [0, 1, 2].map(|c| dk * self.key_col[c] + df * self.fill_col[c] + dr * self.rim_col[c])
+    }
 }
 
 /// The model projected for one frame, with triangles sorted into horizontal bands.
@@ -1033,7 +1146,7 @@ fn sample_tex(t: &Texture, u: f32, v: f32) -> [f32; 4] {
 impl Projected<'_> {
     /// Rasterizes the triangles of `band` (output rows `band * band_rows ..`). `screen` returns
     /// the screen's colour at a point of the screen (u, v in 0..1).
-    pub fn raster(&self, band: usize, rows: usize, screen: &dyn Fn(f32, f32) -> [f32; 3], light: &Lighting) -> Band {
+    pub fn raster(&self, band: usize, rows: usize, screen: &dyn Fn(f32, f32) -> [f32; 3], light: &LightRig) -> Band {
         let m = self.model;
         let ss = self.ss;
         let h = rows * ss;
@@ -1134,20 +1247,25 @@ impl Projected<'_> {
     }
 }
 
-/// Simple studio lighting: soft sky from above, a key light from the top-left and a highlight
-/// whose sharpness follows the material's roughness.
-fn shade(base: [f32; 3], mat: &Material, n: [f32; 3], l: &Lighting) -> [f32; 3] {
-    let diffuse = dot(n, l.light).max(0.0);
+/// Studio-style shading: ambient light from above and below, the key, fill and rim lights, and
+/// highlights whose sharpness follows the material's roughness. model.wgsl does the same.
+fn shade(base: [f32; 3], mat: &Material, n: [f32; 3], l: &LightRig) -> [f32; 3] {
+    let diffuse = l.diffuse(n);
     let sky = 0.5 - 0.5 * n[1];
     let metal = mat.metallic.clamp(0.0, 1.0);
     let rough = mat.roughness.clamp(0.04, 1.0);
     let spec_pow = 6.0 + (1.0 - rough).powi(2) * 160.0;
-    let spec = dot(n, l.half).max(0.0).powf(spec_pow) * (0.06 + 0.9 * metal) * (1.15 - rough);
+    let gloss = (0.06 + 0.9 * metal) * (1.15 - rough) * l.spec;
+    let spec_key = dot(n, l.half).max(0.0).powf(spec_pow) * gloss;
+    let spec_rim = dot(n, l.rim_half).max(0.0).powf(spec_pow) * gloss;
+    let top_lum = (l.top[0] + l.top[1] + l.top[2]) / 3.0;
     let mut out = [0.0; 3];
     for k in 0..3 {
-        let dif = base[k] * (0.3 * sky + 0.8 * diffuse) * (1.0 - 0.8 * metal);
-        let refl = base[k] * metal * (0.25 + 0.55 * sky);
+        let amb = sky * l.top[k] + (1.0 - sky) * l.bottom[k];
+        let dif = base[k] * (0.3 * amb + 0.8 * diffuse[k]) * (1.0 - 0.8 * metal);
+        let refl = base[k] * metal * (0.25 * top_lum + 0.55 * amb);
         let tint = if metal > 0.5 { base[k] } else { 255.0 };
+        let spec = spec_key * l.key_col[k] + spec_rim * l.rim_col[k];
         out[k] = (dif + refl + tint * spec + mat.emissive[k]).min(255.0);
     }
     out

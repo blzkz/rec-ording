@@ -4,7 +4,7 @@ mod timeline_ui;
 mod viewer;
 
 use crate::capture::{self, CaptureResult, Device, DeviceState, Method, RecordOptions, Recording, Tools};
-use crate::compositor::{compose, CamState, ComposeInput, Layout};
+use crate::compositor::{compose, CamState, ComposeInput, Layout, Mips};
 use crate::export::{self, ExportEvent};
 use crate::library::{self, LibraryModel};
 use crate::media::{self, DecodedFrame, PreviewDecoder, PREVIEW_FPS};
@@ -28,6 +28,10 @@ use std::time::{Duration, Instant};
 enum AppEvent {
     Devices(Vec<Device>),
     MediaLoaded { info: MediaInfo, touches: Vec<Touch>, recorded: bool },
+    /// A recording picked to replace the one in a clip.
+    ReplaceLoaded { clip: u64, info: MediaInfo },
+    /// Screen changes found in a recording (recording seconds).
+    Marks { source: String, marks: Vec<f32> },
     MediaFailed(String),
     RecordingFailed(String),
     ProxyReady { source: String, proxy: PathBuf },
@@ -102,6 +106,8 @@ struct RenderKey {
     touches: usize,
     model: usize,
     supersample: usize,
+    /// The previous clip's frame during a dissolve (pointer and weight bits).
+    from: (usize, u32),
 }
 
 /// Preview resources of one recording.
@@ -135,7 +141,9 @@ pub struct RecOrdingApp {
     decoder: PreviewDecoder,
     gen: u64,
     /// Timeline time = source time of the decoded recording + this offset.
-    gen_offset: f32,
+    /// Maps the current request's recording seconds to the timeline: (clip start, its
+    /// source_in, its speed).
+    gen_map: (f32, f32, f32),
     decoder_source: Option<(String, (usize, usize))>,
     playing_clip: Option<u64>,
     shown: Option<DecodedFrame>,
@@ -145,6 +153,11 @@ pub struct RecOrdingApp {
 
     // Viewer
     viewer_tex: Option<TextureHandle>,
+    /// The window's graphics card, when the preview can be drawn on it.
+    gpu_state: Option<eframe::egui_wgpu::RenderState>,
+    gpu_view: Option<viewer::GpuView>,
+    /// The texture with the last frame drawn (on the card or by the CPU).
+    viewer_shown: Option<egui::TextureId>,
     viewer_buf: Vec<u8>,
     last_render: Option<RenderKey>,
 
@@ -187,6 +200,12 @@ pub struct RecOrdingApp {
     update_ui: UpdateUi,
     /// Put the cursor in the headline of the selected title (just added).
     focus_title: bool,
+    /// The clip whose video the file picker replaces (instead of adding a clip).
+    replacing: Option<u64>,
+    /// While playing across a cut: the last frame of the clip before, and the clip after.
+    dissolve: Option<(Arc<Mips>, u64)>,
+    /// Recordings already searched for screen changes in this session.
+    marks_done: std::collections::HashSet<String>,
 
     toast: Option<(String, Instant)>,
 }
@@ -246,7 +265,7 @@ impl RecOrdingApp {
             last_tick: Instant::now(),
             decoder: PreviewDecoder::new(move || notify_ctx.request_repaint()),
             gen: 0,
-            gen_offset: 0.0,
+            gen_map: (0.0, 0.0, 1.0),
             decoder_source: None,
             playing_clip: None,
             shown: None,
@@ -254,6 +273,13 @@ impl RecOrdingApp {
             requested_time: None,
             media_views: HashMap::new(),
             viewer_tex: None,
+            // A software renderer would be slower than our own CPU compositor.
+            gpu_state: cc
+                .wgpu_render_state
+                .clone()
+                .filter(|s| s.adapter.get_info().device_type != wgpu::DeviceType::Cpu && std::env::var_os("REC_CPU_PREVIEW").is_none()),
+            gpu_view: None,
+            viewer_shown: None,
             viewer_buf: Vec::new(),
             last_render: None,
             model_cache: HashMap::new(),
@@ -275,7 +301,7 @@ impl RecOrdingApp {
             scanning: false,
             last_scan: None,
             selected_serial: None,
-            rec_opts: RecordOptions { audio: true, mirror: true },
+            rec_opts: RecordOptions { audio: true, mirror: true, clean_status_bar: true },
             recording: None,
             saving_recording: false,
             record_error: None,
@@ -286,6 +312,9 @@ impl RecOrdingApp {
             update: None,
             update_ui: UpdateUi::Idle,
             focus_title: false,
+            replacing: None,
+            dissolve: None,
+            marks_done: Default::default(),
             toast: None,
         };
         app.project_opened();
@@ -672,6 +701,22 @@ impl RecOrdingApp {
                         if self.decoder_source.as_ref().is_some_and(|(p, _)| *p == source) {
                             self.restart_decoding();
                         }
+                        // Look for screen changes (in the light copy, which is quick to read).
+                        let missing = self.project.media.iter().any(|m| m.info.path == source && m.marks.is_empty());
+                        if missing && self.marks_done.insert(source.clone()) {
+                            let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+                            let proxy = proxy.to_string_lossy().into_owned();
+                            thread::spawn(move || {
+                                let marks = media::screen_changes(&proxy);
+                                let _ = tx.send(AppEvent::Marks { source, marks });
+                                ctx.request_repaint();
+                            });
+                        }
+                    }
+                }
+                AppEvent::Marks { source, marks } => {
+                    for m in self.project.media.iter_mut().filter(|m| m.info.path == source) {
+                        m.marks = marks.clone();
                     }
                 }
                 AppEvent::Thumbnails { source, size, frames } => {
@@ -692,7 +737,30 @@ impl RecOrdingApp {
                         }
                     }
                 }
-                AppEvent::ImportPicked(p) => self.import(p),
+                AppEvent::ImportPicked(p) => match self.replacing.take() {
+                    Some(clip) => {
+                        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+                        thread::spawn(move || {
+                            let ev = match media::probe(&p.to_string_lossy()) {
+                                Ok(info) => AppEvent::ReplaceLoaded { clip, info },
+                                Err(e) => AppEvent::MediaFailed(e),
+                            };
+                            let _ = tx.send(ev);
+                            ctx.request_repaint();
+                        });
+                    }
+                    None => self.import(p),
+                },
+                AppEvent::ReplaceLoaded { clip, info } => {
+                    match timeline::replace_clip_video(&mut self.project, clip, info.clone(), Vec::new()) {
+                        Ok(()) => {
+                            self.prepare_media(&info);
+                            self.requested_time = None;
+                            self.toast("Vídeo cambiado; el recorte y lo que hay encima se conservan");
+                        }
+                        Err(e) => self.toast(e),
+                    }
+                }
                 AppEvent::FolderPicked(p) => self.project.export.folder = p.to_string_lossy().into_owned(),
                 AppEvent::ModelPicked(p) => {
                     // Load before copying, so a model that cannot be used never enters the gallery.
@@ -807,8 +875,8 @@ impl RecOrdingApp {
 
     // ---------- Playback ----------
 
-    /// Where to decode for timeline second `t`: (file, preview size, source second, offset, clip).
-    fn decode_target(&self, t: f32) -> Option<(String, (usize, usize), f32, f32, u64)> {
+    /// Where to decode for timeline second `t`: (file, preview size, source second, clip).
+    fn decode_target(&self, t: f32) -> Option<(String, (usize, usize), f32, timeline::Placed)> {
         let c = timeline::locate(&self.project, t)?;
         let m = self.project.media(c.clip.media)?;
         let path = self
@@ -817,22 +885,23 @@ impl RecOrdingApp {
             .and_then(|v| v.proxy.as_ref())
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|| m.info.path.clone());
-        Some((path, media::preview_size(&m.info), timeline::source_time(&c, t), c.start - c.clip.source_in, c.clip.id))
+        Some((path, media::preview_size(&m.info), timeline::source_time(&c, t), c))
     }
 
     /// Asks the decoder for the frame at the current time (or to play from it).
     fn start_decode(&mut self, play: bool) {
-        let Some((path, size, src_t, offset, clip)) = self.decode_target(self.time) else { return };
+        let Some((path, size, src_t, c)) = self.decode_target(self.time) else { return };
         if self.decoder_source.as_ref() != Some(&(path.clone(), size)) {
             self.decoder.set_source(&path, size);
             self.decoder_source = Some((path, size));
         }
         self.gen += 1;
-        self.gen_offset = offset;
+        self.gen_map = (c.start, c.clip.source_in, c.clip.speed.max(0.01));
         self.queued = None;
-        self.playing_clip = Some(clip);
-        if play {
-            self.decoder.play(self.gen, src_t);
+        self.playing_clip = Some(c.clip.id);
+        // A still is one frame, playing or not.
+        if play && c.clip.freeze.is_none() {
+            self.decoder.play(self.gen, src_t, c.clip.speed);
         } else {
             self.decoder.seek(self.gen, src_t);
         }
@@ -885,7 +954,9 @@ impl RecOrdingApp {
                 self.time = total;
                 self.toggle_play();
             } else if timeline::locate(&self.project, self.time).map(|c| c.clip.id) != self.playing_clip {
-                // Crossed into the next clip.
+                // Crossed into the next clip: dissolve from the last frame shown.
+                let next = timeline::locate(&self.project, self.time).map(|c| c.clip.id);
+                self.dissolve = self.shown.as_ref().zip(next).map(|(f, id)| (f.mips.clone(), id));
                 self.start_decode(true);
             }
             self.ctx.request_repaint();
@@ -894,13 +965,13 @@ impl RecOrdingApp {
 
         loop {
             let next = self.queued.take().or_else(|| self.decoder.frames.try_recv().ok());
-            let Some(mut f) = next else { break };
+            let Some(f) = next else { break };
             if f.gen != self.gen {
                 continue;
             }
-            f.time += self.gen_offset;
-            if self.playing && f.time > self.time + 0.5 / PREVIEW_FPS {
-                f.time -= self.gen_offset;
+            let (start, source_in, speed) = self.gen_map;
+            let at = start + (f.time - source_in) / speed;
+            if self.playing && at > self.time + 0.5 / PREVIEW_FPS {
                 self.queued = Some(f);
                 break;
             }
@@ -1025,7 +1096,10 @@ impl RecOrdingApp {
     fn delete_selection(&mut self) {
         let p = &mut self.project;
         let r = match self.selection {
-            Selection::Clip(id) => timeline::delete_clip(p, id),
+            Selection::Clip(id) => match timeline::delete_clip(p, id) {
+                Ok(lost) if lost > 0 => Err(format!("Clip eliminado, con {lost} elementos que estaban sobre él (Ctrl+Z para recuperarlos)")),
+                other => other.map(|_| ()),
+            },
             Selection::Camera { id, key: Some(k) } if p.camera.iter().any(|c| c.id == id && c.kind == CameraKind::Move) => timeline::delete_camera_key(p, id, k),
             Selection::Camera { id, .. } => timeline::delete_camera_clip(p, id),
             Selection::Device { id, .. } => timeline::delete_device_clip(p, id),
@@ -1799,6 +1873,23 @@ impl RecOrdingApp {
             toggle_row(ui, "Animación de entrada", "El móvil entra girando al empezar", &mut style.intro);
         });
 
+        section(ui, "Iluminación", |ui| {
+            let l = &mut style.lighting;
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
+                for s in LightStyle::ALL {
+                    if chip(ui, s.label(), l.style == s).clicked() {
+                        l.style = s;
+                    }
+                }
+            });
+            ui.add_space(2.0);
+            slider_row(ui, "Dirección", &mut l.angle, -180.0..=180.0, |v| format!("{v:.0}°"));
+            slider_row(ui, "Intensidad", &mut l.intensity, 0.5..=1.5, |v| format!("{:.0} %", v * 100.0));
+            slider_row(ui, "Reflejo", &mut l.glare, 0.0..=2.0, |v| format!("{:.0} %", v * 100.0));
+            ui.label(RichText::new("El reflejo es el brillo que cruza el cristal de la pantalla al girar.").color(TEXT_3).font(regular(11.5)));
+        });
+
         section(ui, "Fondo", |ui| {
             let gap = 8.0;
             let size = ((ui.available_width() - gap * 4.0) / 5.0).floor();
@@ -1836,6 +1927,28 @@ impl RecOrdingApp {
         section(ui, "Composición", |ui| {
             slider_row(ui, "Margen", &mut style.padding, 0.02..=0.25, |v| format!("{:.0} %", v * 100.0));
             slider_row(ui, "Sombra", &mut style.shadow, 0.0..=1.0, |v| format!("{:.0} %", v * 100.0));
+        });
+
+        section(ui, "Acabado", |ui| {
+            let f = &mut style.finish;
+            fn row<T: PartialEq + Copy>(ui: &mut Ui, label: &str, value: &mut T, all: &[T], name: impl Fn(T) -> &'static str) {
+                ui.horizontal(|ui| {
+                    fixed_label(ui, 78.0, RichText::new(label).color(TEXT), Align::Min);
+                    let opts: Vec<(T, &str)> = all.iter().map(|v| (*v, name(*v))).collect();
+                    segmented(ui, value, &opts, ui.available_width());
+                });
+            }
+            row(ui, "Desenfoque", &mut f.motion_blur, &MotionBlur::ALL, MotionBlur::label);
+            ui.label(RichText::new("En giros, zooms y movimientos rápidos, como una cámara de cine.").color(TEXT_3).font(regular(11.5)));
+            row(ui, "Bordes", &mut f.antialias, &Antialias::ALL, Antialias::label);
+            ui.label(RichText::new("Más alta: bordes del modelo 3D más limpios y zooms sin saltos de nitidez; exporta algo más despacio.").color(TEXT_3).font(regular(11.5)));
+            slider_row(ui, "Viñeta", &mut f.vignette, 0.0..=1.0, |v| format!("{:.0} %", v * 100.0));
+            slider_row(ui, "Grano", &mut f.grain, 0.0..=1.0, |v| format!("{:.0} %", v * 100.0));
+            let secs = |v: f32| if v <= 0.0 { "No".to_string() } else { format!("{v:.1} s").replace('.', ",") };
+            slider_row(ui, "Entrada", &mut f.fade_in, 0.0..=3.0, secs);
+            slider_row(ui, "Salida", &mut f.fade_out, 0.0..=3.0, secs);
+            slider_row(ui, "Entre clips", &mut f.crossfade, 0.0..=1.5, secs);
+            ui.label(RichText::new("Fundidos desde y a negro (con el sonido) y entre clips.").color(TEXT_3).font(regular(11.5)));
         });
 
         section(ui, "Toques", |ui| {
@@ -2004,6 +2117,7 @@ impl RecOrdingApp {
                     ui.add_enabled_ui(self.tools.scrcpy, |ui| {
                         toggle_row(ui, "Grabar el sonido del móvil", "Necesita Android 11 o superior", &mut self.rec_opts.audio);
                         toggle_row(ui, "Ver el móvil en el ordenador", "Abre una ventana con la pantalla del móvil", &mut self.rec_opts.mirror);
+                        toggle_row(ui, "Barra de estado limpia", "Hora 9:41, batería llena y sin notificaciones mientras grabas", &mut self.rec_opts.clean_status_bar);
                     });
                 });
                 if !self.tools.scrcpy {

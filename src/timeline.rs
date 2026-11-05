@@ -43,21 +43,93 @@ pub fn locate(p: &Project, t: f32) -> Option<Placed> {
 
 /// Recording second shown at timeline second `t`.
 pub fn source_time(c: &Placed, t: f32) -> f32 {
-    (c.clip.source_in + (t - c.start)).clamp(c.clip.source_in, c.clip.source_out)
+    if c.clip.freeze.is_some() {
+        return c.clip.source_in;
+    }
+    (c.clip.source_in + (t - c.start) * c.clip.speed).clamp(c.clip.source_in, c.clip.source_out)
 }
 
 /// Every touch of the clips on the timeline, in timeline seconds.
 pub fn timeline_touches(p: &Project) -> Vec<Touch> {
     let mut out = Vec::new();
-    for c in placed(p) {
+    for c in placed(p).into_iter().filter(|c| c.clip.freeze.is_none()) {
         let Some(m) = p.media(c.clip.media) else { continue };
+        let k = c.clip.speed.max(0.01);
         for t in &m.touches {
             if t.time >= c.clip.source_in && t.time < c.clip.source_out {
-                out.push(Touch { time: c.start + t.time - c.clip.source_in, ..*t });
+                out.push(Touch { time: c.start + (t.time - c.clip.source_in) / k, duration: t.duration / k, ..*t });
             }
         }
     }
     out
+}
+
+/// The screen changes of the clips on the timeline (see `Media::marks`), in timeline seconds.
+pub fn timeline_marks(p: &Project) -> Vec<f32> {
+    let mut out = Vec::new();
+    for c in placed(p).into_iter().filter(|c| c.clip.freeze.is_none()) {
+        let Some(m) = p.media(c.clip.media) else { continue };
+        for &s in &m.marks {
+            if s >= c.clip.source_in && s < c.clip.source_out {
+                out.push(c.start + (s - c.clip.source_in) / c.clip.speed.max(0.01));
+            }
+        }
+    }
+    out
+}
+
+/// The mark nearest to `t` within `tolerance` seconds, to snap to.
+pub fn snap_to_mark(p: &Project, t: f32, tolerance: f32) -> f32 {
+    timeline_marks(p).into_iter().filter(|m| (m - t).abs() <= tolerance).min_by(|a, b| (a - t).abs().total_cmp(&(b - t).abs())).unwrap_or(t)
+}
+
+/// Keeps camera moves, device motion, titles and Director targets on the same moment of the
+/// recordings while `edit` changes the video track (trims, moves, speed, inserted stills…).
+/// Items whose moment is gone are removed when `drop_lost` (and counted), else left where they
+/// were.
+fn keep_in_place<R>(p: &mut Project, drop_lost: bool, edit: impl FnOnce(&mut Project) -> Result<R, String>) -> Result<(R, usize), String> {
+    let old = placed(p);
+    let old_total = duration(p);
+    let r = edit(p)?;
+    let new = placed(p);
+    let new_total = duration(p);
+    let map = |t: f32| -> Option<f32> {
+        if t >= old_total {
+            return Some(new_total + (t - old_total));
+        }
+        let c = old.iter().find(|c| t >= c.start && t < c.end)?;
+        let local = t - c.start;
+        if c.clip.freeze.is_some() {
+            return new.iter().find(|n| n.clip.id == c.clip.id).map(|n| n.start + local.min(n.end - n.start));
+        }
+        let s = source_time(c, t);
+        let holds = |n: &Placed| n.clip.freeze.is_none() && n.clip.media == c.clip.media && s >= n.clip.source_in && s < n.clip.source_out;
+        let n = new.iter().find(|n| n.clip.id == c.clip.id && holds(n)).or_else(|| new.iter().find(|n| holds(n)))?;
+        Some(n.start + (s - n.clip.source_in) / n.clip.speed.max(0.01))
+    };
+    let mut lost = 0;
+    let mut place = |t: &mut f32| -> bool {
+        match map(*t) {
+            Some(v) => {
+                *t = v;
+                true
+            }
+            None if drop_lost => {
+                lost += 1;
+                false
+            }
+            None => true,
+        }
+    };
+    p.camera.retain_mut(|c| place(&mut c.start));
+    p.device.retain_mut(|c| place(&mut c.start));
+    p.texts.retain_mut(|c| place(&mut c.start));
+    p.director.targets.retain_mut(|t| place(&mut t.time));
+    p.camera.sort_by(|a, b| a.start.total_cmp(&b.start));
+    p.device.sort_by(|a, b| a.start.total_cmp(&b.start));
+    p.texts.sort_by(|a, b| a.start.total_cmp(&b.start));
+    p.director.targets.sort_by(|a, b| a.time.total_cmp(&b.time));
+    Ok((r, lost))
 }
 
 // ---------- Evaluation ----------
@@ -178,16 +250,25 @@ pub fn pose_at(p: &Project, t: f32) -> PoseValue {
     }
     // Titles push the device aside while they are on screen. Titles in a row on the same side
     // count as one, so the device stays put between them; it comes back once they have gone.
-    let mut spans: Vec<(f32, f32, TextPlace)> = Vec::new();
+    // (start, end, place, seconds to move, turn towards it)
+    let mut spans: Vec<(f32, f32, TextPlace, f32, bool)> = Vec::new();
     for c in p.texts.iter().filter(|c| c.make_room && !text::is_blank(c)) {
         match spans.last_mut() {
-            Some(s) if s.2 == c.place && c.start <= s.1 + 1.0 => s.1 = s.1.max(c.end()),
-            _ => spans.push((c.start, c.end(), c.place)),
+            Some(s) if s.2 == c.place && c.start <= s.1 + 1.0 => {
+                s.1 = s.1.max(c.end());
+                s.4 |= c.face_text;
+            }
+            _ => spans.push((c.start, c.end(), c.place, c.move_time.clamp(0.1, 3.0), c.face_text)),
         }
     }
     let (mut room_x, mut room_y, mut room_s) = (0.0f32, 0.0f32, 1.0f32);
-    for &(a, b, place) in spans.iter().filter(|s| t >= s.0 && t < s.1 + text::ROOM_AFTER) {
-        let v = text::smooth((t - a) / text::ROOM_IN).min(text::smooth((b + text::ROOM_AFTER - t) / text::ROOM_AFTER));
+    for &(a, b, place, secs, face) in spans.iter().filter(|s| t >= s.0 && t < s.1 + s.3) {
+        let v = text::smooth((t - a) / secs).min(text::smooth((b + secs - t) / secs));
+        if face {
+            let (turn, tilt) = text::face(place, v);
+            out.turn += turn;
+            out.tilt += tilt;
+        }
         let (dx, dy, scale) = text::room(place, v, p.style.aspect.ratio());
         if dx.abs() > room_x.abs() {
             room_x = dx;
@@ -206,15 +287,26 @@ pub fn pose_at(p: &Project, t: f32) -> PoseValue {
 /// Instants to average into one frame at `t` for motion blur (a half-frame shutter at `fps`).
 /// Empty when the device and the camera barely move during the frame.
 pub fn shutter(p: &Project, t: f32, fps: f32) -> Vec<(f32, CameraValue, PoseValue)> {
-    let half = 0.25 / fps.max(1.0);
+    let open = p.style.finish.motion_blur.shutter();
+    if open <= 0.0 {
+        return Vec::new();
+    }
+    let half = open * 0.5 / fps.max(1.0);
     let (c0, p0) = (camera_at(p, t - half), pose_at(p, t - half));
     let (c1, p1) = (camera_at(p, t + half), pose_at(p, t + half));
     let degrees = [p1.turn - p0.turn, p1.tilt - p0.tilt, p1.roll - p0.roll, c1.turn - c0.turn, c1.tilt - c0.tilt, c1.roll - c0.roll]
         .iter()
         .fold(0.0f32, |m, d| m.max(d.abs()));
-    // Travel in percent of the frame's short side.
+    // Travel in percent of the frame's short side: the device, and the camera's zoom and pan.
     let travel = (p1.dx - p0.dx).hypot(p1.dy - p0.dy) * 100.0;
-    let n = (degrees / 1.2).max(travel / 0.6).ceil() as usize;
+    let zoom = ((c1.zoom - c0.zoom).abs() / c0.zoom.max(0.1)) * 100.0;
+    let pan = (c1.x - c0.x).hypot(c1.y - c0.y) * c0.zoom.max(1.0) * 100.0;
+    let mut n = (degrees / 1.2).max(travel / 0.6).max(zoom / 0.6).max(pan / 0.6).ceil() as usize;
+    // Animated models move on their own: a few samples always.
+    let animated = p.style.frame == FrameStyle::Custom && p.style.model.as_ref().is_some_and(|m| m.animation.is_some());
+    if animated {
+        n = n.max(3);
+    }
     if n < 2 {
         return Vec::new();
     }
@@ -679,59 +771,157 @@ pub fn append_media(p: &mut Project, info: MediaInfo, touches: Vec<Touch>) -> u6
         Some(m) => m.id,
         None => {
             let id = p.next_id();
-            p.media.push(Media { id, info, touches });
+            p.media.push(Media { id, info, touches, marks: Vec::new() });
             id
         }
     };
     let id = p.next_id();
-    p.clips.push(Clip { id, media, source_in: 0.0, source_out: dur });
+    p.clips.push(Clip::new(id, media, 0.0, dur));
     id
 }
 
 /// Splits the clip under `t` in two.
 pub fn split_at(p: &mut Project, t: f32) -> Result<u64, String> {
     let c = locate(p, t).ok_or("No hay ningún clip en ese punto")?;
+    if let Some(secs) = c.clip.freeze {
+        // A still splits into two shorter stills.
+        let first = t - c.start;
+        if first < 0.1 || secs - first < 0.1 {
+            return Err("Demasiado cerca del borde del clip para dividirlo".into());
+        }
+        let id = p.next_id();
+        p.clips[c.index].freeze = Some(first);
+        p.clips.insert(c.index + 1, Clip { id, freeze: Some(secs - first), ..c.clip });
+        return Ok(id);
+    }
     let cut = source_time(&c, t);
     if cut - c.clip.source_in < 0.1 || c.clip.source_out - cut < 0.1 {
         return Err("Demasiado cerca del borde del clip para dividirlo".into());
     }
     let id = p.next_id();
     p.clips[c.index].source_out = cut;
-    p.clips.insert(c.index + 1, Clip { id, media: c.clip.media, source_in: cut, source_out: c.clip.source_out });
+    p.clips.insert(c.index + 1, Clip { id, source_in: cut, ..c.clip });
     Ok(id)
 }
 
-/// Changes the part of the recording a clip plays (the clips after it move to follow).
+/// Changes the part of the recording a clip plays (the clips after it move to follow, and so
+/// do the camera moves, device motion and titles over them).
 pub fn trim_clip(p: &mut Project, id: u64, source_in: Option<f32>, source_out: Option<f32>) -> Result<(), String> {
-    let i = p.clips.iter().position(|c| c.id == id).ok_or(format!("No hay ningún clip {id}"))?;
-    let media_len = p.media(p.clips[i].media).map(|m| m.info.duration).unwrap_or(f32::MAX);
-    let c = &mut p.clips[i];
-    let a = source_in.unwrap_or(c.source_in).clamp(0.0, media_len);
-    let b = source_out.unwrap_or(c.source_out).clamp(0.0, media_len);
-    if b - a < 0.2 {
-        return Err("El clip debe durar al menos 0,2 s".into());
-    }
-    c.source_in = a;
-    c.source_out = b;
-    Ok(())
+    keep_in_place(p, false, |p| {
+        let i = p.clips.iter().position(|c| c.id == id).ok_or(format!("No hay ningún clip {id}"))?;
+        let media_len = p.media(p.clips[i].media).map(|m| m.info.duration).unwrap_or(f32::MAX);
+        let c = &mut p.clips[i];
+        if c.freeze.is_some() {
+            return Err("Es un fotograma congelado: cambia su duración en su lugar".into());
+        }
+        let a = source_in.unwrap_or(c.source_in).clamp(0.0, media_len);
+        let b = source_out.unwrap_or(c.source_out).clamp(0.0, media_len);
+        if b - a < 0.2 {
+            return Err("El clip debe durar al menos 0,2 s".into());
+        }
+        c.source_in = a;
+        c.source_out = b;
+        Ok(())
+    })
+    .map(|_| ())
 }
 
 pub fn move_clip(p: &mut Project, id: u64, index: usize) -> Result<(), String> {
-    let i = p.clips.iter().position(|c| c.id == id).ok_or(format!("No hay ningún clip {id}"))?;
-    let c = p.clips.remove(i);
-    p.clips.insert(index.min(p.clips.len()), c);
-    Ok(())
+    keep_in_place(p, false, |p| {
+        let i = p.clips.iter().position(|c| c.id == id).ok_or(format!("No hay ningún clip {id}"))?;
+        let c = p.clips.remove(i);
+        p.clips.insert(index.min(p.clips.len()), c);
+        Ok(())
+    })
+    .map(|_| ())
 }
 
-pub fn delete_clip(p: &mut Project, id: u64) -> Result<(), String> {
-    let i = p.clips.iter().position(|c| c.id == id).ok_or(format!("No hay ningún clip {id}"))?;
-    p.clips.remove(i);
+/// Removes a clip and what was over it (camera moves, device motion, titles, Director targets);
+/// everything else stays with its recording. Returns how many of those went with it.
+pub fn delete_clip(p: &mut Project, id: u64) -> Result<usize, String> {
+    let ((), lost) = keep_in_place(p, true, |p| {
+        let i = p.clips.iter().position(|c| c.id == id).ok_or(format!("No hay ningún clip {id}"))?;
+        p.clips.remove(i);
+        Ok(())
+    })?;
     let used: Vec<u64> = p.clips.iter().map(|c| c.media).collect();
     p.media.retain(|m| used.contains(&m.id));
-    let total = duration(p);
-    p.camera.retain(|c| c.start < total);
-    p.director.targets.retain(|t| t.time < total);
-    Ok(())
+    Ok(lost)
+}
+
+/// Plays a clip faster or slower (0,25× to 4×).
+pub fn set_clip_speed(p: &mut Project, id: u64, speed: f32) -> Result<(), String> {
+    keep_in_place(p, false, |p| {
+        let c = p.clips.iter_mut().find(|c| c.id == id).ok_or(format!("No hay ningún clip {id}"))?;
+        if c.freeze.is_some() {
+            return Err("Un fotograma congelado no tiene velocidad".into());
+        }
+        c.speed = speed.clamp(0.25, 4.0);
+        Ok(())
+    })
+    .map(|_| ())
+}
+
+/// Holds the frame at timeline second `t` for `secs` seconds (everything after it moves on).
+/// Returns the still's clip id.
+pub fn freeze_frame(p: &mut Project, t: f32, secs: f32) -> Result<u64, String> {
+    let secs = secs.clamp(0.1, 60.0);
+    keep_in_place(p, false, |p| {
+        let c = locate(p, t).ok_or("No hay ningún vídeo en ese punto")?;
+        let s = source_time(&c, t);
+        let at = if c.clip.freeze.is_some() {
+            c.index + 1
+        } else if t - c.start < 0.05 {
+            c.index
+        } else if c.end - t < 0.05 {
+            c.index + 1
+        } else {
+            let id = p.next_id();
+            p.clips[c.index].source_out = s;
+            p.clips.insert(c.index + 1, Clip { id, source_in: s, ..c.clip });
+            c.index + 1
+        };
+        let id = p.next_id();
+        p.clips.insert(at, Clip { id, source_in: s, source_out: s, speed: 1.0, freeze: Some(secs), ..c.clip });
+        Ok(id)
+    })
+    .map(|(id, _)| id)
+}
+
+/// Changes how long a still lasts.
+pub fn set_freeze_duration(p: &mut Project, id: u64, secs: f32) -> Result<(), String> {
+    keep_in_place(p, false, |p| {
+        let c = p.clips.iter_mut().find(|c| c.id == id).ok_or(format!("No hay ningún clip {id}"))?;
+        let f = c.freeze.as_mut().ok_or("Ese clip no es un fotograma congelado")?;
+        *f = secs.clamp(0.1, 60.0);
+        Ok(())
+    })
+    .map(|_| ())
+}
+
+/// Puts another recording in a clip, keeping its cut (clamped to the new recording), its speed
+/// and everything over it on the timeline.
+pub fn replace_clip_video(p: &mut Project, id: u64, info: MediaInfo, touches: Vec<Touch>) -> Result<(), String> {
+    keep_in_place(p, false, move |p| {
+        let len = info.duration;
+        let media = match p.media.iter().find(|m| m.info.path == info.path) {
+            Some(m) => m.id,
+            None => {
+                let mid = p.next_id();
+                p.media.push(Media { id: mid, info, touches, marks: Vec::new() });
+                mid
+            }
+        };
+        let i = p.clips.iter().position(|c| c.id == id).ok_or(format!("No hay ningún clip {id}"))?;
+        let c = &mut p.clips[i];
+        c.media = media;
+        c.source_in = c.source_in.min((len - 0.2).max(0.0));
+        c.source_out = if c.freeze.is_some() { c.source_in } else { c.source_out.clamp(c.source_in + 0.2_f32.min(len), len) };
+        let used: Vec<u64> = p.clips.iter().map(|c| c.media).collect();
+        p.media.retain(|m| used.contains(&m.id));
+        Ok(())
+    })
+    .map(|_| ())
 }
 
 // ---------- Director ----------
@@ -864,6 +1054,50 @@ mod tests {
             append_media(&mut p, info, touches);
         }
         p
+    }
+
+    #[test]
+    fn edits_keep_everything_on_its_moment() {
+        let mut p = project(&[5.0, 3.0]);
+        let (a, b) = (p.clips[0].id, p.clips[1].id);
+        // A zoom and a title over the second clip, a title over the first.
+        add_zoom(&mut p, 6.0, 7.0, 2.0, 0.5, 0.5).unwrap();
+        let t1 = add_text(&mut p, 1.0, "uno").unwrap();
+        let t2 = add_text(&mut p, 5.5, "dos").unwrap();
+        // Moving the second clip first takes its zoom and title along.
+        move_clip(&mut p, b, 0).unwrap();
+        assert!((p.camera[0].start - 1.0).abs() < 1e-4, "{}", p.camera[0].start);
+        assert!((p.texts.iter().find(|c| c.id == t2).unwrap().start - 0.5).abs() < 1e-4);
+        assert!((p.texts.iter().find(|c| c.id == t1).unwrap().start - 4.0).abs() < 1e-4);
+        // Deleting the first clip (now the second) only takes what was over it.
+        assert_eq!(delete_clip(&mut p, a).unwrap(), 1);
+        assert_eq!((p.camera.len(), p.texts.len()), (1, 1));
+        // Speed: twice as fast halves the clip and moves what is over it.
+        set_clip_speed(&mut p, b, 2.0).unwrap();
+        assert!((duration(&p) - 1.5).abs() < 1e-4);
+        assert!((p.camera[0].start - 0.5).abs() < 1e-4, "{}", p.camera[0].start);
+        assert!((source_time(&locate(&p, 1.0).unwrap(), 1.0) - 2.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn stills_hold_a_frame() {
+        let mut p = project(&[5.0]);
+        add_text(&mut p, 3.0, "después").unwrap();
+        let id = freeze_frame(&mut p, 2.0, 1.5).unwrap();
+        assert_eq!(p.clips.len(), 3);
+        assert!((duration(&p) - 6.5).abs() < 1e-4);
+        let still = locate(&p, 2.7).unwrap();
+        assert_eq!(still.clip.id, id);
+        assert!((source_time(&still, 2.7) - 2.0).abs() < 1e-4);
+        // What came after moves on by the still's length; touches skip it.
+        assert!((p.texts[0].start - 4.5).abs() < 1e-4, "{}", p.texts[0].start);
+        assert!((timeline_touches(&p)[0].time - 1.0).abs() < 1e-4);
+        set_freeze_duration(&mut p, id, 0.5).unwrap();
+        assert!((duration(&p) - 5.5).abs() < 1e-4);
+        // A still at the very end.
+        let end = duration(&p);
+        freeze_frame(&mut p, end, 2.0).unwrap();
+        assert_eq!(p.clips.last().unwrap().freeze, Some(2.0));
     }
 
     #[test]

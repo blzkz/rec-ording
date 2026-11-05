@@ -138,28 +138,70 @@ impl RecOrdingApp {
             .unwrap_or_default();
         let mut split = false;
         let mut delete = false;
-        section(ui, "Clip de vídeo", |ui| {
+        let mut freeze = false;
+        let mut replace = false;
+        let mut speed = None;
+        let mut still_len = None;
+        section(ui, if c.clip.freeze.is_some() { "Fotograma congelado" } else { "Clip de vídeo" }, |ui| {
             ui.add(egui::Label::new(RichText::new(name).color(TEXT)).truncate());
-            ui.label(
-                RichText::new(format!(
-                    "De {} a {} de la grabación · {}",
-                    fmt_time(c.clip.source_in),
-                    fmt_time(c.clip.source_out),
-                    fmt_secs(c.clip.duration())
-                ))
-                .color(TEXT_2)
-                .font(regular(12.0)),
-            );
-            ui.label(RichText::new("Arrastra sus bordes para recortarlo y el clip para cambiarlo de orden.").color(TEXT_3).font(regular(11.5)));
-            ui.horizontal(|ui| {
+            let detail = match c.clip.freeze {
+                Some(_) => format!("El fotograma de {} de la grabación · {}", fmt_time(c.clip.source_in), fmt_secs(c.clip.duration())),
+                None => format!("De {} a {} de la grabación · {}", fmt_time(c.clip.source_in), fmt_time(c.clip.source_out), fmt_secs(c.clip.duration())),
+            };
+            ui.label(RichText::new(detail).color(TEXT_2).font(regular(12.0)));
+            if let Some(secs) = c.clip.freeze {
+                let mut s = secs;
+                if slider_row(ui, "Duración", &mut s, 0.2..=10.0, fmt_secs) {
+                    still_len = Some(s);
+                }
+            } else {
+                ui.horizontal_wrapped(|ui| {
+                    fixed_label(ui, 78.0, RichText::new("Velocidad").color(TEXT), Align::Min);
+                    ui.spacing_mut().item_spacing = Vec2::new(4.0, 4.0);
+                    for (v, label) in [(0.5, "0,5×"), (1.0, "1×"), (1.5, "1,5×"), (2.0, "2×"), (4.0, "4×")] {
+                        if chip(ui, label, (c.clip.speed - v).abs() < 1e-3).clicked() {
+                            speed = Some(v);
+                        }
+                    }
+                });
+                ui.label(RichText::new("Arrastra sus bordes para recortarlo y el clip para cambiarlo de orden.").color(TEXT_3).font(regular(11.5)));
+            }
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
                 if secondary_button(ui, "Dividir en el cursor").on_hover_text("Ctrl+B").clicked() {
                     split = true;
+                }
+                if secondary_button(ui, "Congelar fotograma").on_hover_text("Detiene la imagen del cursor 2 s; lo demás se desplaza").clicked() {
+                    freeze = true;
+                }
+                if secondary_button(ui, "Cambiar vídeo…").on_hover_text("Otra grabación en este clip, con el mismo recorte").clicked() {
+                    replace = true;
                 }
                 if ui.add(egui::Button::new(RichText::new("Eliminar").color(RED)).min_size(Vec2::new(0.0, 28.0))).clicked() {
                     delete = true;
                 }
             });
         });
+        if let Some(v) = speed {
+            if let Err(e) = timeline::set_clip_speed(&mut self.project, id, v) {
+                self.toast(e);
+            }
+            self.requested_time = None;
+        }
+        if let Some(s) = still_len {
+            let _ = timeline::set_freeze_duration(&mut self.project, id, s);
+        }
+        if freeze {
+            match timeline::freeze_frame(&mut self.project, self.time, 2.0) {
+                Ok(still) => self.selection = Selection::Clip(still),
+                Err(e) => self.toast(e),
+            }
+            self.requested_time = None;
+        }
+        if replace {
+            self.replacing = Some(id);
+            self.pick_video();
+        }
         if split {
             self.split_here();
         }
@@ -397,6 +439,10 @@ impl RecOrdingApp {
             chips(ui, "Color", &mut tc.color, &TextColor::ALL, TextColor::label);
             if tc.place != TextPlace::Center {
                 toggle_row(ui, "Apartar el móvil", "Le deja sitio al texto mientras se ve", &mut tc.make_room);
+                if tc.make_room {
+                    toggle_row(ui, "Mirar al texto", "El móvil gira un poco hacia él", &mut tc.face_text);
+                    slider_row(ui, "Movimiento", &mut tc.move_time, 0.2..=2.0, fmt_secs);
+                }
             }
             let mut secs = tc.duration;
             if slider_row(ui, "Duración", &mut secs, 0.8..=10.0, fmt_secs) {

@@ -19,6 +19,44 @@ fn fonts() -> &'static Fonts {
     })
 }
 
+/// A small white label on a dark box with its top left corner at (x, y), for contact sheets.
+pub fn label(out: &mut [u8], w: usize, h: usize, x: usize, y: usize, text: &str, size: f32) {
+    let font = &fonts().semibold;
+    let scale = PxScale::from(size);
+    let sf = font.as_scaled(scale);
+    let pad = size * 0.45;
+    let mut caret = pad;
+    let mut glyphs = Vec::new();
+    for ch in text.chars() {
+        let id = sf.glyph_id(ch);
+        glyphs.push(id.with_scale_and_position(scale, point(caret, pad + sf.ascent())));
+        caret += sf.h_advance(id);
+    }
+    let (bw, bh) = ((caret + pad).ceil() as usize, (sf.ascent() - sf.descent() + pad * 2.0).ceil() as usize);
+    for yy in y..(y + bh).min(h) {
+        for xx in x..(x + bw).min(w) {
+            let i = (yy * w + xx) * 4;
+            for k in 0..3 {
+                out[i + k] = (out[i + k] as f32 * 0.3) as u8;
+            }
+        }
+    }
+    for g in glyphs {
+        let Some(o) = font.outline_glyph(g) else { continue };
+        let b = o.px_bounds();
+        o.draw(|gx, gy, c| {
+            let (px, py) = (x as i64 + b.min.x as i64 + gx as i64, y as i64 + b.min.y as i64 + gy as i64);
+            if px < 0 || py < 0 || px as usize >= w || py as usize >= h {
+                return;
+            }
+            let i = (py as usize * w + px as usize) * 4;
+            for k in 0..3 {
+                out[i + k] = (out[i + k] as f32 * (1.0 - c) + 255.0 * c).round() as u8;
+            }
+        });
+    }
+}
+
 /// A title on screen, `local` seconds into its clip.
 #[derive(Debug, Clone, Copy)]
 pub struct Shown<'a> {
@@ -44,12 +82,24 @@ pub fn is_blank(c: &TextClip) -> bool {
     c.title.trim().is_empty() && c.subtitle.trim().is_empty()
 }
 
-/// How long the device takes to move aside as a title comes in, and to come back once it has gone.
-pub const ROOM_IN: f32 = 0.7;
-pub const ROOM_AFTER: f32 = 0.6;
 
 /// Where the device goes, `v` of the way (0..1), to make room for a title at `place`: offset in
 /// fractions of the frame's short side and a scale factor, for a frame `ratio` = width / height.
+/// Degrees the device turns towards a title with `face_text`.
+pub const FACE_DEGREES: f32 = 14.0;
+
+/// Turn and tilt (degrees) towards a title at `place`, `v` of the way.
+pub fn face(place: TextPlace, v: f32) -> (f32, f32) {
+    let (turn, tilt) = match place {
+        TextPlace::Left => (-FACE_DEGREES, 0.0),
+        TextPlace::Right => (FACE_DEGREES, 0.0),
+        TextPlace::Top => (0.0, FACE_DEGREES * 0.7),
+        TextPlace::Bottom => (0.0, -FACE_DEGREES * 0.7),
+        TextPlace::Center => (0.0, 0.0),
+    };
+    (turn * v, tilt * v)
+}
+
 pub fn room(place: TextPlace, v: f32, ratio: f32) -> (f32, f32, f32) {
     let wide = ratio.max(1.0);
     let tall = (1.0 / ratio).max(1.0);

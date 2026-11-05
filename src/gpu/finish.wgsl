@@ -4,6 +4,8 @@
 
 struct Finish {
     rect: vec4<f32>,      // overlay region: x0, y0, x1, y1 (empty when x1 <= x0)
+    post: vec4<f32>,      // vignette, grain, fade, frame number
+    size: vec4<f32>,      // frame width, height
 }
 
 @group(0) @binding(0) var frame: texture_2d<f32>;
@@ -16,7 +18,19 @@ fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
     return vec4<f32>(p * 2.0 - 1.0, 0.0, 1.0);
 }
 
-// RGB 0..255 of a pixel, titles included.
+// Grain noise, -0.5..0.5 (post::noise).
+fn noise(x: u32, y: u32, frame: u32) -> f32 {
+    var h = ((x + frame * 7919u) * 374761393u) ^ ((y + frame * 104729u) * 668265263u);
+    h = (h ^ (h >> 13u)) * 1274126177u;
+    return f32((h ^ (h >> 16u)) & 0xffffu) / 65535.0 - 0.5;
+}
+
+fn smooth01(t: f32) -> f32 {
+    let x = clamp(t, 0.0, 1.0);
+    return x * x * (3.0 - 2.0 * x);
+}
+
+// RGB 0..255 of a pixel: titles, then vignette, fade and grain (post::color).
 fn color(p: vec2<u32>) -> vec3<f32> {
     var c = textureLoad(frame, p, 0).rgb * 255.0;
     let f = vec2<f32>(p);
@@ -24,7 +38,11 @@ fn color(p: vec2<u32>) -> vec3<f32> {
         let o = textureLoad(overlay, p, 0);
         c = o.rgb * 255.0 + c * (1.0 - o.a);
     }
-    return c;
+    let d = (f + vec2<f32>(0.5) - fin.size.xy * 0.5) / (fin.size.xy * 0.5);
+    let r = length(d) / sqrt(2.0);
+    let k = (1.0 - fin.post.x * 0.75 * smooth01((r - 0.35) / 0.7)) * fin.post.z;
+    let g = noise(p.x, p.y, u32(fin.post.w)) * fin.post.y * 36.0 * fin.post.z;
+    return c * k + vec3<f32>(g);
 }
 
 fn luma_of(c: vec3<f32>) -> f32 {
@@ -53,4 +71,10 @@ fn chroma(@builtin(position) fp: vec4<f32>) -> Chroma {
     out.u = vec4<f32>(cb / 255.0, 0.0, 0.0, 1.0);
     out.v = vec4<f32>(cr / 255.0, 0.0, 0.0, 1.0);
     return out;
+}
+
+// The finished frame as RGBA, for the preview window.
+@fragment
+fn rgba(@builtin(position) fp: vec4<f32>) -> @location(0) vec4<f32> {
+    return vec4<f32>(clamp(color(vec2<u32>(fp.xy)), vec3<f32>(0.0), vec3<f32>(255.0)) / 255.0, 1.0);
 }

@@ -10,11 +10,19 @@ struct Frame {
     p0: vec4<f32>,        // focal, nearest, dev_scale, s
     p1: vec4<f32>,        // lcx + dx, lcy + dy, ccx, ccy
     p2: vec4<f32>,        // tx, ty, cw, ch
-    light: vec4<f32>,
+    key: vec4<f32>,       // the light rig (see model3d::LightRig)
+    key_col: vec4<f32>,
+    fill: vec4<f32>,
+    fill_col: vec4<f32>,
+    rim: vec4<f32>,
+    rim_col: vec4<f32>,
+    top: vec4<f32>,
+    bottom: vec4<f32>,
     half_v: vec4<f32>,
+    rim_half: vec4<f32>,  // xyz, highlight strength
     scr: vec4<f32>,       // screen x0, y0, w, h
     vid: vec4<f32>,       // video x0, y0, w, h
-    misc: vec4<f32>,      // has_video
+    misc: vec4<f32>,      // has_video, mip blend, dissolve weight
 }
 
 struct Material {
@@ -26,6 +34,8 @@ struct Material {
 @group(0) @binding(0) var<uniform> fr: Frame;
 @group(0) @binding(1) var video: texture_2d<f32>;
 @group(0) @binding(2) var video_sampler: sampler;
+@group(0) @binding(3) var video2: texture_2d<f32>;
+@group(0) @binding(4) var video_from: texture_2d<f32>;
 @group(1) @binding(0) var<uniform> mat: Material;
 @group(1) @binding(1) var tex: texture_2d<f32>;
 @group(1) @binding(2) var tex_sampler: sampler;
@@ -72,20 +82,31 @@ fn screen_color(u: f32, v: f32) -> vec3<f32> {
     if fr.misc.x < 0.5 {
         return vec3<f32>(18.0, 18.0, 20.0);
     }
-    return textureSampleLevel(video, video_sampler, clamp(vec2<f32>(vu, vv), vec2<f32>(0.0), vec2<f32>(1.0)), 0.0).rgb * 255.0;
+    let uv = clamp(vec2<f32>(vu, vv), vec2<f32>(0.0), vec2<f32>(1.0));
+    var c = textureSampleLevel(video, video_sampler, uv, 0.0).rgb * 255.0;
+    if fr.misc.y > 0.0 {
+        c = mix(c, textureSampleLevel(video2, video_sampler, uv, 0.0).rgb * 255.0, fr.misc.y);
+    }
+    if fr.misc.z > 0.0 {
+        c = mix(c, textureSampleLevel(video_from, video_sampler, uv, 0.0).rgb * 255.0, fr.misc.z);
+    }
+    return c;
 }
 
-// Simple studio lighting: soft sky from above, a key light from the top-left and a highlight
-// whose sharpness follows the roughness.
+// Ambient light from above and below, key, fill and rim lights, and highlights whose
+// sharpness follows the roughness (as `shade` in model3d.rs).
 fn shade(base: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
-    let diffuse = max(dot(n, fr.light.xyz), 0.0);
+    let diffuse = max(dot(n, fr.key.xyz), 0.0) * fr.key_col.rgb + max(dot(n, fr.fill.xyz), 0.0) * fr.fill_col.rgb + max(dot(n, fr.rim.xyz), 0.0) * fr.rim_col.rgb;
     let sky = 0.5 - 0.5 * n.y;
     let metal = clamp(mat.pbr.x, 0.0, 1.0);
     let rough = clamp(mat.pbr.y, 0.04, 1.0);
     let spec_pow = 6.0 + (1.0 - rough) * (1.0 - rough) * 160.0;
-    let spec = pow(max(dot(n, fr.half_v.xyz), 0.0), spec_pow) * (0.06 + 0.9 * metal) * (1.15 - rough);
-    let dif = base * (0.3 * sky + 0.8 * diffuse) * (1.0 - 0.8 * metal);
-    let refl = base * metal * (0.25 + 0.55 * sky);
+    let gloss = (0.06 + 0.9 * metal) * (1.15 - rough) * fr.rim_half.w;
+    let spec = pow(max(dot(n, fr.half_v.xyz), 0.0), spec_pow) * gloss * fr.key_col.rgb + pow(max(dot(n, fr.rim_half.xyz), 0.0), spec_pow) * gloss * fr.rim_col.rgb;
+    let amb = sky * fr.top.rgb + (1.0 - sky) * fr.bottom.rgb;
+    let top_lum = (fr.top.r + fr.top.g + fr.top.b) / 3.0;
+    let dif = base * (0.3 * amb + 0.8 * diffuse) * (1.0 - 0.8 * metal);
+    let refl = base * metal * (0.25 * top_lum + 0.55 * amb);
     let tint = select(vec3<f32>(255.0), base, metal > 0.5);
     return min(dif + refl + tint * spec + mat.emissive.rgb, vec3<f32>(255.0));
 }

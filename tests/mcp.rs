@@ -170,6 +170,20 @@ fn an_agent_builds_and_exports_a_video() {
     assert_eq!(img["content"][0]["type"], "image");
     let data = img["content"][0]["data"].as_str().unwrap();
     assert!(data.starts_with("iVBORw0KGgo"), "PNG expected");
+    let strip = mcp.call("render_strip", json!({"start": 0.0, "end": 6.0, "count": 6, "width": 160}));
+    assert_eq!(strip["content"][0]["type"], "image");
+    let r = mcp.text("render_preview", json!({"start": 3.0, "end": 4.5, "width": 200, "fps": 12}));
+    let path = r.split(" en ").nth(1).and_then(|s| s.rsplit_once(" (")).map(|(p, _)| p.to_string()).expect(&r);
+    let frames = Command::new("ffprobe").args(["-v", "error", "-count_frames", "-show_entries", "stream=nb_read_frames,width", "-of", "csv=p=0"]).arg(&path).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&frames.stdout).trim(), "200,18", "{r}");
+    let _ = std::fs::remove_file(&path);
+
+    // Screen changes as marks to anchor things to.
+    let marks = mcp.text("detect_marks", json!({}));
+    assert!(marks.contains("cambios de pantalla"), "{marks}");
+    let n = mcp.project()["marks"].as_array().unwrap().len();
+    let r = mcp.request("tools/call", json!({"name": "add_zoom", "arguments": {"mark": n + 5}}));
+    assert_eq!(r["result"]["isError"], true);
 
     mcp.call("export", json!({"resolution": "720p", "fps": 30, "quality": "standard", "folder": dir.to_string_lossy()}));
     let started = Instant::now();
@@ -186,5 +200,55 @@ fn an_agent_builds_and_exports_a_video() {
     let probe = Command::new("ffprobe").args(["-v", "error", "-show_entries", "stream=codec_type,width,height", "-of", "csv=p=0"]).arg(&out).output().unwrap();
     let probe = String::from_utf8_lossy(&probe.stdout);
     assert!(probe.contains("video,720,1280") && probe.contains("audio"), "{probe}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn batches_projects_and_title_files() {
+    let dir = std::env::temp_dir().join(format!("rec-ording-mcp-b-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut mcp = Mcp::start(&dir);
+    mcp.request("initialize", json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "test", "version": "1"}}));
+    mcp.call("create_project", json!({"name": "Uno"}));
+    mcp.call("create_project", json!({"name": "Dos"}));
+
+    // Every answer names the project it acted on; `project` picks another one.
+    let r = mcp.call("add_text", json!({"time": 0.0, "title": "En Uno", "project": "Uno"}));
+    assert_eq!(r["content"][1]["text"], "Proyecto: «Uno»");
+    let r = mcp.call("get_project", json!({}));
+    assert_eq!(r["content"][1]["text"], "Proyecto: «Dos»");
+    let uno: Value = serde_json::from_str(mcp.call("get_project", json!({"project": "Uno"}))["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(uno["texts"].as_array().unwrap().len(), 1);
+    assert_eq!(mcp.project()["texts"].as_array().unwrap().len(), 0);
+
+    // A batch is all or nothing, and one undo step.
+    let bad = mcp.request("tools/call", json!({"name": "batch", "arguments": {"operations": [
+        {"name": "add_text", "arguments": {"time": 0.0, "title": "A"}},
+        {"name": "delete_text", "arguments": {"text_id": 999}}
+    ]}}));
+    assert_eq!(bad["result"]["isError"], true);
+    assert_eq!(mcp.project()["texts"].as_array().unwrap().len(), 0);
+    mcp.call("batch", json!({"operations": [
+        {"name": "add_text", "arguments": {"time": 0.0, "title": "A", "duration": 2}},
+        {"name": "add_text", "arguments": {"time": 5.0, "title": "B", "place": "right"}},
+        {"name": "rename_project", "arguments": {"name": "Dos bis"}}
+    ]}));
+    let p = mcp.project();
+    assert_eq!((p["texts"].as_array().unwrap().len(), p["name"].as_str()), (2, Some("Dos bis")));
+    mcp.call("undo", json!({}));
+    let p = mcp.project();
+    assert_eq!((p["texts"].as_array().unwrap().len(), p["name"].as_str()), (0, Some("Dos")));
+    mcp.call("redo", json!({}));
+
+    // Titles out to JSON and back in.
+    let texts: Value = serde_json::from_str(&mcp.text("export_texts", json!({}))).unwrap();
+    assert_eq!(texts[1]["place"], "right");
+    let mut edited = texts.clone();
+    edited[1]["title"] = json!("B editado");
+    mcp.call("import_texts", json!({"texts": edited}));
+    let p = mcp.project();
+    assert_eq!(p["texts"][1]["title"], "B editado");
+    assert_eq!(p["texts"].as_array().unwrap().len(), 2);
     let _ = std::fs::remove_dir_all(&dir);
 }

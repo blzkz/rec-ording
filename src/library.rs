@@ -372,6 +372,7 @@ pub fn thumbnail(src: &ModelSource, w: usize, h: usize) -> Option<Vec<u8>> {
             supersample: 2,
             texts: &[],
             blur: &[],
+            from: None,
         },
     );
     Some(out)

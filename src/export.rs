@@ -78,6 +78,18 @@ fn collect_stderr(child: &mut Child) -> Arc<Mutex<String>> {
     buf
 }
 
+/// `atempo` filters for a speed change (each one takes 0,5× to 2×).
+fn atempo(speed: f32) -> String {
+    let mut s = speed.clamp(0.25, 4.0);
+    let mut out = String::new();
+    while (s - 1.0).abs() > 1e-3 {
+        let step = s.clamp(0.5, 2.0);
+        out.push_str(&format!(",atempo={step:.4}"));
+        s /= step;
+    }
+    out
+}
+
 fn codec_of(format: ExportFormat) -> Option<Codec> {
     match format {
         ExportFormat::H264 => Some(Codec::H264),
@@ -115,6 +127,9 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
         len: f32,
         frames: usize,
         audio: bool,
+        speed: f32,
+        /// A still: the frame at `from`, held.
+        still: bool,
     }
     let parts: Vec<Part> = clips
         .iter()
@@ -126,9 +141,11 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
                 w: m.info.width as usize,
                 h: m.info.height as usize,
                 from: c.clip.source_in,
-                len: c.clip.duration(),
+                len: if c.clip.freeze.is_some() { 0.0 } else { c.clip.source_out - c.clip.source_in },
                 frames,
-                audio: m.info.has_audio,
+                audio: m.info.has_audio && c.clip.freeze.is_none(),
+                speed: c.clip.speed.max(0.01),
+                still: c.clip.freeze.is_some(),
             })
         })
         .collect::<Result<_, String>>()?;
@@ -141,7 +158,8 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
         }
         _ => None,
     };
-    let mut gpu = if card { GpuCompositor::new(ow, oh, 2, model.as_ref()).ok() } else { None };
+    let ss = project.style.finish.antialias.supersample();
+    let mut gpu = if card { GpuCompositor::new(ow, oh, ss, model.as_ref()).ok() } else { None };
     let how = match (&gpu, hw) {
         (Some(g), Some(_)) => format!("Con la tarjeta gráfica ({})", g.name),
         (Some(g), None) => format!("Dibuja la tarjeta gráfica ({}) y codifica el procesador", g.name),
@@ -169,22 +187,35 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
     if audio {
         let mut filter = String::new();
         for (k, part) in parts.iter().enumerate() {
-            let len = format!("{:.3}", part.len);
+            // Seconds on the timeline (stills and speed changes included).
+            let shown = format!("{:.3}", part.frames as f32 / fps as f32);
             if part.audio {
+                let len = format!("{:.3}", part.len);
                 enc.args(["-ss", &format!("{:.3}", part.from), "-t", &len, "-i", &part.path]);
+                filter.push_str(&format!(
+                    "[{i}:a]aresample=48000,aformat=channel_layouts=stereo,atrim=0:{len},asetpts=PTS-STARTPTS{tempo},atrim=0:{shown}[a{k}];",
+                    i = k + 1,
+                    tempo = atempo(part.speed)
+                ));
             } else {
-                // Silence for clips without sound, so the rest stays in sync.
-                enc.args(["-f", "lavfi", "-t", &len, "-i", "anullsrc=r=48000:cl=stereo"]);
+                // Silence for stills and clips without sound, so the rest stays in sync.
+                enc.args(["-f", "lavfi", "-t", &shown, "-i", "anullsrc=r=48000:cl=stereo"]);
+                filter.push_str(&format!("[{i}:a]atrim=0:{shown},asetpts=PTS-STARTPTS[a{k}];", i = k + 1));
             }
-            filter.push_str(&format!(
-                "[{i}:a]aresample=48000,aformat=channel_layouts=stereo,atrim=0:{len},asetpts=PTS-STARTPTS[a{k}];",
-                i = k + 1
-            ));
         }
         for k in 0..parts.len() {
             filter.push_str(&format!("[a{k}]"));
         }
-        filter.push_str(&format!("concat=n={}:v=0:a=1[aout]", parts.len()));
+        // Fades of the sound with the picture's.
+        let fin = &project.style.finish;
+        let mut fades = String::new();
+        if fin.fade_in > 0.0 {
+            fades.push_str(&format!(",afade=t=in:d={:.3}", fin.fade_in));
+        }
+        if fin.fade_out > 0.0 {
+            fades.push_str(&format!(",afade=t=out:st={:.3}:d={:.3}", (dur - fin.fade_out).max(0.0), fin.fade_out));
+        }
+        filter.push_str(&format!("concat=n={}:v=0:a=1{fades}[aout]", parts.len()));
         enc.args(["-filter_complex", &filter, "-map", "0:v", "-map", "[aout]"]);
     }
     let crf = |base: u32| -> u32 {
@@ -252,9 +283,13 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
             if part.frames == 0 {
                 continue;
             }
+            // A still needs one frame; a speed change samples the recording faster or slower.
+            let len = if part.still { 1.0 / fps as f32 } else { part.len };
+            let (input, timed) = crate::media::timed_input(&part.path, part.from, len, fps as f32, if part.still { 1.0 } else { part.speed });
             let spawned = command("ffmpeg")
-                .args(["-nostdin", "-loglevel", "error", "-ss", &format!("{:.3}", part.from), "-t", &format!("{:.3}", part.len), "-i", &part.path])
-                .args(["-vf", &format!("scale={}:{},fps={fps}", part.w, part.h), "-an", "-f", "rawvideo", "-pix_fmt", "rgba", "-"])
+                .args(["-nostdin", "-loglevel", "error"])
+                .args(input)
+                .args(["-vf", &format!("{timed},scale={}:{}", part.w, part.h), "-an", "-f", "rawvideo", "-pix_fmt", "rgba", "-"])
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -270,6 +305,13 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
             for _ in 0..part.frames {
                 if reader_stop.load(Ordering::Relaxed) {
                     break;
+                }
+                if part.still && got_one {
+                    if raw_tx.send(None).is_err() {
+                        let _ = dec.kill();
+                        return;
+                    }
+                    continue;
                 }
                 let mut data = Vec::with_capacity(size);
                 let read = (&mut stdout).take(size as u64).read_to_end(&mut data);
@@ -320,6 +362,7 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
         for (mut buf, t) in out_rx {
             if !yuv {
                 crate::text::draw(&mut buf, ow, oh, &style, &timeline::texts_in(&texts, t));
+                crate::post::apply(&mut buf, ow, oh, &crate::post::at(&style, t, dur, fps as f32));
             }
             if enc_in.write_all(&buf).is_err() {
                 return false;
@@ -347,12 +390,23 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
     let began = Instant::now();
     let mut written = 0usize;
     let mut last: Option<(Arc<Mips>, usize, usize)> = None;
+    let mut cur_clip: Option<(u64, f32)> = None;
+    let mut dissolve_from: Option<Arc<Mips>> = None;
     let mut failed = None;
 
     for i in 0..total {
         if cancel.load(Ordering::Relaxed) {
             failed = Some("cancelado".to_string());
             break;
+        }
+        let t = i as f32 / fps as f32;
+        // At a cut, keep the previous clip's last frame for the dissolve into the next one.
+        let clip = timeline::locate(project, t).map(|c| (c.clip.id, c.start));
+        if clip.map(|c| c.0) != cur_clip.map(|c| c.0) {
+            if let (Some(_), Some(prev)) = (cur_clip, last.as_ref()) {
+                dissolve_from = Some(prev.0.clone());
+            }
+            cur_clip = clip;
         }
         if let Ok(f) = frame_rx.recv() {
             last = Some(f);
@@ -362,7 +416,14 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
             failed = Some(if e.is_empty() { "No se pudo decodificar el vídeo".to_string() } else { e });
             break;
         };
-        let t = i as f32 / fps as f32;
+        let crossfade = project.style.finish.crossfade;
+        let from = match (&dissolve_from, cur_clip) {
+            (Some(prev), Some((_, start))) if crossfade > 0.0 && t - start < crossfade => {
+                let k = ((t - start) / crossfade).clamp(0.0, 1.0);
+                Some((prev.as_ref(), 1.0 - k * k * (3.0 - 2.0 * k)))
+            }
+            _ => None,
+        };
         let mut buf = vec![0u8; if yuv { ow * oh * 3 / 2 } else { ow * oh * 4 }];
         let blur = timeline::shutter(project, t, fps as f32);
         let inp = ComposeInput {
@@ -376,15 +437,16 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
             time: t,
             since_start: t,
             model: model.as_ref(),
-            supersample: 2,
+            supersample: ss,
             texts: &[],
             blur: &blur,
+            from,
         };
         match gpu.as_mut() {
             Some(g) => {
                 let done = if yuv {
                     let overlay = overlay_rx.recv().ok().flatten();
-                    g.compose_yuv(&mut buf, &inp, overlay.as_ref())
+                    g.compose_yuv(&mut buf, &inp, overlay.as_ref(), &crate::post::at(&project.style, t, dur, fps as f32))
                 } else {
                     g.compose_frame(&mut buf, &inp)
                 };
