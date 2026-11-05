@@ -15,6 +15,7 @@ mod model3d;
 mod platform;
 mod post;
 mod text;
+mod thumbs;
 mod theme;
 mod timeline;
 mod update;

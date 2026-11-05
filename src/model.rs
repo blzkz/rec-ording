@@ -1215,10 +1215,14 @@ mod tests {
 
     #[test]
     fn migrates_v3_projects() {
-        let raw = r#"{"version":3,"name":"Demo","media":{"path":"/bin/sh","width":1080,"height":2400,"duration":8.0,"fps":30.0,"has_audio":true},
-            "trim_start":1.0,"trim_end":7.0,"touches":[{"time":2.0,"duration":0.1,"x":0.5,"y":0.3,"end_x":0.5,"end_y":0.3,"kind":"Tap"}],
-            "zooms":[{"id":1,"start":2.0,"end":4.0,"scale":1.8,"x":0.5,"y":0.3,"auto":true}]}"#;
-        let p = parse_project(raw).unwrap();
+        // The recording must exist; this test's own program does on every system.
+        let video = serde_json::to_string(&std::env::current_exe().unwrap()).unwrap();
+        let raw = format!(
+            r#"{{"version":3,"name":"Demo","media":{{"path":{video},"width":1080,"height":2400,"duration":8.0,"fps":30.0,"has_audio":true}},
+            "trim_start":1.0,"trim_end":7.0,"touches":[{{"time":2.0,"duration":0.1,"x":0.5,"y":0.3,"end_x":0.5,"end_y":0.3,"kind":"Tap"}}],
+            "zooms":[{{"id":1,"start":2.0,"end":4.0,"scale":1.8,"x":0.5,"y":0.3,"auto":true}}]}}"#
+        );
+        let p = parse_project(&raw).unwrap();
         assert_eq!(p.name, "Demo");
         assert_eq!(p.clips.len(), 1);
         assert_eq!((p.clips[0].source_in, p.clips[0].source_out), (1.0, 7.0));

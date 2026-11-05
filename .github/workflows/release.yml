@@ -1,0 +1,119 @@
+name: Release
+
+# Builds the Arch package and the Windows .zip on a `v*` tag (or by hand, to try a build) and,
+# for a tag, publishes both in the public releases repository, where the app looks for
+# updates. Only on tags or by hand: the private repository's minutes are limited, and Windows
+# minutes count double.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  arch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    container:
+      image: archlinux:base-devel
+    steps:
+      - name: Install Arch dependencies
+        run: pacman -Syu --noconfirm rust cargo vulkan-icd-loader ffmpeg git
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Test
+        run: cargo test --release
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Build .pkg.tar.zst with makepkg
+        run: |
+          useradd -m builder
+          chown -R builder:builder .
+          su builder -c "cd packaging/arch && makepkg -f --nodeps"
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: arch
+          path: packaging/arch/*.pkg.tar.zst
+          if-no-files-found: error
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust builds
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install ffmpeg (for the end-to-end test)
+        run: choco install ffmpeg -y --no-progress
+
+      - name: Test
+        run: cargo test --release
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Package .zip
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          $name = "rec-ording-$version-windows-x64"
+          New-Item -ItemType Directory -Path "dist/$name" | Out-Null
+          Copy-Item target/release/rec-ording.exe "dist/$name/"
+          Copy-Item -Recurse assets/models "dist/$name/models"
+          Copy-Item packaging/windows/LEEME.txt "dist/$name/"
+          Copy-Item assets/fonts/OFL.txt "dist/$name/Inter-OFL.txt"
+          Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
+
+      - name: Upload .zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*.zip
+          if-no-files-found: error
+
+  publish:
+    needs: [arch, windows]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # Lets this private repository write to the public one: a fine-grained token with
+      # "Contents: read and write" on blzkz/rec-ording-releases, saved as RELEASES_TOKEN.
+      GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+      REPO: blzkz/rec-ording-releases
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download the builds
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish to the releases repository
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::Falta el secreto RELEASES_TOKEN; los paquetes están en los artefactos de esta ejecución."
+            exit 1
+          fi
+          TAG="${GITHUB_REF#refs/tags/}"
+          git log -1 --format=%B "$GITHUB_SHA" | grep -v '^Co-Authored-By:' > notes.md
+          ls -l dist
+          if gh release view "$TAG" -R "$REPO" > /dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber -R "$REPO"
+          else
+            gh release create "$TAG" dist/* -R "$REPO" --title "rec·ording ${TAG#v}" --notes-file notes.md
+          fi

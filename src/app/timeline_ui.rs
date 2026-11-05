@@ -103,57 +103,75 @@ impl RecOrdingApp {
 
     fn timeline_header(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
-            if secondary_button(ui, "+ Zoom").on_hover_text("Zoom en el cursor (Z)").clicked() {
-                self.add_zoom_at(self.time);
-            }
-            if secondary_button(ui, "+ Movimiento").on_hover_text("Un giro de cámara en el cursor; edita sus fotogramas clave").clicked() {
-                match timeline::add_move(&mut self.project, self.time) {
-                    Ok(id) => self.selection = Selection::Camera { id, key: Some(1) },
-                    Err(e) => self.toast(e),
+            ui.spacing_mut().item_spacing.x = 10.0;
+            // Adding things at the cursor.
+            tool_group(ui, |ui| {
+                if icon_button(ui, Icon::Zoom, "Añadir zoom en el cursor", "Z", false, true).clicked() {
+                    self.add_zoom_at(self.time);
                 }
-            }
-            if secondary_button(ui, "+ Texto").on_hover_text("Un título junto al móvil, en el cursor (T)").clicked() {
-                self.add_text_at(self.time);
-            }
-            ui.menu_button(RichText::new("Móvil…").color(TEXT), |ui| {
-                ui.label(RichText::new("Movimiento del móvil en el cursor").color(TEXT_3).font(regular(11.5)));
-                ui.label(RichText::new("Los giros junto a un cambio de clip se centran en él").color(TEXT_3).font(regular(11.5)));
-                for preset in DevicePreset::ALL {
-                    if ui.button(preset.label()).clicked() {
-                        let id = timeline::add_device_preset(&mut self.project, preset, self.time);
-                        self.selection = Selection::Device { id, key: None };
-                        ui.close_menu();
+                if icon_button(ui, Icon::Camera, "Añadir movimiento de cámara en el cursor", "", false, true).clicked() {
+                    match timeline::add_move(&mut self.project, self.time) {
+                        Ok(id) => self.selection = Selection::Camera { id, key: Some(1) },
+                        Err(e) => self.toast(e),
                     }
                 }
-            })
-            .response
-            .on_hover_text("Añadir un movimiento del dispositivo");
-            let director = egui::Button::new(RichText::new("Director").color(if self.director_mode { Color32::WHITE } else { TEXT }))
-                .fill(if self.director_mode { ACCENT } else { CONTROL })
-                .min_size(Vec2::new(0.0, 28.0));
-            if ui.add(director).on_hover_text("Marca lo que debe verse en cada momento y se generan los planos de cámara").clicked() {
-                self.director_mode = !self.director_mode;
-                self.selection = Selection::None;
-                if self.playing {
-                    self.toggle_play();
+                if icon_button(ui, Icon::Text, "Añadir texto en el cursor", "T", false, true).clicked() {
+                    self.add_text_at(self.time);
                 }
-            }
-            if secondary_button(ui, "Dividir").on_hover_text("Divide el clip en el cursor (Ctrl+B)").clicked() {
-                self.split_here();
-            }
-            if secondary_button(ui, "Añadir vídeo").on_hover_text("Añade un vídeo al final").clicked() {
-                self.pick_video();
-            }
+                let phone = icon_button(ui, Icon::PhoneMove, "Añadir movimiento del móvil…", "", false, true);
+                let popup = ui.make_persistent_id("device-presets");
+                if phone.clicked() {
+                    ui.memory_mut(|m| m.toggle_popup(popup));
+                }
+                egui::popup::popup_above_or_below_widget(ui, popup, &phone, egui::AboveOrBelow::Above, egui::PopupCloseBehavior::CloseOnClick, |ui| {
+                    ui.set_min_width(220.0);
+                    ui.label(RichText::new("Movimiento del móvil en el cursor").color(TEXT_2).font(regular(12.0)));
+                    ui.label(RichText::new("Los giros junto a un cambio de clip se centran en él").color(TEXT_3).font(regular(11.5)));
+                    for preset in DevicePreset::ALL {
+                        if ui.button(preset.label()).clicked() {
+                            let id = timeline::add_device_preset(&mut self.project, preset, self.time);
+                            self.selection = Selection::Device { id, key: None };
+                        }
+                    }
+                });
+            });
+            tool_group(ui, |ui| {
+                if icon_button(ui, Icon::Director, "Director: marca lo que debe verse y se generan los planos", "", self.director_mode, true).clicked() {
+                    self.director_mode = !self.director_mode;
+                    self.selection = Selection::None;
+                    if self.playing {
+                        self.toggle_play();
+                    }
+                }
+            });
+            // Editing the video clips.
+            tool_group(ui, |ui| {
+                if icon_button(ui, Icon::Split, "Dividir el clip en el cursor", "Ctrl+B", false, true).clicked() {
+                    self.split_here();
+                }
+                if icon_button(ui, Icon::Freeze, "Congelar el fotograma del cursor 2 s", "", false, true).clicked() {
+                    match timeline::freeze_frame(&mut self.project, self.time, 2.0) {
+                        Ok(still) => self.selection = Selection::Clip(still),
+                        Err(e) => self.toast(e),
+                    }
+                    self.requested_time = None;
+                }
+                if icon_button(ui, Icon::AddVideo, "Añadir un vídeo al final", "", false, true).clicked() {
+                    self.pick_video();
+                }
+            });
             ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
                 ui.label(RichText::new(format!("Duración {}", fmt_time(timeline::duration(&self.project)))).color(TEXT_2).font(regular(12.5)));
-                ui.add_space(8.0);
-                if ui.add_enabled(!self.redo.is_empty(), egui::Button::new("Rehacer").min_size(Vec2::new(0.0, 28.0))).on_hover_text("Ctrl+Mayús+Z").clicked() {
-                    self.undo_redo(false);
-                }
-                if ui.add_enabled(!self.undo.is_empty(), egui::Button::new("Deshacer").min_size(Vec2::new(0.0, 28.0))).on_hover_text("Ctrl+Z").clicked() {
-                    self.undo_redo(true);
-                }
+                ui.add_space(4.0);
+                // Right to left here: Redo goes first to end up on the right.
+                tool_group(ui, |ui| {
+                    if icon_button(ui, Icon::Redo, "Rehacer", "Ctrl+Mayús+Z", false, !self.redo.is_empty()).clicked() {
+                        self.undo_redo(false);
+                    }
+                    if icon_button(ui, Icon::Undo, "Deshacer", "Ctrl+Z", false, !self.undo.is_empty()).clicked() {
+                        self.undo_redo(true);
+                    }
+                });
             });
         });
     }
@@ -591,7 +609,7 @@ impl RecOrdingApp {
         let cam_row = Rect::from_min_max(Pos2::new(tl.x0, tl.camera.top()), Pos2::new(tl.x1, tl.camera.bottom()));
         p.rect_filled(cam_row, Rounding::same(7.0), TRACK);
         if self.project.camera.is_empty() {
-            p.text(cam_row.center(), Align2::CENTER_CENTER, "Sin movimientos · + Zoom, + Movimiento, Director o doble clic aquí", regular(12.0), TEXT_3);
+            p.text(cam_row.center(), Align2::CENTER_CENTER, "Sin movimientos de cámara · usa los botones de arriba o haz doble clic aquí", regular(12.0), TEXT_3);
         }
         for c in &self.project.camera {
             let r = Rect::from_min_max(Pos2::new(tl.x(c.start), tl.camera.top() + 2.0), Pos2::new(tl.x(c.end()), tl.camera.bottom() - 2.0));
@@ -625,7 +643,7 @@ impl RecOrdingApp {
         let dev_row = Rect::from_min_max(Pos2::new(tl.x0, tl.device.top()), Pos2::new(tl.x1, tl.device.bottom()));
         p.rect_filled(dev_row, Rounding::same(6.0), TRACK);
         if self.project.device.is_empty() {
-            p.text(dev_row.center(), Align2::CENTER_CENTER, "Sin movimientos del móvil · menú «Móvil»", regular(11.5), TEXT_3);
+            p.text(dev_row.center(), Align2::CENTER_CENTER, "Sin movimientos del móvil · botón del móvil, arriba", regular(11.5), TEXT_3);
         }
         for c in &self.project.device {
             let r = Rect::from_min_max(Pos2::new(tl.x(c.start), tl.device.top() + 2.0), Pos2::new(tl.x(c.end()).max(tl.x(c.start) + 6.0), tl.device.bottom() - 2.0));
@@ -650,7 +668,7 @@ impl RecOrdingApp {
         let text_row = Rect::from_min_max(Pos2::new(tl.x0, tl.text.top()), Pos2::new(tl.x1, tl.text.bottom()));
         p.rect_filled(text_row, Rounding::same(6.0), TRACK);
         if self.project.texts.is_empty() {
-            p.text(text_row.center(), Align2::CENTER_CENTER, "Sin textos · + Texto, T o doble clic aquí", regular(11.5), TEXT_3);
+            p.text(text_row.center(), Align2::CENTER_CENTER, "Sin textos · pulsa T o haz doble clic aquí", regular(11.5), TEXT_3);
         }
         for c in &self.project.texts {
             let r = Rect::from_min_max(Pos2::new(tl.x(c.start), tl.text.top() + 2.0), Pos2::new(tl.x(c.end()).max(tl.x(c.start) + 6.0), tl.text.bottom() - 2.0));

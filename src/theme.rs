@@ -195,11 +195,23 @@ pub fn segmented<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, options: &[(T,
     let (rect, _) = ui.allocate_exact_size(Vec2::new(width, h), Sense::hover());
     let painter = ui.painter_at(rect.expand(2.0));
     painter.rect_filled(rect, Rounding::same(7.0), Color32::from_rgb(54, 54, 58));
+    // Equal segments when every label fits; otherwise each gets its label's width plus an
+    // equal share of what is left, so long labels never run into their neighbours.
     let n = options.len().max(1) as f32;
-    let seg_w = rect.width() / n;
+    let label_w: Vec<f32> = options.iter().map(|(_, l)| ui.painter().layout_no_wrap(l.to_string(), medium(12.5), TEXT).size().x + 12.0).collect();
+    let equal = rect.width() / n;
+    let widths: Vec<f32> = if label_w.iter().all(|w| *w <= equal) {
+        vec![equal; options.len()]
+    } else {
+        let spare = (rect.width() - label_w.iter().sum::<f32>()) / n;
+        label_w.iter().map(|w| w + spare).collect()
+    };
     let mut changed = false;
+    let mut x = rect.left();
     for (i, (opt, label)) in options.iter().enumerate() {
-        let r = Rect::from_min_size(Pos2::new(rect.left() + seg_w * i as f32, rect.top()), Vec2::new(seg_w, h));
+        let seg_w = widths[i];
+        let r = Rect::from_min_size(Pos2::new(x, rect.top()), Vec2::new(seg_w, h));
+        x += seg_w;
         let resp = ui.interact(r, ui.id().with(("seg", i, label)), Sense::click());
         let selected = *value == *opt;
         if selected {
@@ -415,4 +427,274 @@ pub fn with_name(text: &str, font: FontId, color: Color32) -> egui::text::Layout
     }
     job.append(rest, 0.0, format(color));
     job
+}
+
+// ---------- Tool icons ----------
+
+/// The icons of the tool buttons (timeline, inspector, toolbar).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Icon {
+    Zoom,
+    Camera,
+    Text,
+    PhoneMove,
+    Director,
+    Split,
+    Freeze,
+    AddVideo,
+    Swap,
+    Undo,
+    Redo,
+    Trash,
+    Pencil,
+    Sidebar,
+    Plus,
+    Folder,
+    Home,
+}
+
+fn polyline(p: &egui::Painter, pts: Vec<Pos2>, st: Stroke) {
+    p.add(egui::Shape::line(pts, st));
+}
+
+/// Points of an arc (angles in degrees, y down).
+fn arc(c: Pos2, r: f32, a0: f32, a1: f32) -> Vec<Pos2> {
+    let n = 14;
+    (0..=n)
+        .map(|i| {
+            let a = (a0 + (a1 - a0) * i as f32 / n as f32).to_radians();
+            Pos2::new(c.x + r * a.cos(), c.y + r * a.sin())
+        })
+        .collect()
+}
+
+/// An open arrow head at `tip`, pointing along `dir`.
+fn arrow_head(p: &egui::Painter, tip: Pos2, dir: Vec2, size: f32, st: Stroke) {
+    let d = dir.normalized();
+    let n = Vec2::new(-d.y, d.x);
+    polyline(p, vec![tip - d * size + n * size * 0.8, tip, tip - d * size - n * size * 0.8], st);
+}
+
+/// Paints `icon` centred on `c`, about `s` points across.
+pub fn paint_icon(p: &egui::Painter, icon: Icon, c: Pos2, s: f32, col: Color32) {
+    let st = Stroke::new((s * 0.09).max(1.4), col);
+    let v = |x: f32, y: f32| c + Vec2::new(x * s, y * s);
+    match icon {
+        Icon::Zoom => {
+            let o = v(-0.1, -0.1);
+            p.circle_stroke(o, s * 0.32, st);
+            p.line_segment([v(0.13, 0.13), v(0.44, 0.44)], Stroke::new(st.width * 1.4, col));
+            p.line_segment([o - Vec2::new(s * 0.14, 0.0), o + Vec2::new(s * 0.14, 0.0)], st);
+            p.line_segment([o - Vec2::new(0.0, s * 0.14), o + Vec2::new(0.0, s * 0.14)], st);
+        }
+        Icon::Camera => {
+            let body = Rect::from_min_max(v(-0.46, -0.24), v(0.16, 0.24));
+            p.rect_stroke(body, Rounding::same(s * 0.08), st);
+            p.add(egui::Shape::closed_line(vec![v(0.2, -0.06), v(0.46, -0.22), v(0.46, 0.22), v(0.2, 0.06)], st));
+            p.circle_filled(v(-0.3, -0.36), s * 0.08, col);
+        }
+        Icon::Text => {
+            p.line_segment([v(-0.34, -0.36), v(0.34, -0.36)], Stroke::new(st.width * 1.2, col));
+            p.line_segment([v(0.0, -0.36), v(0.0, 0.4)], Stroke::new(st.width * 1.2, col));
+            p.line_segment([v(-0.14, 0.4), v(0.14, 0.4)], st);
+        }
+        Icon::PhoneMove => {
+            let body = Rect::from_min_max(v(-0.4, -0.38), v(0.0, 0.38));
+            p.rect_stroke(body, Rounding::same(s * 0.09), st);
+            p.line_segment([v(-0.26, -0.27), v(-0.14, -0.27)], st);
+            let pts = arc(v(-0.06, 0.0), s * 0.42, -50.0, 50.0);
+            let (end, before) = (pts[pts.len() - 1], pts[pts.len() - 3]);
+            polyline(p, pts, st);
+            arrow_head(p, end, end - before, s * 0.14, st);
+        }
+        Icon::Director => {
+            let body = Rect::from_min_max(v(-0.42, -0.1), v(0.42, 0.4));
+            p.rect_stroke(body, Rounding::same(s * 0.05), st);
+            p.add(egui::Shape::closed_line(vec![v(-0.42, -0.18), v(0.36, -0.42), v(0.42, -0.26), v(-0.36, -0.02)], st));
+            for x in [-0.14, 0.12] {
+                p.line_segment([v(x, -0.27), v(x + 0.1, -0.12)], st);
+            }
+        }
+        Icon::Split => {
+            p.line_segment([v(0.0, -0.48), v(0.0, 0.48)], st);
+            p.rect_stroke(Rect::from_min_max(v(-0.46, -0.22), v(-0.12, 0.22)), Rounding::same(s * 0.05), st);
+            p.rect_stroke(Rect::from_min_max(v(0.12, -0.22), v(0.46, 0.22)), Rounding::same(s * 0.05), st);
+        }
+        Icon::Freeze => {
+            for k in 0..3 {
+                let a = (k as f32 * 60.0 + 90.0).to_radians();
+                let d = Vec2::new(a.cos(), a.sin()) * s * 0.44;
+                p.line_segment([c - d, c + d], st);
+                for e in [d, -d] {
+                    let base = c + e * 0.6;
+                    let n = Vec2::new(-e.y, e.x).normalized() * s * 0.13;
+                    let out = e.normalized() * s * 0.13;
+                    p.line_segment([base, base + out + n], st);
+                    p.line_segment([base, base + out - n], st);
+                }
+            }
+        }
+        Icon::AddVideo => {
+            let film = Rect::from_min_max(v(-0.46, -0.3), v(0.22, 0.3));
+            p.rect_stroke(film, Rounding::same(s * 0.06), st);
+            for y in [-0.16, 0.0, 0.16] {
+                p.circle_filled(v(-0.36, y), s * 0.035, col);
+                p.circle_filled(v(0.12, y), s * 0.035, col);
+            }
+            p.line_segment([v(0.3, 0.26), v(0.5, 0.26)], st);
+            p.line_segment([v(0.4, 0.16), v(0.4, 0.36)], st);
+        }
+        Icon::Swap => {
+            p.line_segment([v(-0.42, -0.16), v(0.4, -0.16)], st);
+            arrow_head(p, v(0.42, -0.16), Vec2::X, s * 0.16, st);
+            p.line_segment([v(0.42, 0.18), v(-0.4, 0.18)], st);
+            arrow_head(p, v(-0.42, 0.18), -Vec2::X, s * 0.16, st);
+        }
+        Icon::Undo | Icon::Redo => {
+            let flip = if icon == Icon::Redo { -1.0 } else { 1.0 };
+            let mut pts = arc(v(0.04 * flip, 0.08), s * 0.34, 200.0, 400.0);
+            for q in &mut pts {
+                q.x = c.x + (q.x - c.x) * flip;
+            }
+            let (tip, next) = (pts[0], pts[2]);
+            polyline(p, pts, st);
+            arrow_head(p, tip, tip - next, s * 0.16, st);
+        }
+        Icon::Trash => {
+            p.line_segment([v(-0.4, -0.3), v(0.4, -0.3)], st);
+            p.add(egui::Shape::line(vec![v(-0.13, -0.3), v(-0.13, -0.42), v(0.13, -0.42), v(0.13, -0.3)], st));
+            p.add(egui::Shape::line(vec![v(-0.3, -0.2), v(-0.24, 0.44), v(0.24, 0.44), v(0.3, -0.2)], st));
+            for x in [-0.08, 0.08] {
+                p.line_segment([v(x, -0.1), v(x, 0.32)], Stroke::new(st.width * 0.8, col));
+            }
+        }
+        Icon::Pencil => {
+            let d = Vec2::new(1.0, -1.0).normalized();
+            let n = Vec2::new(1.0, 1.0).normalized() * s * 0.12;
+            let (tail, tip) = (v(0.42, -0.42), v(-0.42, 0.42));
+            let neck = tip + d * s * 0.3;
+            p.add(egui::Shape::closed_line(vec![tail + n, neck + n, tip, neck - n, tail - n], st));
+            p.line_segment([tail - d * s * 0.2 + n, tail - d * s * 0.2 - n], st);
+        }
+        Icon::Sidebar => {
+            let r = Rect::from_center_size(c, Vec2::new(s * 0.92, s * 0.72));
+            p.rect_stroke(r, Rounding::same(s * 0.1), st);
+            p.line_segment([Pos2::new(r.right() - s * 0.3, r.top()), Pos2::new(r.right() - s * 0.3, r.bottom())], st);
+        }
+        Icon::Plus => {
+            p.line_segment([v(-0.4, 0.0), v(0.4, 0.0)], st);
+            p.line_segment([v(0.0, -0.4), v(0.0, 0.4)], st);
+        }
+        Icon::Folder => {
+            p.add(egui::Shape::closed_line(vec![v(-0.46, -0.32), v(-0.12, -0.32), v(0.0, -0.2), v(0.46, -0.2), v(0.46, 0.36), v(-0.46, 0.36)], st));
+            p.line_segment([v(-0.46, -0.08), v(0.46, -0.08)], st);
+        }
+        Icon::Home => {
+            p.add(egui::Shape::line(vec![v(-0.46, -0.02), v(0.0, -0.42), v(0.46, -0.02)], st));
+            p.add(egui::Shape::line(vec![v(-0.32, -0.12), v(-0.32, 0.4), v(0.32, 0.4), v(0.32, -0.12)], st));
+        }
+    }
+}
+
+/// The tooltip of a tool button: its name, and its shortcut in grey.
+fn tool_tip(resp: Response, name: &str, shortcut: &str) -> Response {
+    resp.on_hover_ui(|ui| {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(name).color(TEXT));
+            if !shortcut.is_empty() {
+                ui.label(RichText::new(shortcut).color(TEXT_3));
+            }
+        });
+    })
+}
+
+/// A square tool button showing only an icon (its name appears on hover), in the spirit of
+/// the tool bars of video editors. `on` marks a mode that is active.
+pub fn icon_button(ui: &mut Ui, icon: Icon, name: &str, shortcut: &str, on: bool, enabled: bool) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(32.0, 28.0), if enabled { Sense::click() } else { Sense::hover() });
+    let h = ui.ctx().animate_bool(resp.id, resp.hovered() && enabled);
+    let fill = if on { ACCENT } else { Color32::from_rgb(70, 70, 76).gamma_multiply(h) };
+    ui.painter().rect_filled(rect, Rounding::same(6.0), fill);
+    let col = match (enabled, on) {
+        (false, _) => TEXT_3.linear_multiply(0.6),
+        (true, true) => Color32::WHITE,
+        (true, false) => lerp_color(TEXT_2, TEXT, h),
+    };
+    paint_icon(ui.painter(), icon, rect.center(), 17.0, col);
+    let resp = if enabled { resp.on_hover_cursor(egui::CursorIcon::PointingHand) } else { resp };
+    tool_tip(resp, name, shortcut)
+}
+
+/// Several tool buttons on one rounded strip.
+pub fn tool_group<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    egui::Frame::none()
+        .fill(Color32::from_rgb(44, 44, 48))
+        .stroke(Stroke::new(1.0_f32, Color32::from_rgb(54, 54, 59)))
+        .rounding(Rounding::same(8.0))
+        .inner_margin(egui::Margin::same(2.0))
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            ui.horizontal(add).inner
+        })
+        .inner
+}
+
+/// A small icon button for the corner of a section (rename, delete…).
+pub fn small_icon_button(ui: &mut Ui, icon: Icon, name: &str, enabled: bool, danger: bool) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(22.0, 20.0), if enabled { Sense::click() } else { Sense::hover() });
+    let h = ui.ctx().animate_bool(resp.id, resp.hovered() && enabled);
+    ui.painter().rect_filled(rect, Rounding::same(5.0), Color32::from_rgb(64, 64, 70).gamma_multiply(h));
+    let col = match (enabled, danger) {
+        (false, _) => Color32::from_rgb(82, 82, 88),
+        (true, true) => lerp_color(TEXT_2, RED, h),
+        (true, false) => lerp_color(TEXT_2, TEXT, h),
+    };
+    paint_icon(ui.painter(), icon, rect.center(), 13.0, col);
+    let resp = if enabled { resp.on_hover_cursor(egui::CursorIcon::PointingHand) } else { resp };
+    tool_tip(resp, name, "")
+}
+
+/// A titled group box with small buttons on the right of its title.
+pub fn section_with<R>(ui: &mut Ui, title: &str, actions: impl FnOnce(&mut Ui), add: impl FnOnce(&mut Ui) -> R) -> R {
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.set_height(20.0);
+        ui.label(RichText::new(title).font(medium(12.5)).color(TEXT_2));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            actions(ui);
+        });
+    });
+    ui.add_space(-4.0);
+    egui::Frame::none()
+        .fill(CARD)
+        .rounding(Rounding::same(10.0))
+        .inner_margin(egui::Margin::same(12.0))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            add(ui)
+        })
+        .inner
+}
+
+/// A label and a segmented control on one row, or the control below the label when its
+/// options do not fit beside it.
+pub fn segmented_row<T: PartialEq + Copy>(ui: &mut Ui, label: &str, value: &mut T, options: &[(T, &str)]) -> bool {
+    let need = segmented_width(ui, options);
+    if need <= ui.available_width() - 82.0 {
+        ui.horizontal(|ui| {
+            fixed_label(ui, 78.0, RichText::new(label).color(TEXT), egui::Align::Min);
+            segmented(ui, value, options, ui.available_width())
+        })
+        .inner
+    } else {
+        ui.label(RichText::new(label).color(TEXT));
+        ui.add_space(-2.0);
+        segmented(ui, value, options, ui.available_width())
+    }
+}
+
+/// The width a segmented control needs to show all its labels.
+pub fn segmented_width<T>(ui: &Ui, options: &[(T, &str)]) -> f32 {
+    options.iter().map(|(_, l)| ui.painter().layout_no_wrap(l.to_string(), medium(12.5), TEXT).size().x + 16.0).sum::<f32>() + 4.0
 }

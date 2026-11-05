@@ -1152,12 +1152,12 @@ pub fn render_png(p: &Project, t: f32, width: usize, model: Option<&PreparedMode
 }
 
 /// Output size for a width, in the project's aspect.
-fn out_size(p: &Project, width: usize) -> (usize, usize) {
+pub(crate) fn out_size(p: &Project, width: usize) -> (usize, usize) {
     (width, ((width as f32 / p.style.aspect.ratio()).round() as usize).max(2))
 }
 
 /// The frame at `t` as the export draws it, `width` pixels wide.
-fn render_rgba(p: &Project, t: f32, width: usize, model: Option<&PreparedModel>) -> Result<Vec<u8>, String> {
+pub(crate) fn render_rgba(p: &Project, t: f32, width: usize, model: Option<&PreparedModel>) -> Result<Vec<u8>, String> {
     let (frame, vw, vh) = decode_frame(p, t)?;
     Ok(compose_at(p, t, &Mips::build(frame), vw, vh, width, model, p.style.finish.antialias.supersample()))
 }

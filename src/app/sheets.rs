@@ -5,68 +5,57 @@ use super::*;
 impl RecOrdingApp {
     pub(super) fn projects_sheet(&mut self, ctx: &egui::Context) {
         let mut open: Option<PathBuf> = None;
-        let mut create = false;
+        let mut pick = false;
         let mut close = false;
-        let current = self.project_path.clone();
-        Self::sheet_window(ctx, "projects", 440.0, |ui| {
-            ui.label(RichText::new("Proyectos").font(medium(20.0)).color(TEXT));
+        Self::sheet_window(ctx, "projects", 460.0, |ui| {
+            ui.label(RichText::new("Abrir proyecto").font(medium(20.0)).color(TEXT));
             ui.label(RichText::new("Cada proyecto guarda sus vídeos, movimientos y estilo.").color(TEXT_2));
             ui.add_space(8.0);
-            egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+            if self.projects.is_empty() {
+                ui.label(RichText::new("Todavía no tienes proyectos.").color(TEXT_3));
+            }
+            egui::ScrollArea::vertical().max_height(340.0).show(ui, |ui| {
                 for e in &self.projects {
-                    let is_open = e.path == current;
-                    let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 44.0), Sense::click());
-                    let resp = resp.on_hover_cursor(CursorIcon::PointingHand);
+                    let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 46.0), Sense::click());
+                    let resp = resp.on_hover_cursor(CursorIcon::PointingHand).on_hover_text(home_relative(&e.path.to_string_lossy()));
                     let h = ui.ctx().animate_bool(resp.id, resp.hovered());
                     let p = ui.painter();
                     p.rect_filled(rect, Rounding::same(9.0), lerp_color(CARD, Color32::from_rgb(56, 56, 61), h));
-                    if is_open {
-                        p.rect_stroke(rect, Rounding::same(9.0), Stroke::new(2.0_f32, ACCENT));
+                    let pic = Rect::from_center_size(Pos2::new(rect.left() + 26.0, rect.center().y), Vec2::new(34.0, 34.0));
+                    match self.recent_thumbs.get(&e.path) {
+                        Some(Some(t)) => {
+                            let [w, hh] = t.size();
+                            let s = (pic.width() / w as f32).min(pic.height() / hh as f32);
+                            let r = Rect::from_center_size(pic.center(), Vec2::new(w as f32 * s, hh as f32 * s));
+                            p.image(t.id(), r, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+                        }
+                        _ => paint_icon(p, Icon::AddVideo, pic.center(), 18.0, TEXT_3),
                     }
-                    p.text(Pos2::new(rect.left() + 14.0, rect.top() + 8.0), Align2::LEFT_TOP, &e.name, medium(14.0), TEXT);
-                    let when = e
-                        .modified
-                        .elapsed()
-                        .map(|d| match d.as_secs() {
-                            s if s < 60 => "Ahora mismo".to_string(),
-                            s if s < 3600 => format!("Hace {} min", s / 60),
-                            s if s < 86400 => format!("Hace {} h", s / 3600),
-                            s => format!("Hace {} días", s / 86400),
-                        })
-                        .unwrap_or_default();
-                    let sub = if is_open { format!("Abierto · {when}") } else { when };
-                    p.text(Pos2::new(rect.left() + 14.0, rect.top() + 26.0), Align2::LEFT_TOP, sub, regular(11.5), TEXT_3);
-                    if resp.clicked() && !is_open {
+                    p.text(Pos2::new(rect.left() + 52.0, rect.top() + 8.0), Align2::LEFT_TOP, &e.name, medium(14.0), TEXT);
+                    p.text(Pos2::new(rect.left() + 52.0, rect.top() + 27.0), Align2::LEFT_TOP, home::ago(e.modified), regular(11.5), TEXT_3);
+                    if resp.clicked() {
                         open = Some(e.path.clone());
                     }
                     ui.add_space(2.0);
                 }
             });
-            ui.add_space(8.0);
-            ui.label(RichText::new("Proyecto nuevo").font(medium(12.5)).color(TEXT_2));
+            ui.add_space(12.0);
             ui.horizontal(|ui| {
-                let resp = ui.add(egui::TextEdit::singleline(&mut self.new_project_name).hint_text("Nombre, p. ej. «Mi app · Play Store»").desired_width(270.0));
-                let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
-                let ok = !self.new_project_name.trim().is_empty();
-                if (primary_button(ui, "Crear", ok).clicked() || enter) && ok {
-                    create = true;
+                if secondary_button(ui, "Abrir un archivo…").on_hover_text("Un proyecto (.recproj.json) guardado en otra carpeta").clicked() {
+                    pick = true;
                 }
-            });
-            ui.label(RichText::new("Empieza vacío, con el mismo estilo que el proyecto abierto.").color(TEXT_3).font(regular(11.5)));
-            ui.add_space(10.0);
-            ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                if secondary_button(ui, "Cerrar").clicked() {
-                    close = true;
-                }
+                ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                    if secondary_button(ui, "Cerrar").clicked() {
+                        close = true;
+                    }
+                });
             });
         });
         if let Some(p) = open {
-            self.open_project(p);
             self.sheet = Sheet::None;
-        } else if create {
-            let name = self.new_project_name.trim().to_string();
-            self.new_project(&name);
-            self.sheet = Sheet::None;
+            self.open_from_home(p);
+        } else if pick {
+            self.pick_project_file();
         } else if close {
             self.sheet = Sheet::None;
         }
@@ -108,7 +97,7 @@ impl RecOrdingApp {
                 copied = Some("Comando copiado");
             }
             ui.add_space(10.0);
-            ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+            ui.with_layout(egui::Layout::right_to_left(Align::Min), |ui| {
                 if primary_button(ui, "Hecho", true).clicked() {
                     close = true;
                 }

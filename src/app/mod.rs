@@ -1,3 +1,4 @@
+mod home;
 mod inspector;
 mod sheets;
 mod timeline_ui;
@@ -43,6 +44,9 @@ enum AppEvent {
     ModelLoaded { path: String, result: Result<Arc<ModelSource>, String> },
     ModelThumb { path: String, src: Option<Arc<ModelSource>>, size: (usize, usize), rgba: Option<Vec<u8>> },
     ModelImported(Result<(String, Arc<ModelSource>), String>),
+    /// The picture of a recent project (None: it has no video yet).
+    ProjectThumb { path: PathBuf, thumb: Option<((usize, usize), Vec<u8>)> },
+    ProjectPicked(PathBuf),
     UpdateFound(update::Release),
     UpdateInstalled(Result<(), String>),
 }
@@ -55,6 +59,7 @@ enum Sheet {
     RenameModel,
     DeleteModel,
     Projects,
+    NewProject,
     Assistant,
     Update,
 }
@@ -207,6 +212,14 @@ pub struct RecOrdingApp {
     /// Recordings already searched for screen changes in this session.
     marks_done: std::collections::HashSet<String>,
 
+    /// The start screen is showing (no project open).
+    home: bool,
+    recent: Vec<ProjectEntry>,
+    /// Pictures of the recent projects (None: no video yet; missing: still drawing).
+    recent_thumbs: HashMap<PathBuf, Option<TextureHandle>>,
+    /// The settings panel on the right is showing.
+    inspector_open: bool,
+
     toast: Option<(String, Instant)>,
 }
 
@@ -243,8 +256,10 @@ impl RecOrdingApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         theme::install(&cc.egui_ctx);
         let (tx, rx) = unbounded();
+        // The app opens on the start screen; the last project stays the one the assistant edits
+        // until another is opened.
         let project_path = current_project_path();
-        let (project, disk_revision) = load_for_app(&project_path);
+        let (project, disk_revision) = (Project::default(), 0);
         let notify_ctx = cc.egui_ctx.clone();
         let mut app = Self {
             last_saved: project.clone(),
@@ -315,9 +330,13 @@ impl RecOrdingApp {
             replacing: None,
             dissolve: None,
             marks_done: Default::default(),
+            home: true,
+            recent: Vec::new(),
+            recent_thumbs: HashMap::new(),
+            inspector_open: true,
             toast: None,
         };
-        app.project_opened();
+        app.refresh_recent();
         app.refresh_library();
         app.check_for_update();
         // Find the graphics card encoder now, so exporting does not wait for it.
@@ -381,6 +400,9 @@ impl RecOrdingApp {
     }
 
     fn save_now(&mut self) {
+        if self.home {
+            return;
+        }
         let mut copy = self.project.clone();
         copy.revision = self.disk_revision;
         if save_project_to(&self.project_path, &mut copy).is_ok() {
@@ -404,16 +426,6 @@ impl RecOrdingApp {
         self.project_opened();
     }
 
-    fn new_project(&mut self, name: &str) {
-        match create_project(name, Some(&self.project)) {
-            Ok((path, _)) => {
-                self.open_project(path);
-                self.toast(format!("Proyecto «{}» creado", name.trim()));
-            }
-            Err(e) => self.toast(e),
-        }
-    }
-
     /// Picks up changes made outside the app (the MCP server) to the open project, or another
     /// project being opened.
     fn check_disk(&mut self) {
@@ -422,6 +434,14 @@ impl RecOrdingApp {
         }
         self.last_disk_check = Instant::now();
         let current = current_project_path();
+        if self.home {
+            // The assistant opened or created a project: show it.
+            if current != self.project_path {
+                self.open_from_home(current);
+                self.toast("Se ha abierto un proyecto desde el asistente");
+            }
+            return;
+        }
         if current != self.project_path {
             self.open_project(current);
             self.toast("Se ha abierto otro proyecto desde el asistente");
@@ -682,7 +702,7 @@ impl RecOrdingApp {
                     self.toast(if n_touches > 0 {
                         format!("{what} {place} · {n_touches} toques → {zooms} zooms automáticos")
                     } else {
-                        format!("{what} {place}. Añade zooms con + Zoom o la tecla Z.")
+                        format!("{what} {place}. Añade zooms con el botón de la lupa o la tecla Z.")
                     });
                 }
                 AppEvent::MediaFailed(e) => self.toast(e),
@@ -771,6 +791,17 @@ impl RecOrdingApp {
                         let _ = tx.send(AppEvent::ModelImported(res));
                         ctx.request_repaint();
                     });
+                }
+                AppEvent::ProjectThumb { path, thumb } => {
+                    let tex = thumb.map(|((w, h), rgba)| {
+                        let img = ColorImage::from_rgba_unmultiplied([w, h], &rgba);
+                        self.ctx.load_texture(format!("project-{}", path.display()), img, TextureOptions::LINEAR)
+                    });
+                    self.recent_thumbs.insert(path, tex);
+                }
+                AppEvent::ProjectPicked(p) => {
+                    self.sheet = Sheet::None;
+                    self.open_from_home(p);
                 }
                 AppEvent::UpdateFound(r) => self.update = Some(r),
                 AppEvent::UpdateInstalled(res) => {
@@ -1042,7 +1073,7 @@ impl RecOrdingApp {
     }
 
     fn autosave(&mut self) {
-        if self.last_save_check.elapsed() < Duration::from_secs(1) {
+        if self.home || self.last_save_check.elapsed() < Duration::from_secs(1) {
             return;
         }
         self.last_save_check = Instant::now();
@@ -1172,6 +1203,12 @@ impl RecOrdingApp {
             }
             return;
         }
+        if self.home {
+            return;
+        }
+        if ctx.input(|i| i.key_pressed(Key::Num4) && i.modifiers.command) {
+            self.inspector_open = !self.inspector_open;
+        }
         let (undo, redo) = ctx.input(|i| {
             let z = i.key_pressed(Key::Z) && i.modifiers.command;
             (z && !i.modifiers.shift, (z && i.modifiers.shift) || (i.key_pressed(Key::Y) && i.modifiers.command))
@@ -1273,8 +1310,12 @@ impl eframe::App for RecOrdingApp {
         }
 
         self.toolbar(ctx);
-        if !self.project.is_empty() {
-            self.inspector(ctx);
+        if self.home {
+            self.home(ctx);
+        } else if !self.project.is_empty() {
+            if self.inspector_open {
+                self.inspector(ctx);
+            }
             self.timeline(ctx);
             self.viewer(ctx);
         } else {
@@ -1286,6 +1327,7 @@ impl eframe::App for RecOrdingApp {
             Sheet::Export => self.export_sheet(ctx),
             Sheet::RenameModel | Sheet::DeleteModel => self.model_edit_sheet(ctx),
             Sheet::Projects => self.projects_sheet(ctx),
+            Sheet::NewProject => self.new_project_sheet(ctx),
             Sheet::Assistant => self.assistant_sheet(ctx),
             Sheet::Update => self.update_sheet(ctx),
             Sheet::None => {}
@@ -1334,7 +1376,8 @@ impl RecOrdingApp {
                 wordmark(&mut left, 14.0);
                 left.add_space(18.0);
                 let busy = self.recording.is_some() || self.saving_recording;
-                if self.toolbar_button(&mut left, "Grabar", |p, c, col| {
+                let home = self.home;
+                if !home && self.toolbar_button(&mut left, "Grabar", |p, c, col| {
                     p.circle_filled(c, 5.5, RED);
                     let _ = col;
                 })
@@ -1345,29 +1388,26 @@ impl RecOrdingApp {
                     self.record_error = None;
                     self.scan_devices();
                 }
-                if self
-                    .toolbar_button(&mut left, "Importar", |p, c, col| icon_import(p, c, 13.0, col))
-                    .on_hover_text("Abrir un vídeo que ya tienes grabado")
-                    .clicked()
+                if !home
+                    && self
+                        .toolbar_button(&mut left, "Importar", |p, c, col| icon_import(p, c, 13.0, col))
+                        .on_hover_text("Añadir un vídeo que ya tienes grabado")
+                        .clicked()
                     && !busy
                 {
                     self.pick_video();
                 }
 
-                if self.toolbar_button(&mut left, "Proyectos", |p, c, col| {
-                    for dy in [-4.0, 0.0, 4.0] {
-                        p.line_segment([c + Vec2::new(-6.0, dy), c + Vec2::new(6.0, dy)], Stroke::new(1.6_f32, col));
-                    }
-                })
-                .on_hover_text("Abrir, crear o cambiar de proyecto")
-                .clicked()
+                if !home
+                    && self
+                        .toolbar_button(&mut left, "Proyectos", |p, c, col| paint_icon(p, Icon::Home, c, 14.0, col))
+                        .on_hover_text("Cerrar este proyecto y volver al inicio para abrir o crear otro")
+                        .clicked()
                 {
-                    self.projects = list_projects();
-                    self.new_project_name.clear();
-                    self.sheet = Sheet::Projects;
+                    self.go_home();
                 }
 
-                {
+                if !home {
                     let center = Rect::from_center_size(full.center(), Vec2::new(280.0, 26.0));
                     let mut c = ui.new_child(UiBuilder::new().max_rect(center).layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight)));
                     c.add(
@@ -1382,14 +1422,22 @@ impl RecOrdingApp {
                 }
 
                 let mut right = ui.new_child(UiBuilder::new().max_rect(full).layout(egui::Layout::right_to_left(Align::Center)));
-                let can_export = !self.project.is_empty() && !busy;
-                if primary_button(&mut right, "Exportar", can_export).clicked() {
-                    self.sheet = Sheet::Export;
-                    if !matches!(self.export_ui, ExportUi::Running { .. }) {
-                        self.export_ui = ExportUi::Idle;
+                if !home {
+                    let editing = !self.project.is_empty();
+                    let tip = if self.inspector_open { "Ocultar el panel de ajustes" } else { "Mostrar el panel de ajustes" };
+                    if icon_button(&mut right, Icon::Sidebar, tip, "Ctrl+4", false, editing).clicked() {
+                        self.inspector_open = !self.inspector_open;
                     }
+                    right.add_space(6.0);
+                    let can_export = !self.project.is_empty() && !busy;
+                    if primary_button(&mut right, "Exportar", can_export).clicked() {
+                        self.sheet = Sheet::Export;
+                        if !matches!(self.export_ui, ExportUi::Running { .. }) {
+                            self.export_ui = ExportUi::Idle;
+                        }
+                    }
+                    right.add_space(6.0);
                 }
-                right.add_space(6.0);
                 if self
                     .toolbar_button(&mut right, "Asistente", |p, c, col| {
                         p.circle_stroke(c, 5.5, Stroke::new(1.5_f32, col));
@@ -1522,8 +1570,27 @@ impl RecOrdingApp {
             .then(|| self.project.style.model.as_ref().map(|m| m.path.clone()))
             .flatten();
         let loading = self.model_loading.clone().or_else(|| self.model_pending.clone());
+        // The selected model, if it is one of yours (the included ones cannot be changed).
+        let own = current.as_ref().and_then(|p| self.library.iter().find(|m| &m.path == p && m.entry.is_some())).cloned();
+        let mut header_edit: Option<Sheet> = None;
+        let src = current.as_ref().and_then(|p| self.model_cache.get(p).cloned());
+        let entry = current.as_ref().and_then(|p| self.library.iter().find(|m| &m.path == p)).cloned();
 
-        section(ui, "Modelos 3D", |ui| {
+        let header = |ui: &mut Ui| {
+            let (tip_del, tip_ren) = match (&current, &own) {
+                (None, _) => ("Elige un modelo para eliminarlo", "Elige un modelo para renombrarlo"),
+                (Some(_), None) => ("Los modelos incluidos no se pueden eliminar", "Los modelos incluidos no se pueden renombrar"),
+                (Some(_), Some(_)) => ("Eliminar el modelo de la galería…", "Renombrar el modelo…"),
+            };
+            if small_icon_button(ui, Icon::Trash, tip_del, own.is_some(), true).clicked() {
+                header_edit = Some(Sheet::DeleteModel);
+            }
+            if small_icon_button(ui, Icon::Pencil, tip_ren, own.is_some(), false).clicked() {
+                header_edit = Some(Sheet::RenameModel);
+            }
+        };
+        let style = &mut self.project.style;
+        section_with(ui, "Modelos 3D", header, |ui| {
             let gap = 6.0;
             let tile_w = ((ui.available_width() - gap * 2.0) / 3.0).floor();
             let mut tiles: Vec<Option<&LibraryModel>> = self.library.iter().map(Some).collect();
@@ -1563,6 +1630,113 @@ impl RecOrdingApp {
                     }
                 });
             }
+
+            // Settings of the model in use, folded away until needed.
+            let (Some(src), Some(cm)) = (src.as_ref().filter(|_| style.frame == FrameStyle::Custom), style.model.as_mut()) else { return };
+            ui.add_space(2.0);
+            egui::CollapsingHeader::new(RichText::new("Ajustes avanzados").color(TEXT).font(regular(13.0)))
+                .id_salt("model-advanced")
+                .default_open(false)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        fixed_label(ui, 78.0, RichText::new("Pantalla").color(TEXT), Align::Min);
+                        // The detected screen is the default: it is listed first, tagged, and stands for
+                        // "automatic" (no manual choice saved).
+                        let recommended = src.guess.and_then(|g| src.parts.get(g).map(|p| (g, p.name.clone())));
+                        if cm.screen_part.is_some() && cm.screen_part == src.guess {
+                            cm.screen_part = None;
+                        }
+                        let current = match (cm.screen_part.and_then(|i| src.parts.get(i)), &recommended) {
+                            (Some(p), _) => part_label(&p.name, false),
+                            // Tag first, so a long name is what gets cut short.
+                            (None, Some((_, name))) => part_label_tag_first(name),
+                            (None, None) => part_label("Elige una pieza", false),
+                        };
+                        egui::ComboBox::from_id_salt("model-screen")
+                            .selected_text(current)
+                            .width(ui.available_width() - 8.0)
+                            // Long part names are cut short instead of widening the whole panel.
+                            .truncate()
+                            .show_ui(ui, |ui| {
+                                if let Some((_, name)) = &recommended {
+                                    ui.selectable_value(&mut cm.screen_part, None, part_label(name, true));
+                                    ui.separator();
+                                }
+                                for (i, p) in src.parts.iter().enumerate() {
+                                    if recommended.as_ref().is_some_and(|(g, _)| *g == i) {
+                                        continue;
+                                    }
+                                    ui.selectable_value(&mut cm.screen_part, Some(i), part_label(&p.name, false));
+                                }
+                            });
+                    })
+                    .response
+                    .on_hover_text("La pieza del modelo donde se ve tu grabación");
+                    if cm.screen_part.is_some() && src.guess.is_some() {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("Elegida a mano.").color(YELLOW).font(regular(11.5)));
+                            if ui.link(RichText::new("Volver a la recomendada").font(regular(11.5))).clicked() {
+                                cm.screen_part = None;
+                            }
+                        });
+                    }
+                    ui.horizontal(|ui| {
+                        fixed_label(ui, 78.0, RichText::new("Orientación").color(TEXT), Align::Min);
+                        if secondary_button(ui, "Girar 90°").on_hover_text("Si la grabación sale tumbada o al revés").clicked() {
+                            cm.quarter_turns = (cm.quarter_turns + 1) % 4;
+                        }
+                    });
+                    ui.add_space(2.0);
+                    let opts: Vec<(VideoFit, &str)> = VideoFit::ALL.iter().map(|f| (*f, f.label())).collect();
+                    segmented_row(ui, "Vídeo", &mut style.video_fit, &opts);
+                    ui.label(RichText::new(style.video_fit.hint()).color(TEXT_3).font(regular(11.5)));
+                    if style.video_fit == VideoFit::Fill {
+                        slider_row(ui, "Encuadre", &mut style.fit_pan, 0.0..=1.0, |v| {
+                            match v {
+                                v if v < 0.15 => "Inicio",
+                                v if v > 0.85 => "Final",
+                                _ => "Centro",
+                            }
+                            .to_string()
+                        });
+                    }
+                    if !src.animations.is_empty() {
+                        ui.add_space(2.0);
+                        ui.horizontal(|ui| {
+                            fixed_label(ui, 78.0, RichText::new("Animación").color(TEXT), Align::Min);
+                            let name = |a: Option<usize>| match a {
+                                Some(i) => src.animations.get(i).map(|a| a.name.clone()).unwrap_or_default(),
+                                None => "Sin animación".to_string(),
+                            };
+                            egui::ComboBox::from_id_salt("model-anim")
+                                .selected_text(name(cm.animation))
+                                .width(ui.available_width() - 8.0)
+                                // Long animation names are cut short instead of widening the whole panel.
+                                .truncate()
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut cm.animation, None, "Sin animación");
+                                    for (i, a) in src.animations.iter().enumerate() {
+                                        ui.selectable_value(&mut cm.animation, Some(i), format!("{} · {}", a.name, fmt_secs(a.duration)));
+                                    }
+                                });
+                        });
+                        if cm.animation.is_some() {
+                            toggle_row(ui, "Repetir en bucle", "Si no, se reproduce una vez al empezar", &mut cm.loop_animation);
+                        }
+                    }
+                    if let Some(e) = &entry {
+                        if let (Some(author), Some(license)) = (&e.author, &e.license) {
+                            ui.add_space(2.0);
+                            let note = if e.needs_credit() {
+                                format!("Modelo de {author} ({license}). Menciona al autor al publicar el vídeo.")
+                            } else {
+                                format!("Modelo de {author} ({license}). Uso libre, sin atribución.")
+                            };
+                            ui.label(RichText::new(note).color(TEXT_3).font(regular(11.5)));
+                        }
+                    }
+
+                });
         });
 
         if let Some(p) = pick {
@@ -1571,135 +1745,11 @@ impl RecOrdingApp {
         if let Some((m, sheet)) = edit.take() {
             self.start_model_edit(&m, sheet);
         }
+        if let (Some(m), Some(sheet)) = (own, header_edit) {
+            self.start_model_edit(&m, sheet);
+        }
         if import {
             self.pick_model();
-        }
-
-        // Settings of the model in use.
-        if self.project.style.frame != FrameStyle::Custom {
-            return;
-        }
-        let Some(cm) = self.project.style.model.as_ref() else { return };
-        let Some(src) = self.model_cache.get(&cm.path).cloned() else { return };
-        let entry = self.library.iter().find(|m| m.path == cm.path).cloned();
-        let style = &mut self.project.style;
-        let Some(cm) = style.model.as_mut() else { return };
-
-        section(ui, "Ajustes del modelo", |ui| {
-            ui.horizontal(|ui| {
-                fixed_label(ui, 78.0, RichText::new("Pantalla").color(TEXT), Align::Min);
-                // The detected screen is the default: it is listed first, tagged, and stands for
-                // "automatic" (no manual choice saved).
-                let recommended = src.guess.and_then(|g| src.parts.get(g).map(|p| (g, p.name.clone())));
-                if cm.screen_part.is_some() && cm.screen_part == src.guess {
-                    cm.screen_part = None;
-                }
-                let current = match (cm.screen_part.and_then(|i| src.parts.get(i)), &recommended) {
-                    (Some(p), _) => part_label(&p.name, false),
-                    // Tag first, so a long name is what gets cut short.
-                    (None, Some((_, name))) => part_label_tag_first(name),
-                    (None, None) => part_label("Elige una pieza", false),
-                };
-                egui::ComboBox::from_id_salt("model-screen")
-                    .selected_text(current)
-                    .width(ui.available_width() - 8.0)
-                    // Long part names are cut short instead of widening the whole panel.
-                    .truncate()
-                    .show_ui(ui, |ui| {
-                        if let Some((_, name)) = &recommended {
-                            ui.selectable_value(&mut cm.screen_part, None, part_label(name, true));
-                            ui.separator();
-                        }
-                        for (i, p) in src.parts.iter().enumerate() {
-                            if recommended.as_ref().is_some_and(|(g, _)| *g == i) {
-                                continue;
-                            }
-                            ui.selectable_value(&mut cm.screen_part, Some(i), part_label(&p.name, false));
-                        }
-                    });
-            })
-            .response
-            .on_hover_text("La pieza del modelo donde se ve tu grabación");
-            if cm.screen_part.is_some() && src.guess.is_some() {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("Elegida a mano.").color(YELLOW).font(regular(11.5)));
-                    if ui.link(RichText::new("Volver a la recomendada").font(regular(11.5))).clicked() {
-                        cm.screen_part = None;
-                    }
-                });
-            }
-            ui.horizontal(|ui| {
-                fixed_label(ui, 78.0, RichText::new("Orientación").color(TEXT), Align::Min);
-                if secondary_button(ui, "Girar 90°").on_hover_text("Si la grabación sale tumbada o al revés").clicked() {
-                    cm.quarter_turns = (cm.quarter_turns + 1) % 4;
-                }
-            });
-            ui.add_space(2.0);
-            ui.horizontal(|ui| {
-                fixed_label(ui, 78.0, RichText::new("Vídeo").color(TEXT), Align::Min);
-                let opts: Vec<(VideoFit, &str)> = VideoFit::ALL.iter().map(|f| (*f, f.label())).collect();
-                segmented(ui, &mut style.video_fit, &opts, ui.available_width());
-            });
-            ui.label(RichText::new(style.video_fit.hint()).color(TEXT_3).font(regular(11.5)));
-            if style.video_fit == VideoFit::Fill {
-                slider_row(ui, "Encuadre", &mut style.fit_pan, 0.0..=1.0, |v| {
-                    match v {
-                        v if v < 0.15 => "Inicio",
-                        v if v > 0.85 => "Final",
-                        _ => "Centro",
-                    }
-                    .to_string()
-                });
-            }
-            if !src.animations.is_empty() {
-                ui.add_space(2.0);
-                ui.horizontal(|ui| {
-                    fixed_label(ui, 78.0, RichText::new("Animación").color(TEXT), Align::Min);
-                    let name = |a: Option<usize>| match a {
-                        Some(i) => src.animations.get(i).map(|a| a.name.clone()).unwrap_or_default(),
-                        None => "Sin animación".to_string(),
-                    };
-                    egui::ComboBox::from_id_salt("model-anim")
-                        .selected_text(name(cm.animation))
-                        .width(ui.available_width() - 8.0)
-                        // Long animation names are cut short instead of widening the whole panel.
-                        .truncate()
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut cm.animation, None, "Sin animación");
-                            for (i, a) in src.animations.iter().enumerate() {
-                                ui.selectable_value(&mut cm.animation, Some(i), format!("{} · {}", a.name, fmt_secs(a.duration)));
-                            }
-                        });
-                });
-                if cm.animation.is_some() {
-                    toggle_row(ui, "Repetir en bucle", "Si no, se reproduce una vez al empezar", &mut cm.loop_animation);
-                }
-            }
-            if let Some(e) = entry.as_ref().filter(|e| e.entry.is_some()) {
-                ui.add_space(2.0);
-                ui.horizontal(|ui| {
-                    if secondary_button(ui, "Renombrar…").clicked() {
-                        edit = Some((e.clone(), Sheet::RenameModel));
-                    }
-                    if ui.add(egui::Button::new(RichText::new("Eliminar…").color(RED)).min_size(Vec2::new(0.0, 28.0))).clicked() {
-                        edit = Some((e.clone(), Sheet::DeleteModel));
-                    }
-                });
-            }
-            if let Some(e) = &entry {
-                if let (Some(author), Some(license)) = (&e.author, &e.license) {
-                    ui.add_space(2.0);
-                    let note = if e.needs_credit() {
-                        format!("Modelo de {author} ({license}). Menciona al autor al publicar el vídeo.")
-                    } else {
-                        format!("Modelo de {author} ({license}). Uso libre, sin atribución.")
-                    };
-                    ui.label(RichText::new(note).color(TEXT_3).font(regular(11.5)));
-                }
-            }
-        });
-        if let Some((m, sheet)) = edit {
-            self.start_model_edit(&m, sheet);
         }
     }
 
@@ -1756,7 +1806,7 @@ impl RecOrdingApp {
                 info_box(ui, RED, e);
             }
             ui.add_space(12.0);
-            ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+            ui.with_layout(egui::Layout::right_to_left(Align::Min), |ui| {
                 let ok = if renaming { primary_button(ui, "Guardar", true) } else { tinted_button(ui, "Eliminar", RED, true) };
                 if ok.clicked() {
                     action = Some(true);
@@ -1932,11 +1982,8 @@ impl RecOrdingApp {
         section(ui, "Acabado", |ui| {
             let f = &mut style.finish;
             fn row<T: PartialEq + Copy>(ui: &mut Ui, label: &str, value: &mut T, all: &[T], name: impl Fn(T) -> &'static str) {
-                ui.horizontal(|ui| {
-                    fixed_label(ui, 78.0, RichText::new(label).color(TEXT), Align::Min);
-                    let opts: Vec<(T, &str)> = all.iter().map(|v| (*v, name(*v))).collect();
-                    segmented(ui, value, &opts, ui.available_width());
-                });
+                let opts: Vec<(T, &str)> = all.iter().map(|v| (*v, name(*v))).collect();
+                segmented_row(ui, label, value, &opts);
             }
             row(ui, "Desenfoque", &mut f.motion_blur, &MotionBlur::ALL, MotionBlur::label);
             ui.label(RichText::new("En giros, zooms y movimientos rápidos, como una cámara de cine.").color(TEXT_3).font(regular(11.5)));
@@ -1981,7 +2028,7 @@ impl RecOrdingApp {
                 }
             } else {
                 ui.label(
-                    RichText::new("Este vídeo no tiene toques registrados. Añade zooms con + Zoom o la tecla Z.")
+                    RichText::new("Este vídeo no tiene toques registrados. Añade zooms con el botón de la lupa o la tecla Z.")
                         .color(TEXT_3)
                         .font(regular(12.0)),
                 );
