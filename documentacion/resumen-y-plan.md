@@ -112,7 +112,7 @@ Todo el plan de `plan-iluminacion-postproceso.md`, más las mejoras pedidas tras
 - **Grabación**: barra de estado limpia (modo demo de Android) y `play_gestures` para tocar y escribir en el móvil desde el agente, registrando cada gesto.
 - **MCP**: parámetro `project` y nombre del proyecto en cada respuesta, `batch`, `export_texts`/`import_texts`, `set_clip_speed`, `freeze_frame`, `set_freeze_duration`, `replace_clip_video`, `detect_marks` y `mark`, `render_strip`, `render_preview`, `play_gestures`, iluminación y acabado en `set_style`, y reinicio automático con `notifications/tools/list_changed` al actualizar.
 
-## v0.10.0: inicio, panel e iconos
+## v0.10.1: inicio, panel e iconos
 
 - La app abre en una pantalla de inicio: proyecto nuevo, abrir un proyecto (de la lista o un archivo) y los cinco últimos con una imagen de su vídeo, dibujada como la exportación y guardada en caché hasta que el proyecto cambia. **Proyectos** guarda el proyecto abierto y vuelve al inicio. Si el asistente abre o crea un proyecto mientras se ve el inicio, la app lo muestra.
 - Panel de ajustes más ancho (360 px), que se puede ensanchar arrastrando su borde y ocultar (botón arriba a la derecha o Ctrl+4). Los controles segmentados reparten el ancho según sus etiquetas y, si no caben junto al título, pasan a la línea de abajo: ya no se montan.
