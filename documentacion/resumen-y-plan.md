@@ -112,12 +112,13 @@ Todo el plan de `plan-iluminacion-postproceso.md`, más las mejoras pedidas tras
 - **Grabación**: barra de estado limpia (modo demo de Android) y `play_gestures` para tocar y escribir en el móvil desde el agente, registrando cada gesto.
 - **MCP**: parámetro `project` y nombre del proyecto en cada respuesta, `batch`, `export_texts`/`import_texts`, `set_clip_speed`, `freeze_frame`, `set_freeze_duration`, `replace_clip_video`, `detect_marks` y `mark`, `render_strip`, `render_preview`, `play_gestures`, iluminación y acabado en `set_style`, y reinicio automático con `notifications/tools/list_changed` al actualizar.
 
-## v0.10.1: inicio, panel e iconos
+## v0.10.2: inicio, panel e iconos
 
 - La app abre en una pantalla de inicio: proyecto nuevo, abrir un proyecto (de la lista o un archivo) y los cinco últimos con una imagen de su vídeo, dibujada como la exportación y guardada en caché hasta que el proyecto cambia. **Proyectos** guarda el proyecto abierto y vuelve al inicio. Si el asistente abre o crea un proyecto mientras se ve el inicio, la app lo muestra.
 - Panel de ajustes más ancho (360 px), que se puede ensanchar arrastrando su borde y ocultar (botón arriba a la derecha o Ctrl+4). Los controles segmentados reparten el ancho según sus etiquetas y, si no caben junto al título, pasan a la línea de abajo: ya no se montan.
 - Modelos 3D: lápiz y papelera junto al título (activos con un modelo importado seleccionado); los ajustes del modelo pasan a **Ajustes avanzados**, plegados dentro de la sección.
 - Barra de la línea de tiempo con iconos agrupados y su nombre y atajo al pasar el ratón; en los inspectores, la papelera va junto al título y las acciones del clip (dividir, congelar, cambiar vídeo) son iconos. La velocidad del clip es un control segmentado.
+- El renderizador por software de Windows (WARP, «Microsoft Basic Render Driver») ya no se toma por una tarjeta gráfica: sin drivers se usa el procesador, que es más rápido y fiable.
 - Publicación: un solo workflow (`release.yml`) prueba y compila Arch y Windows y, con una etiqueta `v*`, publica los dos paquetes en una sola release del repositorio público `blzkz/rec-ording-releases`.
 
 ## Ideas para siguientes versiones

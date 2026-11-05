@@ -292,7 +292,7 @@ impl RecOrdingApp {
             gpu_state: cc
                 .wgpu_render_state
                 .clone()
-                .filter(|s| s.adapter.get_info().device_type != wgpu::DeviceType::Cpu && std::env::var_os("REC_CPU_PREVIEW").is_none()),
+                .filter(|s| !crate::gpu::is_software(&s.adapter.get_info()) && std::env::var_os("REC_CPU_PREVIEW").is_none()),
             gpu_view: None,
             viewer_shown: None,
             viewer_buf: Vec::new(),

@@ -711,10 +711,16 @@ fn adapter() -> Result<wgpu::Adapter, String> {
         force_fallback_adapter: false,
     }))
     .ok_or("No hay ninguna tarjeta gráfica compatible")?;
-    if adapter.get_info().device_type == wgpu::DeviceType::Cpu {
+    if is_software(&adapter.get_info()) {
         return Err("Solo hay un adaptador por software".into());
     }
     Ok(adapter)
+}
+
+/// A software renderer: slower than our own CPU compositor. Windows' WARP ("Microsoft Basic
+/// Render Driver") does not always say it is one, so it is also told apart by its vendor.
+pub fn is_software(info: &wgpu::AdapterInfo) -> bool {
+    info.device_type == wgpu::DeviceType::Cpu || info.vendor == 0x1414
 }
 
 /// "AMD Radeon RX 9070 XT (RADV GFX1201)" → "AMD Radeon RX 9070 XT".
