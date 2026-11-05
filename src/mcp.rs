@@ -1395,6 +1395,14 @@ fn tool(name: &str, description: &str, mut props: Value, required: &[&str]) -> V
     if let Some(map) = props.as_object_mut() {
         map.insert("project".into(), s("Proyecto en el que actuar (nombre o archivo); por defecto, el abierto en la app"));
     }
+    // A screen change (detect_marks) can stand in for the time.
+    let marked = MARKED_TOOLS.contains(&name);
+    if marked {
+        if let Some(map) = props.as_object_mut() {
+            map.insert("mark".into(), i("Número de marca de detect_marks (cambio de pantalla) en lugar del tiempo; lo colocado sigue a ese momento al recortar"));
+        }
+    }
+    let required: Vec<&str> = required.iter().copied().filter(|r| !marked || !matches!(*r, "time" | "start" | "end")).collect();
     json!({"name": name, "description": description, "inputSchema": {"type": "object", "properties": props, "required": required}})
 }
 

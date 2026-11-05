@@ -89,6 +89,9 @@ fn an_agent_builds_and_exports_a_video() {
     assert_eq!(init["result"]["serverInfo"]["name"], "rec-ording");
     let tools = mcp.request("tools/list", json!({}));
     assert!(tools["result"]["tools"].as_array().unwrap().len() > 30);
+    // What an agent needs to discover: marks instead of times, and the project to work on.
+    let zoom = tools["result"]["tools"].as_array().unwrap().iter().find(|t| t["name"] == "add_zoom").unwrap();
+    assert!(zoom["inputSchema"]["properties"]["mark"].is_object() && zoom["inputSchema"]["properties"]["project"].is_object());
     // Unknown methods are errors, not silence.
     assert!(mcp.request("nope", json!({}))["error"]["code"] == -32601);
 
