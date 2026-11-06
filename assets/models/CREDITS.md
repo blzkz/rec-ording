@@ -1,12 +1,12 @@
 # Modelos 3D incluidos
 
-Descargados de [Poly Pizza](https://poly.pizza). Los modelos CC BY exigen mencionar al autor
-cuando se publica un vídeo hecho con ellos (por ejemplo, en la descripción).
-
 | Archivo | Modelo original | Autor | Licencia |
 | --- | --- | --- | --- |
-| `moderno.glb` | [Smart phone](https://poly.pizza/m/wBYYnxC42K) | Rendercore | [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/) |
-| `minimal.glb` | [Smartphone](https://poly.pizza/m/4DRZmTs3jq) | smallbigsquare | [CC0](https://creativecommons.org/publicdomain/zero/1.0/) |
-| `compacto.glb` | [Cell phone](https://poly.pizza/m/3oGDGMrc6rm) | Poly by Google | [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/) |
-| `robusto.glb` | [Tablet](https://poly.pizza/m/dTjviKNzecd) | Poly by Google | [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/) |
-| `clasico.glb` | [Phone](https://poly.pizza/m/k2kgBepoMU) | Quaternius | [CC0](https://creativecommons.org/publicdomain/zero/1.0/) |
+| `galaxy-s26-ultra.glb` | [Samsung S26 Ultra](https://sketchfab.com/3d-models/samsung-s26-ultra-7ff228963ea446f39f46a5541f71e352) | [Sagar Modi](https://sketchfab.com/modis1761) | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) |
+
+La licencia CC BY 4.0 pide mencionar al autor al publicar un vídeo hecho con el modelo, por
+ejemplo en la descripción:
+
+> Modelo 3D «Samsung S26 Ultra» de Sagar Modi (https://sketchfab.com/modis1761), CC BY 4.0.
+
+El autor agradece además que se mencione a samsung.com.

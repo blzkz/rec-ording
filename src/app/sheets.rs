@@ -62,7 +62,11 @@ impl RecOrdingApp {
     }
 
     pub(super) fn assistant_sheet(&mut self, ctx: &egui::Context) {
-        let exe = std::env::current_exe().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| "/usr/bin/rec-ording".into());
+        // An AppImage runs from a temporary mount: agents must start the .AppImage file itself.
+        let exe = std::env::var("APPIMAGE")
+            .ok()
+            .or_else(|| std::env::current_exe().ok().map(|p| p.to_string_lossy().into_owned()))
+            .unwrap_or_else(|| "/usr/bin/rec-ording".into());
         // Escaped as JSON, since Windows paths have backslashes.
         let command = serde_json::to_string(&exe).unwrap_or_default();
         let json = format!("{{\n  \"mcpServers\": {{\n    \"rec-ording\": {{\n      \"command\": {command},\n      \"args\": [\"--mcp\"]\n    }}\n  }}\n}}");
@@ -144,7 +148,8 @@ impl RecOrdingApp {
                 UpdateUi::Idle => {
                     let note = match (&how, r.asset.is_some()) {
                         (_, false) => "Esta versión no tiene paquete para tu sistema. Puedes descargarla desde su página.",
-                        (update::Method::Pacman, true) => "Se instalará el paquete y el sistema te pedirá tu contraseña.",
+                        (update::Method::Pacman | update::Method::Deb | update::Method::Rpm, true) => "Se instalará el paquete y el sistema te pedirá tu contraseña.",
+                        (update::Method::AppImage(_), true) => "Se reemplazará el archivo AppImage por el nuevo.",
                         (update::Method::Folder(_), true) => "Se reemplazarán los archivos de la carpeta de rec·ording.",
                         (update::Method::Manual, true) => "Esta copia no se instaló con el paquete. Descarga la versión nueva desde su página.",
                     };

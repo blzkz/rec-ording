@@ -1196,8 +1196,8 @@ mod tests {
     #[test]
     fn matches_the_cpu_with_models() {
         let (w, h) = (640, 360);
-        let Some(entry) = crate::library::list().into_iter().find(|m| m.name == "Moderno") else {
-            return eprintln!("falta el modelo incluido «Moderno»");
+        let Some(entry) = crate::library::list().into_iter().find(|m| m.name == "Galaxy S26 Ultra") else {
+            return eprintln!("falta el modelo incluido «Galaxy S26 Ultra»");
         };
         let src = crate::model3d::load(&entry.path).expect("model");
         let model = crate::model3d::prepare(&src, src.guess.expect("screen"), 0).expect("prepare");

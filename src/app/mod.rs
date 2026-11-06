@@ -219,6 +219,8 @@ pub struct RecOrdingApp {
     recent_thumbs: HashMap<PathBuf, Option<TextureHandle>>,
     /// The settings panel on the right is showing.
     inspector_open: bool,
+    /// A new version was found: ask about it as soon as nothing else is on screen.
+    update_prompt: bool,
 
     toast: Option<(String, Instant)>,
 }
@@ -334,6 +336,7 @@ impl RecOrdingApp {
             recent: Vec::new(),
             recent_thumbs: HashMap::new(),
             inspector_open: true,
+            update_prompt: false,
             toast: None,
         };
         app.refresh_recent();
@@ -803,7 +806,10 @@ impl RecOrdingApp {
                     self.sheet = Sheet::None;
                     self.open_from_home(p);
                 }
-                AppEvent::UpdateFound(r) => self.update = Some(r),
+                AppEvent::UpdateFound(r) => {
+                    self.update = Some(r);
+                    self.update_prompt = true;
+                }
                 AppEvent::UpdateInstalled(res) => {
                     self.update_ui = match res {
                         Ok(()) => UpdateUi::Installed,
@@ -1322,6 +1328,11 @@ impl eframe::App for RecOrdingApp {
             self.welcome(ctx);
         }
 
+        let busy = self.recording.is_some() || self.saving_recording || matches!(self.export_ui, ExportUi::Running { .. });
+        if self.update_prompt && self.sheet == Sheet::None && !busy {
+            self.update_prompt = false;
+            self.sheet = Sheet::Update;
+        }
         match self.sheet {
             Sheet::Record => self.record_sheet(ctx),
             Sheet::Export => self.export_sheet(ctx),
@@ -1381,7 +1392,7 @@ impl RecOrdingApp {
                     p.circle_filled(c, 5.5, RED);
                     let _ = col;
                 })
-                .on_hover_text("Grabar la pantalla del móvil por USB")
+                .on_hover_text("Grabar la pantalla del móvil (por USB) o de un emulador")
                 .clicked()
                 {
                     self.sheet = Sheet::Record;
@@ -1485,7 +1496,7 @@ impl RecOrdingApp {
             let mut c = ui.new_child(UiBuilder::new().max_rect(col).layout(egui::Layout::top_down(Align::Center)));
             c.label(RichText::new("Crea el vídeo de tu app").font(medium(30.0)).color(TEXT));
             c.add_space(2.0);
-            c.label(RichText::new("Graba tu móvil Android por USB o importa una grabación.").font(regular(15.0)).color(TEXT_2));
+            c.label(RichText::new("Graba tu móvil Android o un emulador, o importa una grabación.").font(regular(15.0)).color(TEXT_2));
             c.label(with_name("rec·ording le pone un marco, un fondo y zooms suaves en cada toque.", regular(15.0), TEXT_2));
             c.add_space(30.0);
 
@@ -1493,7 +1504,7 @@ impl RecOrdingApp {
             let a = Rect::from_min_size(row.min, Vec2::new(310.0, 190.0));
             let b = Rect::from_min_size(Pos2::new(row.right() - 310.0, row.top()), Vec2::new(310.0, 190.0));
             if self
-                .welcome_card(&mut c, a, "rec", "Grabar el móvil", "Conecta el móvil por USB y graba lo que haces en él.", RED, |p, ctr| {
+                .welcome_card(&mut c, a, "rec", "Grabar el móvil", "Conecta el móvil por USB o abre un emulador y graba lo que haces.", RED, |p, ctr| {
                     icon_phone(p, ctr, 28.0, RED)
                 })
                 .clicked()
@@ -2124,7 +2135,7 @@ impl RecOrdingApp {
             }
 
             ui.label(RichText::new("Grabar el móvil").font(medium(20.0)).color(TEXT));
-            ui.label(RichText::new("Graba la pantalla de tu móvil Android conectado por USB.").color(TEXT_2));
+            ui.label(RichText::new("Graba la pantalla de tu móvil Android conectado por USB o de un emulador de Android Studio.").color(TEXT_2));
             ui.add_space(10.0);
 
             if !self.tools.adb {
@@ -2142,6 +2153,7 @@ impl RecOrdingApp {
                                 ui.label(RichText::new("Conecta tu móvil por USB").font(medium(14.0)).color(TEXT));
                                 ui.label(RichText::new("1. Activa Opciones de desarrollador › Depuración USB").color(TEXT_2).font(regular(12.5)));
                                 ui.label(RichText::new("2. Conecta el cable y acepta el aviso en el móvil").color(TEXT_2).font(regular(12.5)));
+                                ui.label(RichText::new("O abre un emulador desde Android Studio (Device Manager).").color(TEXT_2).font(regular(12.5)));
                             });
                         });
                         ui.horizontal(|ui| {
@@ -2459,8 +2471,10 @@ fn device_row(ui: &mut Ui, d: &Device, selected: bool) -> egui::Response {
     icon_phone(p, Pos2::new(rect.left() + 26.0, rect.center().y), 26.0, if ready { TEXT } else { TEXT_3 });
     p.text(Pos2::new(rect.left() + 50.0, rect.top() + 10.0), Align2::LEFT_TOP, &d.model, medium(14.0), TEXT);
     let (sub, col) = match d.state {
+        DeviceState::Ready if d.emulator => ("Listo para grabar".to_string(), TEXT_3),
         DeviceState::Ready => (format!("Conectado · {}", d.serial), TEXT_3),
         DeviceState::Unauthorized => ("Acepta el aviso de depuración USB en el móvil".to_string(), YELLOW),
+        DeviceState::Offline if d.emulator => ("Todavía arrancando · espera a que se vea la pantalla de inicio".to_string(), YELLOW),
         DeviceState::Offline => ("No responde · desconecta y vuelve a conectar".to_string(), YELLOW),
     };
     p.text(Pos2::new(rect.left() + 50.0, rect.top() + 30.0), Align2::LEFT_TOP, sub, regular(12.0), col);

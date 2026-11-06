@@ -11,9 +11,10 @@ Pensado para la ficha de Google Play, YouTube, Reels/Shorts o redes, sin pasar p
 Al abrir la app ves el **inicio**: crea un proyecto nuevo, abre uno que ya tengas (o un archivo `.recproj.json` de otra carpeta) o elige uno de los cinco últimos, que aparecen con una imagen de su vídeo. **Proyectos**, en la barra de arriba, guarda el proyecto abierto y vuelve al inicio.
 
 1. **Graba.** Conecta el móvil por USB (con la depuración USB activada), pulsa **Grabar** y usa tu app con normalidad. rec-ording registra dónde tocas. Con **Barra de estado limpia** (activada por defecto) el móvil muestra las 9:41, la batería llena y ninguna notificación mientras grabas, y vuelve a la normalidad al terminar.
+   También puedes grabar un **emulador** de Android Studio: ábrelo desde el Device Manager y aparecerá en la lista con el nombre de su dispositivo virtual. Los clics que hagas en su ventana se registran como toques.
    ¿Ya tienes una grabación? Pulsa **Importar** o arrastra el vídeo a la ventana.
 2. **Ajusta.** Elige formato (16:9, 9:16, 1:1, 4:5), modelo (redondeado, recto, curvo, tablet o sin marco) y color del dispositivo, fondo, margen y sombra.
-   En **Modelos 3D** tienes una galería de móviles en 3D (cinco incluidos, gratuitos) y puedes **importar** los tuyos en `.glb`, `.gltf` o directamente el `.zip` de la descarga (las texturas y `.bin` sueltos se copian a tu galería con el modelo; si el modelo no se puede usar, no se añade). Para renombrar o eliminar un modelo importado, selecciónalo y usa el lápiz o la papelera junto al título, o haz clic derecho sobre él. rec-ording busca la pantalla, endereza el modelo y proyecta tu grabación en ella. En **Ajustes avanzados**, dentro de la misma sección, eliges la pieza que hace de pantalla, cómo encaja el vídeo (**Rellenar** recortando, **Encajar** con bandas negras o **Estirar**) y, si el modelo trae animaciones, cuál reproducir y si se repite. Los modelos con licencia CC BY piden mencionar a su autor al publicar el vídeo (ver `assets/models/CREDITS.md`).
+   En **Modelos 3D** tienes una galería de móviles en 3D (incluye el Galaxy S26 Ultra) y puedes **importar** los tuyos en `.glb`, `.gltf` o directamente el `.zip` de la descarga (las texturas y `.bin` sueltos se copian a tu galería con el modelo; si el modelo no se puede usar, no se añade). Para renombrar o eliminar un modelo importado, selecciónalo y usa el lápiz o la papelera junto al título, o haz clic derecho sobre él. rec-ording busca la pantalla, endereza el modelo y proyecta tu grabación en ella. En **Ajustes avanzados**, dentro de la misma sección, eliges la pieza que hace de pantalla, cómo encaja el vídeo (**Rellenar** recortando, **Encajar** con bandas negras o **Estirar**) y, si el modelo trae animaciones, cuál reproducir y si se repite. Los modelos con licencia CC BY piden mencionar a su autor al publicar el vídeo: el Galaxy S26 Ultra es de [Sagar Modi](https://sketchfab.com/modis1761) ([Sketchfab](https://sketchfab.com/3d-models/samsung-s26-ultra-7ff228963ea446f39f46a5541f71e352), CC BY 4.0; ver `assets/models/CREDITS.md`).
    En **Ángulo 3D** puedes girar e inclinar el móvil (con cantos y reflejos reales), hacer que se enderece al hacer zoom, que flote suavemente o que entre girando al empezar.
    Los zooms se crean solos a partir de los toques; puedes moverlos, alargarlos, cambiar su nivel o elegir dónde enfocan haciendo clic en la vista previa.
 3. **Monta.** La línea de tiempo tiene cuatro pistas:
@@ -75,6 +76,20 @@ Además:
 
 ## Instalación
 
+Los paquetes de cada versión están en [blzkz/rec-ording-releases](https://github.com/blzkz/rec-ording-releases/releases/latest):
+
+| Sistema | Archivo | Cómo se instala |
+| --- | --- | --- |
+| Arch, CachyOS, Manjaro | `rec-ording-<versión>-1-x86_64.pkg.tar.zst` | `sudo pacman -U <archivo>` |
+| Debian, Ubuntu, Linux Mint, Pop!_OS | `rec-ording_<versión>-1_amd64.deb` | `sudo apt install ./<archivo>` |
+| Fedora, openSUSE | `rec-ording-<versión>-1.x86_64.rpm` | `sudo dnf install ./<archivo>` o `sudo zypper install <archivo>` |
+| Cualquier otra distribución | `rec-ording-<versión>-x86_64.AppImage` | `chmod +x <archivo>` y ábrelo |
+| Windows | `rec-ording-<versión>-windows-x64.zip` | Descomprímelo y abre `rec-ording.exe` |
+
+Los paquetes de Linux necesitan glibc 2.35 o más reciente (Ubuntu 22.04, Debian 12, Fedora 36 o posteriores). El .deb y el .rpm instalan ffmpeg y recomiendan adb, scrcpy y zenity; con el AppImage hay que instalarlos aparte. En Fedora, ffmpeg viene de `ffmpeg-free` (o de RPM Fusion).
+
+Desde el repositorio, en CachyOS:
+
 ```bash
 ./install-cachyos.sh
 ```
@@ -88,15 +103,15 @@ cargo build --release
 
 ### Actualizaciones
 
-Al abrirse, la app mira si hay una versión nueva en las releases de [blzkz/rec-ording-releases](https://github.com/blzkz/rec-ording-releases), un repositorio público solo para los paquetes (el del código es privado). Si la hay, aparece el botón **Actualización** en la barra:
+Al abrirse, la app mira si hay una versión nueva en las releases de [blzkz/rec-ording-releases](https://github.com/blzkz/rec-ording-releases), un repositorio público solo para los paquetes (el del código es privado: el «Source code» que GitHub añade a cada release solo contiene el README de ese repositorio). Si la hay, se abre una ventana que lo cuenta y ofrece actualizar (también queda el botón **Actualización** en la barra):
 
-- en Linux instala el paquete con `pkexec pacman -U` (pide tu contraseña);
+- en Linux instala el paquete con el gestor del sistema a través de `pkexec` (pacman, apt, dnf o zypper, según cómo se instaló; pide tu contraseña), o reemplaza el archivo si es un AppImage;
 - en Windows reemplaza los archivos de la carpeta de rec-ording;
 - en una copia compilada a mano, abre la página de descarga.
 
 Después basta con reiniciar. Las descargas se comprueban con la suma SHA-256 que publica GitHub.
 
-Para publicar una versión, sube una etiqueta `vX.Y.Z` (con la versión de `Cargo.toml` y del `PKGBUILD`). El workflow **Release** pasa los tests y compila en Arch y en Windows, y publica el paquete de Arch y el .zip de Windows en una sola release del repositorio público, usando como notas el mensaje del commit. Necesita el secret `RELEASES_TOKEN`: un token *fine-grained* con permiso *Contents: read and write* solo sobre `blzkz/rec-ording-releases`. Sin él, los paquetes quedan como artefactos de la ejecución y el paso de publicar falla avisándolo.
+Para publicar una versión, sube una etiqueta `vX.Y.Z` (con la versión de `Cargo.toml` y del `PKGBUILD`). El workflow **Release** pasa los tests y compila en Arch, en Ubuntu 22.04 (`.deb`, `.rpm` y AppImage con `packaging/linux/build-packages.sh`) y en Windows, y publica todo en una sola release del repositorio público, usando como notas el mensaje del commit. Necesita el secret `RELEASES_TOKEN`: un token *fine-grained* con permiso *Contents: read and write* solo sobre `blzkz/rec-ording-releases`. Sin él, los paquetes quedan como artefactos de la ejecución y el paso de publicar falla avisándolo.
 
 ### Windows
 

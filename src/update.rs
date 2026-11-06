@@ -1,6 +1,7 @@
 //! Updates from the public releases repository (the source repository is private). The app
-//! checks the latest release when it opens and installs it on request: with pacman through
-//! pkexec on Linux, or by swapping the files next to the .exe on Windows.
+//! checks the latest release when it opens and installs it on request: with the system's
+//! package manager through pkexec (pacman, apt, dnf or zypper), by replacing the AppImage, or by
+//! swapping the files next to the .exe on Windows.
 
 use crate::platform::command;
 use sha2::{Digest, Sha256};
@@ -34,6 +35,12 @@ pub struct Asset {
 pub enum Method {
     /// Installed from the Arch package: `pkexec pacman -U`.
     Pacman,
+    /// Installed from the .deb (Debian, Ubuntu, Mint…): `pkexec apt-get install`.
+    Deb,
+    /// Installed from the .rpm (Fedora, openSUSE…): `pkexec dnf install` or zypper.
+    Rpm,
+    /// Running as an AppImage: the file is replaced.
+    AppImage(PathBuf),
     /// Unzipped folder on Windows: replace the files in place.
     Folder(PathBuf),
     /// Anything else (a build from source): download from the release page.
@@ -41,25 +48,51 @@ pub enum Method {
 }
 
 pub fn method() -> Method {
+    static METHOD: std::sync::OnceLock<Method> = std::sync::OnceLock::new();
+    METHOD.get_or_init(find_method).clone()
+}
+
+/// Whether the package manager `program` says it installed the app's binary.
+fn owns_binary(program: &str, args: &[&str]) -> bool {
+    command(program).args(args).arg("/usr/bin/rec-ording").output().is_ok_and(|o| o.status.success())
+}
+
+fn find_method() -> Method {
     let Ok(exe) = std::env::current_exe() else {
         return Method::Manual;
     };
     if cfg!(windows) {
         return Method::Folder(exe);
     }
-    if exe == Path::new("/usr/bin/rec-ording") && Path::new("/usr/bin/pacman").exists() {
+    // Set by the AppImage runtime to the .AppImage file itself.
+    if let Some(file) = std::env::var_os("APPIMAGE").map(PathBuf::from).filter(|p| p.is_file()) {
+        return Method::AppImage(file);
+    }
+    if exe != Path::new("/usr/bin/rec-ording") {
+        return Method::Manual;
+    }
+    if owns_binary("pacman", &["-Qqo"]) {
         Method::Pacman
+    } else if owns_binary("dpkg", &["-S"]) {
+        Method::Deb
+    } else if owns_binary("rpm", &["-qf"]) {
+        Method::Rpm
     } else {
         Method::Manual
     }
 }
 
-/// The asset name this system installs.
-fn asset_suffix() -> &'static str {
-    if cfg!(windows) {
-        "-windows-x64.zip"
-    } else {
-        "-x86_64.pkg.tar.zst"
+/// The end of the name of the asset `how` installs.
+fn asset_suffix(how: &Method) -> &'static str {
+    match how {
+        Method::Folder(_) => "-windows-x64.zip",
+        Method::Deb => "_amd64.deb",
+        Method::Rpm => ".x86_64.rpm",
+        Method::AppImage(_) => "-x86_64.AppImage",
+        Method::Pacman => "-x86_64.pkg.tar.zst",
+        // Only to tell whether the release has something for this system.
+        Method::Manual if cfg!(windows) => "-windows-x64.zip",
+        Method::Manual => "-x86_64.AppImage",
     }
 }
 
@@ -84,13 +117,17 @@ pub fn is_newer(candidate: &str, current: &str) -> bool {
 
 /// Reads GitHub's "latest release" JSON; `None` when it is not newer than `current`.
 pub fn parse_release(json: &str, current: &str) -> Result<Option<Release>, String> {
+    parse_release_for(json, current, &method())
+}
+
+fn parse_release_for(json: &str, current: &str, how: &Method) -> Result<Option<Release>, String> {
     let v: serde_json::Value = serde_json::from_str(json).map_err(|e| format!("Respuesta no válida: {e}"))?;
     let tag = v["tag_name"].as_str().ok_or("La release no tiene versión")?;
     if !is_newer(tag, current) {
         return Ok(None);
     }
     let asset = v["assets"].as_array().into_iter().flatten().find_map(|a| {
-        let name = a["name"].as_str().filter(|n| n.ends_with(asset_suffix()))?;
+        let name = a["name"].as_str().filter(|n| n.ends_with(asset_suffix(how)))?;
         Some(Asset {
             name: name.to_string(),
             url: a["browser_download_url"].as_str()?.to_string(),
@@ -99,7 +136,8 @@ pub fn parse_release(json: &str, current: &str) -> Result<Option<Release>, Strin
     });
     Ok(Some(Release {
         version: tag.trim_start_matches(['v', 'V']).to_string(),
-        notes: v["body"].as_str().unwrap_or_default().trim().to_string(),
+        // Shown as plain text: without Markdown's bold marks.
+        notes: v["body"].as_str().unwrap_or_default().replace("**", "").trim().to_string(),
         page: v["html_url"].as_str().map(str::to_string).unwrap_or_else(|| format!("https://github.com/{RELEASES_REPO}/releases/latest")),
         asset,
     }))
@@ -155,19 +193,14 @@ pub fn download(r: &Release) -> Result<PathBuf, String> {
 pub fn install(r: &Release, how: &Method) -> Result<(), String> {
     let file = download(r)?;
     match how {
-        Method::Pacman => {
-            let status = command("pkexec")
-                .args(["pacman", "-U", "--noconfirm"])
-                .arg(&file)
-                .status()
-                .map_err(|_| "Falta pkexec (polkit) para instalar el paquete".to_string())?;
-            match status.code() {
-                Some(0) => Ok(()),
-                // pkexec: the password dialog was dismissed or refused.
-                Some(126) | Some(127) => Err("Instalación cancelada".into()),
-                _ => Err("pacman no pudo instalar el paquete".into()),
-            }
+        Method::Pacman => pkexec(&["pacman", "-U", "--noconfirm"], &file, "pacman"),
+        // apt resolves the dependencies of a local .deb when given its path.
+        Method::Deb => pkexec(&["apt-get", "install", "-y", "--allow-downgrades"], &file, "apt"),
+        Method::Rpm if Path::new("/usr/bin/zypper").exists() && !Path::new("/usr/bin/dnf").exists() => {
+            pkexec(&["zypper", "--non-interactive", "install", "--allow-unsigned-rpm"], &file, "zypper")
         }
+        Method::Rpm => pkexec(&["dnf", "install", "-y"], &file, "dnf"),
+        Method::AppImage(target) => replace_appimage(&file, target),
         Method::Folder(exe) => {
             let unpacked = file.with_extension("");
             fs::create_dir_all(&unpacked).map_err(|e| e.to_string())?;
@@ -181,6 +214,38 @@ pub fn install(r: &Release, how: &Method) -> Result<(), String> {
         }
         Method::Manual => Err("Esta copia no se puede actualizar sola".into()),
     }
+}
+
+/// Installs a package file with the system's package manager, asking for the password.
+fn pkexec(args: &[&str], file: &Path, tool: &str) -> Result<(), String> {
+    let status = command("pkexec")
+        .args(args)
+        .arg(file)
+        .status()
+        .map_err(|_| "Falta pkexec (polkit) para instalar el paquete".to_string())?;
+    match status.code() {
+        Some(0) => Ok(()),
+        // pkexec: the password dialog was dismissed or refused.
+        Some(126) | Some(127) => Err("Instalación cancelada".into()),
+        _ => Err(format!("{tool} no pudo instalar el paquete")),
+    }
+}
+
+/// Puts the downloaded AppImage in place of the running one (renaming over it is safe while it
+/// runs; the new one starts on restart).
+fn replace_appimage(new: &Path, target: &Path) -> Result<(), String> {
+    let dir = target.parent().ok_or("Ruta del programa no válida")?;
+    let tmp = dir.join(".rec-ording-nuevo.AppImage");
+    fs::copy(new, &tmp).map_err(|e| format!("No se puede escribir en {}: {e}", dir.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
+    }
+    fs::rename(&tmp, target).map_err(|e| {
+        let _ = fs::remove_file(&tmp);
+        format!("No se pudo reemplazar el AppImage: {e}")
+    })
 }
 
 fn find_dir_with(root: &Path, file: &std::ffi::OsStr) -> Option<PathBuf> {
@@ -254,14 +319,16 @@ pub fn cleanup() {
 
 /// Opens the app again (the updated one) and closes this one.
 pub fn restart() -> ! {
-    // On Linux the running executable shows up as deleted once pacman replaces it.
-    let exe = if matches!(method(), Method::Pacman) {
-        PathBuf::from("/usr/bin/rec-ording")
-    } else {
+    // On Linux the running executable shows up as deleted once the package manager replaces it.
+    let exe = match method() {
+        Method::Pacman | Method::Deb | Method::Rpm => PathBuf::from("/usr/bin/rec-ording"),
+        Method::AppImage(file) => file,
+        _ => {
         std::env::current_exe().map(|p| {
             let s = p.to_string_lossy();
             PathBuf::from(s.trim_end_matches(" (deleted)"))
         }).unwrap_or_else(|_| PathBuf::from("rec-ording"))
+        }
     };
     let _ = std::process::Command::new(exe).spawn();
     std::process::exit(0);
@@ -302,9 +369,12 @@ mod tests {
         let json = serde_json::json!({
             "tag_name": "v0.8.0",
             "html_url": "https://github.com/x/y/releases/tag/v0.8.0",
-            "body": "Novedades\n",
+            "body": "**Novedades**\n",
             "assets": [
-                {"name": "rec-ording-0.8.0-1-x86_64.pkg.tar.zst", "browser_download_url": "https://e/linux", "digest": "sha256:ABC"},
+                {"name": "rec-ording-0.8.0-1-x86_64.pkg.tar.zst", "browser_download_url": "https://e/arch", "digest": "sha256:ABC"},
+                {"name": "rec-ording_0.8.0-1_amd64.deb", "browser_download_url": "https://e/deb"},
+                {"name": "rec-ording-0.8.0-1.x86_64.rpm", "browser_download_url": "https://e/rpm"},
+                {"name": "rec-ording-0.8.0-x86_64.AppImage", "browser_download_url": "https://e/appimage"},
                 {"name": "rec-ording-0.8.0-windows-x64.zip", "browser_download_url": "https://e/win"}
             ]
         })
@@ -312,12 +382,14 @@ mod tests {
         let r = parse_release(&json, "0.7.0").unwrap().unwrap();
         assert_eq!(r.version, "0.8.0");
         assert_eq!(r.notes, "Novedades");
-        let a = r.asset.unwrap();
-        if cfg!(windows) {
-            assert_eq!((a.url.as_str(), a.sha256), ("https://e/win", None));
-        } else {
-            assert_eq!((a.url.as_str(), a.sha256.as_deref()), ("https://e/linux", Some("abc")));
-        }
+        let url = |how: Method| parse_release_for(&json, "0.7.0", &how).unwrap().unwrap().asset.unwrap().url;
+        assert_eq!(url(Method::Pacman), "https://e/arch");
+        assert_eq!(url(Method::Deb), "https://e/deb");
+        assert_eq!(url(Method::Rpm), "https://e/rpm");
+        assert_eq!(url(Method::AppImage(PathBuf::new())), "https://e/appimage");
+        assert_eq!(url(Method::Folder(PathBuf::new())), "https://e/win");
+        let arch = parse_release_for(&json, "0.7.0", &Method::Pacman).unwrap().unwrap().asset.unwrap();
+        assert_eq!(arch.sha256.as_deref(), Some("abc"));
         assert_eq!(parse_release(&json, "0.8.0").unwrap(), None);
         assert!(parse_release("{}", "0.7.0").is_err());
     }

@@ -3,7 +3,7 @@
 
 use crate::model::{timestamp_for_filename, videos_dir, Touch, TouchKind};
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use crate::platform::command;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -43,6 +43,15 @@ pub struct Device {
     pub serial: String,
     pub model: String,
     pub state: DeviceState,
+    /// An Android Studio emulator rather than a phone on USB.
+    pub emulator: bool,
+}
+
+/// The name of an emulator's virtual device ("Pixel 8 API 35"), from its console.
+fn avd_name(serial: &str) -> Option<String> {
+    let out = adb(serial).args(["emu", "avd", "name"]).output().ok()?;
+    let name = String::from_utf8_lossy(&out.stdout).lines().next()?.trim().replace('_', " ");
+    (!name.is_empty() && name != "OK" && !name.starts_with("KO")).then_some(name)
 }
 
 pub fn list_devices() -> Vec<Device> {
@@ -64,7 +73,14 @@ pub fn list_devices() -> Vec<Device> {
                 .find_map(|p| p.strip_prefix("model:"))
                 .map(|m| m.replace('_', " "))
                 .unwrap_or_else(|| "Dispositivo Android".into());
-            Some(Device { serial, model, state })
+            // An Android Studio emulator: named after its virtual device.
+            let emulator = serial.starts_with("emulator-");
+            let model = match emulator.then(|| avd_name(&serial)).flatten() {
+                Some(avd) => format!("Emulador · {avd}"),
+                None if emulator => "Emulador de Android".into(),
+                None => model,
+            };
+            Some(Device { serial, model, state, emulator })
         })
         .collect()
 }
@@ -159,20 +175,28 @@ fn adb_output(serial: &str, args: &[&str]) -> String {
         .unwrap_or_default()
 }
 
-/// Finds the touchscreen input device and its coordinate range.
-fn touch_device(serial: &str) -> Option<(String, f32, f32)> {
-    let out = adb_output(serial, &["shell", "getevent", "-lp"]);
+/// The touchscreen input devices and their coordinate ranges. A phone has one; an emulator has
+/// several (one per possible display), and which gets the mouse clicks varies.
+fn touch_devices(serial: &str) -> Vec<(String, f32, f32)> {
+    parse_touch_devices(&adb_output(serial, &["shell", "getevent", "-lp"]))
+}
+
+fn parse_touch_devices(out: &str) -> Vec<(String, f32, f32)> {
+    let mut found = Vec::new();
     let mut current: Option<String> = None;
     let (mut mx, mut my) = (None, None);
     let max_of = |line: &str| -> Option<f32> {
         let rest = line.split("max").nth(1)?;
         rest.trim().split(|c: char| c == ',' || c.is_whitespace()).next()?.parse().ok()
     };
+    let mut close = |d: &Option<String>, x: Option<f32>, y: Option<f32>| {
+        if let (Some(d), Some(x), Some(y)) = (d, x, y) {
+            found.push((d.clone(), x, y));
+        }
+    };
     for line in out.lines() {
         if let Some(dev) = line.trim().strip_prefix("add device") {
-            if let (Some(d), Some(x), Some(y)) = (&current, mx, my) {
-                return Some((d.clone(), x, y));
-            }
+            close(&current, mx, my);
             current = dev.split(':').nth(1).map(|s| s.trim().to_string());
             mx = None;
             my = None;
@@ -182,10 +206,19 @@ fn touch_device(serial: &str) -> Option<(String, f32, f32)> {
             my = max_of(line);
         }
     }
-    match (current, mx, my) {
-        (Some(d), Some(x), Some(y)) => Some((d, x, y)),
-        _ => None,
-    }
+    close(&current, mx, my);
+    found
+}
+
+/// One `getevent -lt` line: kernel time, the device when getevent reads several, code, value.
+fn parse_event(line: &str) -> Option<(f64, Option<&str>, &str, &str)> {
+    let rest = line.trim().strip_prefix('[')?;
+    let (ts, fields) = rest.split_once(']')?;
+    let t = ts.trim().parse::<f64>().ok()?;
+    let mut f = fields.split_whitespace().peekable();
+    let dev = f.next_if(|w| w.ends_with(':')).map(|w| w.trim_end_matches(':'));
+    let (_ty, code, value) = (f.next()?, f.next()?, f.next()?);
+    Some((t, dev, code, value))
 }
 
 /// Display rotation (0..3) at the start of the recording.
@@ -291,10 +324,18 @@ fn spawn_touch_reader(
     touch_log: Arc<Mutex<TouchLog>>,
     count: Arc<AtomicUsize>,
 ) -> Option<Child> {
-    let (dev, max_x, max_y) = touch_device(serial)?;
-    // `-tt` gives getevent a pseudo-terminal so it flushes every line.
+    let devices = touch_devices(serial);
+    if devices.is_empty() {
+        return None;
+    }
+    // One touchscreen: read just it. Several (an emulator): read them all, each line tagged
+    // with its device. `-tt` gives getevent a pseudo-terminal so it flushes every line.
+    let mut args = vec!["shell", "-tt", "getevent", "-lt"];
+    if let [(dev, _, _)] = devices.as_slice() {
+        args.push(dev);
+    }
     let mut child = adb(serial)
-        .args(["shell", "-tt", "getevent", "-lt", &dev])
+        .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -302,15 +343,16 @@ fn spawn_touch_reader(
         .ok()?;
     let stdout = child.stdout.take()?;
     thread::spawn(move || {
-        let mut parser = GestureParser::new(max_x, max_y);
+        let mut parsers: Vec<(String, GestureParser)> = devices.iter().map(|(d, x, y)| (d.clone(), GestureParser::new(*x, *y))).collect();
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
             let host = base.elapsed().as_secs_f64();
-            let line = line.trim();
-            let Some(rest) = line.strip_prefix('[') else { continue };
-            let Some((ts, fields)) = rest.split_once(']') else { continue };
-            let Ok(kernel_t) = ts.trim().parse::<f64>() else { continue };
-            let mut f = fields.split_whitespace();
-            let (Some(_ty), Some(code), Some(value)) = (f.next(), f.next(), f.next()) else { continue };
+            let Some((kernel_t, dev, code, value)) = parse_event(&line) else { continue };
+            let parser = match dev {
+                Some(d) => parsers.iter_mut().find(|(p, _)| p == d).map(|(_, p)| p),
+                None => parsers.first_mut().map(|(_, p)| p),
+            };
+            // Keyboards, buttons and other devices.
+            let Some(parser) = parser else { continue };
 
             let mut log = touch_log.lock().unwrap();
             let off = host - kernel_t;
@@ -322,6 +364,42 @@ fn spawn_touch_reader(
         }
     });
     Some(child)
+}
+
+/// Seconds of video in `path` (its video stream, not the sound).
+fn video_length(path: &Path) -> Option<f32> {
+    let probe = |entry: &str| -> Option<f32> {
+        let out = command("ffprobe")
+            .args(["-v", "error", "-select_streams", "v:0", "-show_entries", entry, "-of", "csv=p=0"])
+            .arg(path)
+            .output()
+            .ok()?;
+        String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+    };
+    probe("stream=duration").or_else(|| probe("format=duration"))
+}
+
+/// Holds the last frame until `seconds` when the video stops sooner (only re-encodes then).
+fn hold_last_frame(path: &Path, seconds: f32) {
+    let Some(len) = video_length(path) else { return };
+    let missing = seconds - len;
+    if missing < 0.5 {
+        return;
+    }
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("mp4");
+    let tmp = path.with_extension(format!("alargado.{ext}"));
+    let ok = command("ffmpeg")
+        .args(["-nostdin", "-y", "-loglevel", "error", "-i"])
+        .arg(path)
+        .args(["-vf", &format!("tpad=stop_mode=clone:stop_duration={missing:.3}")])
+        .args(["-c:v", "libx264", "-preset", "veryfast", "-crf", "14", "-pix_fmt", "yuv420p", "-c:a", "copy"])
+        .arg(&tmp)
+        .status()
+        .is_ok_and(|s| s.success());
+    if ok && std::fs::rename(&tmp, path).is_ok() {
+        return;
+    }
+    let _ = std::fs::remove_file(&tmp);
 }
 
 fn pipe_lines<R: std::io::Read + Send + 'static>(
@@ -572,6 +650,7 @@ impl Recording {
     }
 
     fn finish(&mut self) -> CaptureResult {
+        let stopped = Instant::now();
         let pid = self.recorder.id().to_string();
         match self.method {
             Method::Scrcpy => {
@@ -637,6 +716,11 @@ impl Recording {
             .map(|i| i.duration_since(self.base))
             .unwrap_or(self.started.duration_since(self.base) + fallback)
             .as_secs_f64();
+
+        // Phones repeat the last frame while the screen is still; the emulator's encoder does
+        // not, so a recording that ends on a still screen would end early.
+        let recorded = (stopped.duration_since(self.base).as_secs_f64() - video_start) as f32;
+        hold_last_frame(&self.path, recorded);
 
         let log = self.touch_log.lock().unwrap();
         let offset = log.clock_offset.unwrap_or(0.0);
@@ -704,13 +788,37 @@ mod tests {
         lines
             .lines()
             .filter_map(|l| {
-                let rest = l.trim().strip_prefix('[')?;
-                let (ts, fields) = rest.split_once(']')?;
-                let mut f = fields.split_whitespace();
-                let (_, code, value) = (f.next()?, f.next()?, f.next()?);
-                p.feed(ts.trim().parse().ok()?, code, value)
+                let (t, _, code, value) = parse_event(l)?;
+                p.feed(t, code, value)
             })
             .collect()
+    }
+
+    /// An emulator lists several touchscreens and getevent tags each line with its device.
+    #[test]
+    fn reads_every_emulator_touchscreen() {
+        let lp = "add device 1: /dev/input/event3
+  name:     \"virtio_input_multi_touch_2\"
+  events:
+    ABS (0003): ABS_MT_POSITION_X    : value 0, min 0, max 32767, fuzz 0, flat 0, resolution 0
+                ABS_MT_POSITION_Y    : value 0, min 0, max 32767, fuzz 0, flat 0, resolution 0
+add device 2: /dev/input/event1
+  name:     \"qwerty2\"
+  events:
+    KEY (0001): KEY_A
+add device 3: /dev/input/event2
+  name:     \"virtio_input_multi_touch_1\"
+  events:
+    ABS (0003): ABS_MT_POSITION_X    : value 0, min 0, max 1079, fuzz 0, flat 0, resolution 0
+                ABS_MT_POSITION_Y    : value 0, min 0, max 2399, fuzz 0, flat 0, resolution 0
+";
+        let devs = parse_touch_devices(lp);
+        assert_eq!(devs, vec![("/dev/input/event3".to_string(), 32767.0, 32767.0), ("/dev/input/event2".to_string(), 1079.0, 2399.0)]);
+        assert_eq!(
+            parse_event("[   12.500000] /dev/input/event2: EV_ABS       ABS_MT_POSITION_X    0000021c"),
+            Some((12.5, Some("/dev/input/event2"), "ABS_MT_POSITION_X", "0000021c"))
+        );
+        assert_eq!(parse_event("[   12.5] EV_SYN SYN_REPORT 00000000"), Some((12.5, None, "SYN_REPORT", "00000000")));
     }
 
     #[test]

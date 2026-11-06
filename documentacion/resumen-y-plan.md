@@ -35,7 +35,7 @@ Se han retirado, de momento, el servidor MCP, el autoactualizador, los subtítul
 
 ## v0.6.0: galería de modelos, encaje del vídeo y animaciones
 
-- Galería con miniaturas renderizadas: cinco modelos gratuitos de Poly Pizza (CC0 y CC BY 3.0, créditos en `assets/models/CREDITS.md`) y los que importe el usuario, que se copian a `~/.local/share/rec-ording/models` junto con las texturas y `.bin` que usen (vale tanto para `.glb` como para `.gltf`).
+- Galería con miniaturas renderizadas: cinco modelos gratuitos de Poly Pizza (CC0 y CC BY 3.0; desde v0.11 se sustituyen por el Galaxy S26 Ultra) y los que importe el usuario, que se copian a `~/.local/share/rec-ording/models` junto con las texturas y `.bin` que usen (vale tanto para `.glb` como para `.gltf`).
 - Detección de pantalla más robusta: rectángulo mínimo (no le afecta la densidad de vértices de un agujero de cámara) y modelos low-poly pintados con una textura de paleta, que se separan en piezas por color.
 - Ajuste del vídeo en la pantalla del modelo: Rellenar (con encuadre), Encajar (bandas negras) o Estirar.
 - Animaciones glTF de nodos (traslación, rotación y escala; interpolación lineal, por pasos o cúbica), en bucle o una vez.
@@ -120,6 +120,14 @@ Todo el plan de `plan-iluminacion-postproceso.md`, más las mejoras pedidas tras
 - Barra de la línea de tiempo con iconos agrupados y su nombre y atajo al pasar el ratón; en los inspectores, la papelera va junto al título y las acciones del clip (dividir, congelar, cambiar vídeo) son iconos. La velocidad del clip es un control segmentado.
 - El renderizador por software de Windows (WARP, «Microsoft Basic Render Driver») ya no se toma por una tarjeta gráfica: sin drivers se usa el procesador, que es más rápido y fiable.
 - Publicación: un solo workflow (`release.yml`) prueba y compila Arch y Windows y, con una etiqueta `v*`, publica los dos paquetes en una sola release del repositorio público `blzkz/rec-ording-releases`.
+
+## v0.11.0: Galaxy S26 Ultra, aviso de actualización y paquetes para más distribuciones
+
+- La galería incluida solo trae el **Galaxy S26 Ultra** (de Sagar Modi en Sketchfab, CC BY 4.0, con su crédito en `assets/models/CREDITS.md` y en el panel). Los cinco modelos de Poly Pizza ya no se instalan.
+- Al encontrar una versión nueva, la app abre una ventana que la anuncia y ofrece actualizar (en cuanto no hay otra ventana abierta ni una grabación o exportación en marcha).
+- Paquetes `.deb` (Debian, Ubuntu, Mint…), `.rpm` (Fedora, openSUSE) y AppImage, además del de Arch y el .zip de Windows. Se compilan en Ubuntu 22.04 (glibc 2.35) con `packaging/linux/build-packages.sh`. El actualizador reconoce cómo se instaló la app (pacman, dpkg, rpm o AppImage) y usa el paquete que le corresponde.
+- Grabar un **emulador** de Android Studio: aparece como «Emulador · <nombre del AVD>» y se escuchan todas sus pantallas táctiles virtuales (tiene once y los clics de la ventana pueden llegar a cualquiera). Su codificador no repite el último fotograma con la pantalla quieta, así que al terminar se alarga el vídeo hasta lo que duró la grabación. Probado con un AVD de Android 16 (API 36).
+- Con AppImage, la configuración MCP que muestra el Asistente apunta al archivo `.AppImage` y no a su montaje temporal.
 
 ## Ideas para siguientes versiones
 

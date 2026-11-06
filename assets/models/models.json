@@ -1,7 +1,3 @@
 [
-  { "file": "moderno.glb", "name": "Moderno", "author": "Rendercore", "license": "CC BY 3.0", "source": "https://poly.pizza/m/wBYYnxC42K" },
-  { "file": "minimal.glb", "name": "Minimal", "author": "smallbigsquare", "license": "CC0", "source": "https://poly.pizza/m/4DRZmTs3jq" },
-  { "file": "compacto.glb", "name": "Compacto", "author": "Poly by Google", "license": "CC BY 3.0", "source": "https://poly.pizza/m/3oGDGMrc6rm" },
-  { "file": "robusto.glb", "name": "Robusto", "author": "Poly by Google", "license": "CC BY 3.0", "source": "https://poly.pizza/m/dTjviKNzecd" },
-  { "file": "clasico.glb", "name": "Clásico", "author": "Quaternius", "license": "CC0", "source": "https://poly.pizza/m/k2kgBepoMU" }
+  { "file": "galaxy-s26-ultra.glb", "name": "Galaxy S26 Ultra", "author": "Sagar Modi", "license": "CC BY 4.0", "source": "https://sketchfab.com/3d-models/samsung-s26-ultra-7ff228963ea446f39f46a5541f71e352" }
 ]

@@ -114,7 +114,7 @@ fn an_agent_builds_and_exports_a_video() {
     mcp.call("add_device_motion", json!({"preset": "hop", "time": 1.0}));
     mcp.call("set_style", json!({"aspect": "9:16", "background_preset": "Atardecer", "padding": 0.1}));
     mcp.call("set_angle", json!({"turn": -15, "straighten_on_zoom": true}));
-    mcp.call("set_device", json!({"model": "Moderno"}));
+    mcp.call("set_device", json!({"model": "Galaxy S26 Ultra"}));
     mcp.call("set_model_options", json!({"video_fit": "fill", "fit_pan": 0.3}));
 
     let p = mcp.project();

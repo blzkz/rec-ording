@@ -1,8 +1,8 @@
 name: Release
 
-# Builds the Arch package and the Windows .zip on a `v*` tag (or by hand, to try a build) and,
-# for a tag, publishes both in the public releases repository, where the app looks for
-# updates. Only on tags or by hand: the private repository's minutes are limited, and Windows
+# Builds the packages on a `v*` tag (or by hand, to try a build) and, for a tag, publishes
+# them in the public releases repository, where the app looks for updates: Arch (.pkg.tar.zst),
+# Debian/Ubuntu (.deb), Fedora/openSUSE (.rpm), any distribution (AppImage) and Windows (.zip). Only on tags or by hand: the private repository's minutes are limited, and Windows
 # minutes count double.
 on:
   push:
@@ -40,6 +40,37 @@ jobs:
         with:
           name: arch
           path: packaging/arch/*.pkg.tar.zst
+          if-no-files-found: error
+
+  # The oldest supported Ubuntu, so the binary runs on any distribution with glibc 2.35 or
+  # newer. The tests already ran in the Arch job.
+  linux:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust builds
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install packaging tools
+        run: sudo apt-get update && sudo apt-get install -y rpm desktop-file-utils
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Build .deb, .rpm and AppImage
+        run: packaging/linux/build-packages.sh target/release/rec-ording dist
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/*
           if-no-files-found: error
 
   windows:
@@ -84,7 +115,7 @@ jobs:
           if-no-files-found: error
 
   publish:
-    needs: [arch, windows]
+    needs: [arch, linux, windows]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     timeout-minutes: 15

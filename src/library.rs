@@ -35,6 +35,10 @@ struct ManifestEntry {
 /// Where the bundled models live: next to the installed binary (`/usr/share/rec-ording`), or in
 /// the repository's `assets/` folder when running from `target/`.
 fn bundled_dir() -> Option<PathBuf> {
+    // Tests use the repository's models, not an installed copy.
+    if cfg!(test) {
+        return Some(PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/models")));
+    }
     let exe = std::env::current_exe().ok()?;
     let bin = exe.parent()?;
     [
@@ -449,7 +453,7 @@ mod tests {
     #[test]
     fn bundled_models_load_and_render() {
         let bundled: Vec<LibraryModel> = list().into_iter().filter(|m| m.license.is_some()).collect();
-        assert_eq!(bundled.len(), 5, "{bundled:?}");
+        assert_eq!(bundled.len(), 1, "{bundled:?}");
         for m in bundled {
             let src = model3d::load(&m.path).unwrap_or_else(|e| panic!("{}: {e}", m.name));
             assert!(src.guess.is_some(), "{}: no screen found", m.name);

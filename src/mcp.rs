@@ -344,7 +344,7 @@ impl Server {
             "list_android_devices" => {
                 let devs: Vec<Value> = capture::list_devices()
                     .into_iter()
-                    .map(|d| json!({"serial": d.serial, "model": d.model, "ready": d.state == capture::DeviceState::Ready}))
+                    .map(|d| json!({"serial": d.serial, "model": d.model, "ready": d.state == capture::DeviceState::Ready, "emulator": d.emulator}))
                     .collect();
                 Ok(Reply::Text(Value::Array(devs).to_string()))
             }
@@ -1447,7 +1447,7 @@ pub fn tools() -> Vec<Value> {
         tool("rename_project", "Cambia el nombre del proyecto abierto.", json!({"name": s("Nombre nuevo")}), &["name"]),
         tool("undo", "Deshace el último cambio hecho por este servidor.", json!({}), &[]),
         tool("redo", "Rehace el último cambio deshecho.", json!({}), &[]),
-        tool("list_android_devices", "Móviles Android conectados por USB.", json!({}), &[]),
+        tool("list_android_devices", "Móviles Android conectados por USB y emuladores abiertos.", json!({}), &[]),
         tool(
             "start_recording",
             "Empieza a grabar la pantalla de un móvil (y sus toques).",
