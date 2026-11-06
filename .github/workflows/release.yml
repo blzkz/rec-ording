@@ -1,7 +1,8 @@
 name: Release
 
 # Builds the packages on a `v*` tag (or by hand, to try a build) and, for a tag, publishes
-# them in the public releases repository, where the app looks for updates: Arch (.pkg.tar.zst),
+# them on the download page (GitHub Pages of the public blzkz/rec-ording-releases), where the
+# app looks for updates: Arch (.pkg.tar.zst),
 # Debian/Ubuntu (.deb), Fedora/openSUSE (.rpm), any distribution (AppImage) and Windows (.zip). Only on tags or by hand: the private repository's minutes are limited, and Windows
 # minutes count double.
 on:
@@ -134,17 +135,27 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Publish to the releases repository
+      # The downloads go to the public repository's GitHub Pages, not to GitHub Releases: a
+      # release always shows "Source code" archives, which are not wanted. The notes are the
+      # message of the annotated tag.
+      - name: Build the download page
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          git fetch --depth=1 --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          git tag -l --format='%(contents)' "$TAG" | sed '/^-----BEGIN PGP/,$d' > notes.md
+          python3 packaging/site/make-site.py dist site "$TAG" notes.md
+
+      - name: Publish the download page
         run: |
           if [ -z "$GH_TOKEN" ]; then
             echo "::error::Falta el secreto RELEASES_TOKEN; los paquetes están en los artefactos de esta ejecución."
             exit 1
           fi
-          TAG="${GITHUB_REF#refs/tags/}"
-          git log -1 --format=%B "$GITHUB_SHA" | grep -v '^Co-Authored-By:' > notes.md
-          ls -l dist
-          if gh release view "$TAG" -R "$REPO" > /dev/null 2>&1; then
-            gh release upload "$TAG" dist/* --clobber -R "$REPO"
-          else
-            gh release create "$TAG" dist/* -R "$REPO" --title "rec·ording ${TAG#v}" --notes-file notes.md
-          fi
+          cd site
+          git init -q -b gh-pages
+          git config user.name "rec-ording release"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -qm "rec·ording ${GITHUB_REF#refs/tags/v}"
+          # Only the latest version is kept, so the history does not pile up packages.
+          git push -f "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" gh-pages

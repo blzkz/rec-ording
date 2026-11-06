@@ -47,7 +47,7 @@ Depends: libc6 (>= 2.35), libgcc-s1, libvulkan1, ffmpeg, curl
 Recommends: adb, scrcpy, zenity, unzip, pkexec | policykit-1
 Section: video
 Priority: optional
-Homepage: https://github.com/blzkz/rec-ording-releases
+Homepage: https://blzkz.github.io/rec-ording-releases/
 Description: $summary
  Graba la pantalla del móvil por USB y la pone dentro de un marco o un modelo
  3D, sobre un fondo, con zooms suaves en cada toque, textos y movimientos de
@@ -65,7 +65,7 @@ Version:        $version
 Release:        1
 Summary:        $summary
 License:        Proprietary
-URL:            https://github.com/blzkz/rec-ording-releases
+URL:            https://blzkz.github.io/rec-ording-releases/
 BuildArch:      x86_64
 # Vulkan, ffmpeg and curl are opened or run at runtime, so they are named here; file and
 # library names work on Fedora and openSUSE alike.

@@ -76,7 +76,7 @@ Además:
 
 ## Instalación
 
-Los paquetes de cada versión están en [blzkz/rec-ording-releases](https://github.com/blzkz/rec-ording-releases/releases/latest):
+Los paquetes de la última versión están en la página de descargas, https://blzkz.github.io/rec-ording-releases/:
 
 | Sistema | Archivo | Cómo se instala |
 | --- | --- | --- |
@@ -103,7 +103,7 @@ cargo build --release
 
 ### Actualizaciones
 
-Al abrirse, la app mira si hay una versión nueva en las releases de [blzkz/rec-ording-releases](https://github.com/blzkz/rec-ording-releases), un repositorio público solo para los paquetes (el del código es privado: el «Source code» que GitHub añade a cada release solo contiene el README de ese repositorio). Si la hay, se abre una ventana que lo cuenta y ofrece actualizar (también queda el botón **Actualización** en la barra):
+Al abrirse, la app lee el `latest.json` de la página de descargas (GitHub Pages del repositorio público `blzkz/rec-ording-releases`, que solo tiene los paquetes; el del código es privado). No se usan las releases de GitHub porque siempre muestran unos archivos «Source code». Si la hay, se abre una ventana que lo cuenta y ofrece actualizar (también queda el botón **Actualización** en la barra):
 
 - en Linux instala el paquete con el gestor del sistema a través de `pkexec` (pacman, apt, dnf o zypper, según cómo se instaló; pide tu contraseña), o reemplaza el archivo si es un AppImage;
 - en Windows reemplaza los archivos de la carpeta de rec-ording;
@@ -111,7 +111,7 @@ Al abrirse, la app mira si hay una versión nueva en las releases de [blzkz/rec-
 
 Después basta con reiniciar. Las descargas se comprueban con la suma SHA-256 que publica GitHub.
 
-Para publicar una versión, sube una etiqueta `vX.Y.Z` (con la versión de `Cargo.toml` y del `PKGBUILD`). El workflow **Release** pasa los tests y compila en Arch, en Ubuntu 22.04 (`.deb`, `.rpm` y AppImage con `packaging/linux/build-packages.sh`) y en Windows, y publica todo en una sola release del repositorio público, usando como notas el mensaje del commit. Necesita el secret `RELEASES_TOKEN`: un token *fine-grained* con permiso *Contents: read and write* solo sobre `blzkz/rec-ording-releases`. Sin él, los paquetes quedan como artefactos de la ejecución y el paso de publicar falla avisándolo.
+Para publicar una versión, sube una etiqueta `vX.Y.Z` (con la versión de `Cargo.toml` y del `PKGBUILD`). El workflow **Release** pasa los tests y compila en Arch, en Ubuntu 22.04 (`.deb`, `.rpm` y AppImage con `packaging/linux/build-packages.sh`) y en Windows, y publica la página de descargas: `packaging/site/make-site.py` genera `index.html` y `latest.json` con los paquetes y sus sumas SHA-256, y se suben a la rama `gh-pages` del repositorio público (solo la última versión). Las notas son el mensaje de la etiqueta anotada, en Markdown (`git tag -a vX.Y.Z -F notas.md`). Necesita el secret `RELEASES_TOKEN`: un token *fine-grained* con permiso *Contents: read and write* solo sobre `blzkz/rec-ording-releases`. Sin él, los paquetes quedan como artefactos de la ejecución y el paso de publicar falla avisándolo.
 
 ### Windows
 
@@ -151,7 +151,7 @@ Aplicación nativa en Rust con [egui](https://github.com/emilk/egui).
 | `gpu/` | El compositor en la tarjeta gráfica (wgpu): los mismos cálculos que `compositor.rs` en shaders WGSL. Dibuja la exportación y la vista previa (en la misma tarjeta que la ventana, sin copiar la imagen de vuelta). Los tests comparan sus fotogramas con los del procesador. |
 | `post.rs` | El acabado: viñeta, grano y fundidos, igual en el procesador y en la tarjeta. |
 | `hwenc.rs` | Codificación con la tarjeta gráfica (NVENC, AMF, Quick Sync, VAAPI): prueba qué funciona en el equipo. |
-| `update.rs` | Busca versiones nuevas en las releases y las instala (pacman en Linux, reemplazando la carpeta en Windows). |
+| `update.rs` | Busca versiones nuevas en la página de descargas y las instala con el gestor de paquetes del sistema, reemplazando el AppImage o la carpeta en Windows. |
 | `platform.rs` | Lo que cambia entre Linux y Windows: carpetas, diálogos de archivos, abrir archivos y lanzar herramientas sin ventana de consola. |
 
 Tests: `cargo test` (incluye una prueba que monta y exporta un vídeo a través del servidor MCP). Con un vídeo o un móvil reales:

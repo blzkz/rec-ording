@@ -129,6 +129,12 @@ Todo el plan de `plan-iluminacion-postproceso.md`, más las mejoras pedidas tras
 - Grabar un **emulador** de Android Studio: aparece como «Emulador · <nombre del AVD>» y se escuchan todas sus pantallas táctiles virtuales (tiene once y los clics de la ventana pueden llegar a cualquiera). Su codificador no repite el último fotograma con la pantalla quieta, así que al terminar se alarga el vídeo hasta lo que duró la grabación. Probado con un AVD de Android 16 (API 36).
 - Con AppImage, la configuración MCP que muestra el Asistente apunta al archivo `.AppImage` y no a su montaje temporal.
 
+## v0.12.0: descargas sin releases de GitHub
+
+- Las versiones ya no se publican como releases de GitHub, que siempre muestran unos archivos «Source code». El workflow genera una página de descargas (`packaging/site/make-site.py`) con los paquetes de cada sistema, sus sumas SHA-256, las novedades y los créditos, y la publica en GitHub Pages del repositorio público: https://blzkz.github.io/rec-ording-releases/
+- El actualizador lee el `latest.json` de esa página. Las notas de la versión son el mensaje de la etiqueta anotada y la app las muestra como texto, sin las marcas de Markdown.
+- Las copias 0.10.2 y 0.11.0 buscan en las releases de GitHub y no ven esta versión: se instala a mano una vez y desde ahí se actualiza sola.
+
 ## Ideas para siguientes versiones
 
 - Luz animada con fotogramas clave (un barrido de luz durante un giro).

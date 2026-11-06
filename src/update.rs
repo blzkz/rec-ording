@@ -1,5 +1,6 @@
-//! Updates from the public releases repository (the source repository is private). The app
-//! checks the latest release when it opens and installs it on request: with the system's
+//! Updates from the public download page (GitHub Pages of blzkz/rec-ording-releases; the source
+//! repository is private). The app reads its `latest.json` when it opens and installs the new
+//! version on request: with the system's
 //! package manager through pkexec (pacman, apt, dnf or zypper), by replacing the AppImage, or by
 //! swapping the files next to the .exe on Windows.
 
@@ -8,8 +9,8 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Where the release workflows publish the packages.
-pub const RELEASES_REPO: &str = "blzkz/rec-ording-releases";
+/// The download page, where the release workflow publishes the packages and `latest.json`.
+pub const DOWNLOADS: &str = "https://blzkz.github.io/rec-ording-releases";
 
 pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
 
@@ -97,7 +98,7 @@ fn asset_suffix(how: &Method) -> &'static str {
 }
 
 fn latest_url() -> String {
-    std::env::var("REC_ORDING_UPDATE_URL").unwrap_or_else(|_| format!("https://api.github.com/repos/{RELEASES_REPO}/releases/latest"))
+    std::env::var("REC_ORDING_UPDATE_URL").unwrap_or_else(|_| format!("{DOWNLOADS}/latest.json"))
 }
 
 /// `"v0.7.10"` → `[0, 7, 10]`; anything after a `-` (pre-release tags) is ignored.
@@ -115,32 +116,49 @@ pub fn is_newer(candidate: &str, current: &str) -> bool {
     a > b
 }
 
-/// Reads GitHub's "latest release" JSON; `None` when it is not newer than `current`.
+/// Reads the download page's `latest.json`; `None` when it is not newer than `current`:
+/// `{"version", "notes", "page", "assets": [{"name", "url", "sha256"}]}`.
 pub fn parse_release(json: &str, current: &str) -> Result<Option<Release>, String> {
     parse_release_for(json, current, &method())
 }
 
 fn parse_release_for(json: &str, current: &str, how: &Method) -> Result<Option<Release>, String> {
     let v: serde_json::Value = serde_json::from_str(json).map_err(|e| format!("Respuesta no válida: {e}"))?;
-    let tag = v["tag_name"].as_str().ok_or("La release no tiene versión")?;
-    if !is_newer(tag, current) {
+    let version = v["version"].as_str().ok_or("La versión publicada no tiene número")?;
+    if !is_newer(version, current) {
         return Ok(None);
     }
     let asset = v["assets"].as_array().into_iter().flatten().find_map(|a| {
         let name = a["name"].as_str().filter(|n| n.ends_with(asset_suffix(how)))?;
         Some(Asset {
             name: name.to_string(),
-            url: a["browser_download_url"].as_str()?.to_string(),
-            sha256: a["digest"].as_str().and_then(|d| d.strip_prefix("sha256:")).map(str::to_lowercase),
+            url: a["url"].as_str()?.to_string(),
+            sha256: a["sha256"].as_str().map(str::to_lowercase),
         })
     });
     Ok(Some(Release {
-        version: tag.trim_start_matches(['v', 'V']).to_string(),
-        // Shown as plain text: without Markdown's bold marks.
-        notes: v["body"].as_str().unwrap_or_default().replace("**", "").trim().to_string(),
-        page: v["html_url"].as_str().map(str::to_string).unwrap_or_else(|| format!("https://github.com/{RELEASES_REPO}/releases/latest")),
+        version: version.trim_start_matches(['v', 'V']).to_string(),
+        notes: plain_text(v["notes"].as_str().unwrap_or_default()),
+        page: v["page"].as_str().map(str::to_string).unwrap_or_else(|| format!("{DOWNLOADS}/")),
         asset,
     }))
+}
+
+/// The notes are Markdown; the app shows them as plain text: bold marks dropped and links
+/// reduced to their text.
+fn plain_text(md: &str) -> String {
+    let mut out = String::new();
+    let mut rest = md.replace("**", "");
+    while let Some(open) = rest.find('[') {
+        let after = &rest[open + 1..];
+        let link = after.find("](").and_then(|close| after[close + 2..].find(')').map(|end| (close, close + 2 + end)));
+        let Some((close, end)) = link else { break };
+        out.push_str(&rest[..open]);
+        out.push_str(&after[..close]);
+        rest = after[end + 1..].to_string();
+    }
+    out.push_str(&rest);
+    out.trim().to_string()
 }
 
 fn curl(url: &str, out: Option<&Path>, max_secs: u32) -> Result<Vec<u8>, String> {
@@ -365,23 +383,23 @@ mod tests {
     }
 
     #[test]
-    fn reads_github_releases() {
+    fn reads_the_download_page() {
         let json = serde_json::json!({
-            "tag_name": "v0.8.0",
-            "html_url": "https://github.com/x/y/releases/tag/v0.8.0",
-            "body": "**Novedades**\n",
+            "version": "0.8.0",
+            "page": "https://e/",
+            "notes": "**Novedades** de [Sagar Modi](https://x/y) y [más](https://z)\n",
             "assets": [
-                {"name": "rec-ording-0.8.0-1-x86_64.pkg.tar.zst", "browser_download_url": "https://e/arch", "digest": "sha256:ABC"},
-                {"name": "rec-ording_0.8.0-1_amd64.deb", "browser_download_url": "https://e/deb"},
-                {"name": "rec-ording-0.8.0-1.x86_64.rpm", "browser_download_url": "https://e/rpm"},
-                {"name": "rec-ording-0.8.0-x86_64.AppImage", "browser_download_url": "https://e/appimage"},
-                {"name": "rec-ording-0.8.0-windows-x64.zip", "browser_download_url": "https://e/win"}
+                {"name": "rec-ording-0.8.0-1-x86_64.pkg.tar.zst", "url": "https://e/arch", "sha256": "ABC"},
+                {"name": "rec-ording_0.8.0-1_amd64.deb", "url": "https://e/deb"},
+                {"name": "rec-ording-0.8.0-1.x86_64.rpm", "url": "https://e/rpm"},
+                {"name": "rec-ording-0.8.0-x86_64.AppImage", "url": "https://e/appimage"},
+                {"name": "rec-ording-0.8.0-windows-x64.zip", "url": "https://e/win"}
             ]
         })
         .to_string();
         let r = parse_release(&json, "0.7.0").unwrap().unwrap();
         assert_eq!(r.version, "0.8.0");
-        assert_eq!(r.notes, "Novedades");
+        assert_eq!(r.notes, "Novedades de Sagar Modi y más");
         let url = |how: Method| parse_release_for(&json, "0.7.0", &how).unwrap().unwrap().asset.unwrap().url;
         assert_eq!(url(Method::Pacman), "https://e/arch");
         assert_eq!(url(Method::Deb), "https://e/deb");
@@ -425,7 +443,7 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
-    /// REC_ORDING_UPDATE_URL=<url of a release JSON> cargo test downloads_updates -- --ignored
+    /// REC_ORDING_UPDATE_URL=<url of a latest.json> cargo test downloads_updates -- --ignored
     #[test]
     #[ignore]
     fn downloads_updates() {
