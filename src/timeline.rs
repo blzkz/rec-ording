@@ -124,10 +124,14 @@ fn keep_in_place<R>(p: &mut Project, drop_lost: bool, edit: impl FnOnce(&mut Pro
     p.camera.retain_mut(|c| place(&mut c.start));
     p.device.retain_mut(|c| place(&mut c.start));
     p.texts.retain_mut(|c| place(&mut c.start));
+    p.images.retain_mut(|c| place(&mut c.start));
+    p.audio.retain_mut(|c| place(&mut c.start));
     p.director.targets.retain_mut(|t| place(&mut t.time));
     p.camera.sort_by(|a, b| a.start.total_cmp(&b.start));
     p.device.sort_by(|a, b| a.start.total_cmp(&b.start));
     p.texts.sort_by(|a, b| a.start.total_cmp(&b.start));
+    p.images.sort_by(|a, b| a.start.total_cmp(&b.start));
+    p.audio.sort_by(|a, b| a.start.total_cmp(&b.start));
     p.director.targets.sort_by(|a, b| a.time.total_cmp(&b.time));
     Ok((r, lost))
 }
@@ -366,6 +370,140 @@ pub fn place_text(p: &mut Project, id: u64, start: f32, end: f32) -> Result<(), 
     c.duration = (end - start).max(0.8);
     p.texts.sort_by(|a, b| a.start.total_cmp(&b.start));
     Ok(())
+}
+
+// ---------- Pictures ----------
+
+/// Adds a picture at `t`: 3 seconds (or to the end of the video), centred. `aspect` is its
+/// width / height. Returns its id.
+pub fn add_image(p: &mut Project, path: &str, aspect: f32, t: f32) -> Result<u64, String> {
+    let total = duration(p);
+    let start = if total > 0.0 { t.clamp(0.0, (total - 0.5).max(0.0)) } else { t.max(0.0) };
+    let len = if total > 0.0 { 3.0f32.min(total - start).max(0.5) } else { 3.0 };
+    let id = p.next_id();
+    p.images.push(ImageClip { id, path: path.into(), start, duration: len, aspect: aspect.max(0.01), ..ImageClip::default() });
+    p.images.sort_by(|a, b| a.start.total_cmp(&b.start));
+    Ok(id)
+}
+
+pub fn delete_image(p: &mut Project, id: u64) -> Result<(), String> {
+    let before = p.images.len();
+    p.images.retain(|c| c.id != id);
+    if p.images.len() == before {
+        return Err(format!("No hay ninguna imagen {id}"));
+    }
+    Ok(())
+}
+
+/// Sets when a picture starts and ends (at least 0,2 s).
+pub fn place_image(p: &mut Project, id: u64, start: f32, end: f32) -> Result<(), String> {
+    let c = p.images.iter_mut().find(|c| c.id == id).ok_or(format!("No hay ninguna imagen {id}"))?;
+    let start = start.max(0.0);
+    c.start = start;
+    c.duration = (end - start).max(0.2);
+    p.images.sort_by(|a, b| a.start.total_cmp(&b.start));
+    Ok(())
+}
+
+pub fn images_at(p: &Project, t: f32) -> Vec<crate::images::Shown<'_>> {
+    crate::images::shown(&p.images, t)
+}
+
+// ---------- Sound tracks ----------
+
+/// Adds a sound of `length` seconds to `track` at `t`. Music fills the rest of the video,
+/// repeating when the file is shorter; effects and voice play once. Returns its id.
+pub fn add_audio(p: &mut Project, track: AudioTrack, path: &str, length: f32, t: f32) -> Result<u64, String> {
+    if length < 0.05 {
+        return Err("El archivo no tiene sonido".into());
+    }
+    let total = duration(p);
+    let start = if total > 0.0 { t.clamp(0.0, (total - 0.1).max(0.0)) } else { t.max(0.0) };
+    let (len, looped) = match track {
+        AudioTrack::Music if total > start => {
+            let rest = total - start;
+            (rest, length < rest)
+        }
+        _ => (length, false),
+    };
+    let id = p.next_id();
+    let fade = if track == AudioTrack::Music { 1.0f32.min(len / 4.0) } else { 0.0 };
+    p.audio.push(AudioClip { id, track, path: path.into(), start, duration: len, length, fade_in: fade, fade_out: fade, looped, ..AudioClip::default() });
+    p.audio.sort_by(|a, b| a.start.total_cmp(&b.start));
+    Ok(id)
+}
+
+pub fn delete_audio(p: &mut Project, id: u64) -> Result<(), String> {
+    let before = p.audio.len();
+    p.audio.retain(|c| c.id != id);
+    if p.audio.len() == before {
+        return Err(format!("No hay ningún sonido {id}"));
+    }
+    Ok(())
+}
+
+/// Moves a sound's start and end on the timeline. Moving the start also moves where the file
+/// starts playing, so what is heard keeps its moment (like trimming a video clip); without a
+/// loop it cannot go past either end of the file.
+pub fn trim_audio(p: &mut Project, id: u64, start: f32, end: f32) -> Result<(), String> {
+    let c = p.audio.iter_mut().find(|c| c.id == id).ok_or(format!("No hay ningún sonido {id}"))?;
+    let len = c.length.max(0.05);
+    let mut start = start.max(0.0);
+    let mut offset = c.offset + (start - c.start);
+    if c.looped {
+        offset = offset.rem_euclid(len);
+    } else if offset < 0.0 {
+        start -= offset;
+        offset = 0.0;
+    }
+    let mut dur = (end - start).max(0.1);
+    if !c.looped {
+        dur = dur.min(len - offset).max(0.05);
+    }
+    c.start = start;
+    c.offset = offset.min(len - 0.05).max(0.0);
+    c.duration = dur;
+    p.audio.sort_by(|a, b| a.start.total_cmp(&b.start));
+    Ok(())
+}
+
+/// Moves a sound without changing what it plays.
+pub fn move_audio(p: &mut Project, id: u64, start: f32) -> Result<(), String> {
+    let c = p.audio.iter_mut().find(|c| c.id == id).ok_or(format!("No hay ningún sonido {id}"))?;
+    c.start = start.max(0.0);
+    p.audio.sort_by(|a, b| a.start.total_cmp(&b.start));
+    Ok(())
+}
+
+/// Turns repeating on or off; without it the clip is cut at the end of the file.
+pub fn set_audio_loop(p: &mut Project, id: u64, looped: bool) -> Result<(), String> {
+    let c = p.audio.iter_mut().find(|c| c.id == id).ok_or(format!("No hay ningún sonido {id}"))?;
+    c.looped = looped;
+    if !looped {
+        c.duration = c.duration.min(c.length - c.offset).max(0.05);
+    }
+    Ok(())
+}
+
+/// Lanes for clips that overlap on one track: each clip gets the first lane free at its start.
+/// Returns the lane of every (id, start, end), in the same order, and how many lanes there are.
+pub fn lanes(items: &[(u64, f32, f32)]) -> (Vec<usize>, usize) {
+    let mut order: Vec<usize> = (0..items.len()).collect();
+    order.sort_by(|&a, &b| items[a].1.total_cmp(&items[b].1));
+    let mut ends: Vec<f32> = Vec::new();
+    let mut lane = vec![0; items.len()];
+    for i in order {
+        let (_, start, end) = items[i];
+        let free = ends.iter().position(|&e| e <= start + 1e-4);
+        let l = free.unwrap_or(ends.len());
+        if l == ends.len() {
+            ends.push(end);
+        } else {
+            ends[l] = end;
+        }
+        lane[i] = l;
+    }
+    (lane, ends.len().max(1))
 }
 
 // ---------- Camera clips ----------

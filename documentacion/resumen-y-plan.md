@@ -135,6 +135,14 @@ Todo el plan de `plan-iluminacion-postproceso.md`, más las mejoras pedidas tras
 - El actualizador lee el `latest.json` de esa página. Las notas de la versión son el mensaje de la etiqueta anotada y la app las muestra como texto, sin las marcas de Markdown.
 - Las copias 0.10.2 y 0.11.0 buscan en las releases de GitHub y no ven esta versión: se instala a mano una vez y desde ahí se actualiza sola.
 
+## v0.13.0: imágenes y pistas de sonido
+
+- Pista de **Imágenes**: PNG, WebP o JPEG con transparencia sobre el vídeo (bajo los títulos), con posición, tamaño, opacidad y fundidos; se colocan arrastrándolas en la vista previa. Se dibujan en la misma capa que los títulos, así que el procesador y la tarjeta gráfica dan el mismo resultado.
+- Pistas de **Efectos**, **Voz en off** y **Música**. Cada una admite varios sonidos solapados (carriles), con recorte por los bordes, volumen, fundidos y bucle, y se pueden pasar de una pista a otra arrastrándolos. La música baja sola mientras habla la voz (sidechaincompress) y hay un volumen por fuente (grabación, efectos, voz, música).
+- Un solo grafo de ffmpeg (`audio::graph`) mezcla todo para la exportación y para la vista previa, que ahora suena (cpal sobre ALSA/PipeWire en Linux, WASAPI en Windows). La mezcla de la vista previa se recalcula al soltar el ratón tras un cambio.
+- Al recortar o mover clips de vídeo, imágenes y sonidos siguen a su momento de la grabación, como los textos.
+- MCP: `add_image`, `update_image`, `delete_image`, `add_sound`, `update_sound`, `delete_sound` y `set_mix`; `add_image` y `add_sound` aceptan `mark`.
+
 ## Ideas para siguientes versiones
 
 - Luz animada con fotogramas clave (un barrido de luz durante un giro).

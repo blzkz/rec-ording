@@ -2,11 +2,13 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app;
+mod audio;
 mod capture;
 mod compositor;
 mod export;
 mod gpu;
 mod hwenc;
+mod images;
 mod library;
 mod mcp;
 mod media;

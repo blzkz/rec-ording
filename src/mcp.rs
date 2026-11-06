@@ -119,7 +119,7 @@ fn gesture(g: &Value) -> Result<capture::Gesture, String> {
 }
 
 /// Tools that take `mark` (a screen change) instead of a time.
-const MARKED_TOOLS: [&str; 6] = ["add_text", "add_zoom", "add_device_motion", "add_camera_keyframe", "freeze_frame", "director_add_target"];
+const MARKED_TOOLS: [&str; 8] = ["add_text", "add_zoom", "add_device_motion", "add_camera_keyframe", "freeze_frame", "director_add_target", "add_image", "add_sound"];
 
 /// Tools that cannot run inside `batch` (they are not edits of one project).
 const NOT_IN_BATCH: [&str; 12] =
@@ -774,6 +774,67 @@ impl Server {
                 self.edit(|p| timeline::delete_text(p, id).map(|_| "Texto eliminado".into()))
             }
 
+            // ----- Pictures and sounds -----
+            "add_image" => {
+                let a = a.clone();
+                let path = text(&a, "path")?;
+                let (w, h) = crate::images::size(&path)?;
+                let t = num(&a, "time")?;
+                self.edit(move |p| {
+                    let id = timeline::add_image(p, &path, w as f32 / h as f32, t)?;
+                    set_image_fields(p, id, &a)?;
+                    let c = p.images.iter().find(|c| c.id == id).ok_or("No se pudo añadir")?;
+                    Ok(format!("Imagen añadida de {:.2} a {:.2} s (imagen {id})", c.start, c.end()))
+                })
+            }
+            "update_image" => {
+                let a = a.clone();
+                let id = int(&a, "image_id")?;
+                self.edit(move |p| set_image_fields(p, id, &a).map(|_| "Imagen actualizada".into()))
+            }
+            "delete_image" => {
+                let id = int(a, "image_id")?;
+                self.edit(|p| timeline::delete_image(p, id).map(|_| "Imagen eliminada".into()))
+            }
+            "add_sound" => {
+                let a = a.clone();
+                let path = text(&a, "path")?;
+                let track = AudioTrack::from_key(&text(&a, "track")?).ok_or("track: effects, voice o music")?;
+                let length = crate::audio::length(&path)?;
+                let t = num(&a, "time")?;
+                self.edit(move |p| {
+                    let id = timeline::add_audio(p, track, &path, length, t)?;
+                    set_sound_fields(p, id, &a)?;
+                    let c = p.audio.iter().find(|c| c.id == id).ok_or("No se pudo añadir")?;
+                    let looped = if c.looped { ", en bucle" } else { "" };
+                    Ok(format!("Sonido añadido a {} de {:.2} a {:.2} s{looped} (sonido {id})", track.label().to_lowercase(), c.start, c.end()))
+                })
+            }
+            "update_sound" => {
+                let a = a.clone();
+                let id = int(&a, "sound_id")?;
+                self.edit(move |p| set_sound_fields(p, id, &a).map(|_| "Sonido actualizado".into()))
+            }
+            "delete_sound" => {
+                let id = int(a, "sound_id")?;
+                self.edit(|p| timeline::delete_audio(p, id).map(|_| "Sonido eliminado".into()))
+            }
+            "set_mix" => {
+                let a = a.clone();
+                self.edit(move |p| {
+                    let m = &mut p.mix;
+                    for (k, v) in [("recording", &mut m.recording), ("effects", &mut m.effects), ("voice", &mut m.voice), ("music", &mut m.music)] {
+                        if let Some(x) = opt_num(&a, k) {
+                            *v = x.clamp(0.0, 2.0);
+                        }
+                    }
+                    if let Some(b) = a["duck_music"].as_bool() {
+                        m.duck_music = b;
+                    }
+                    Ok("Mezcla actualizada".into())
+                })
+            }
+
             // ----- Look -----
             "set_style" => {
                 let a = a.clone();
@@ -1050,6 +1111,47 @@ fn apply_cam_fields(k: &mut CamKey, a: &Value) {
     }
 }
 
+/// Position, size, look and timing of a picture from the arguments that are present.
+fn set_image_fields(p: &mut Project, id: u64, a: &Value) -> Result<(), String> {
+    let c = p.images.iter_mut().find(|c| c.id == id).ok_or(format!("No hay ninguna imagen {id}"))?;
+    for (k, v, lo, hi) in [("x", &mut c.x, -0.5, 1.5), ("y", &mut c.y, -0.5, 1.5), ("width", &mut c.width, 0.01, 2.0), ("opacity", &mut c.opacity, 0.0, 1.0), ("fade_in", &mut c.fade_in, 0.0, 10.0), ("fade_out", &mut c.fade_out, 0.0, 10.0)] {
+        if let Some(x) = opt_num(a, k) {
+            *v = x.clamp(lo, hi);
+        }
+    }
+    let start = opt_num(a, "start").unwrap_or(c.start);
+    let end = start + opt_num(a, "duration").unwrap_or(c.duration);
+    timeline::place_image(p, id, start, end)
+}
+
+/// Track, timing, volume and fades of a sound from the arguments that are present.
+fn set_sound_fields(p: &mut Project, id: u64, a: &Value) -> Result<(), String> {
+    let c = p.audio.iter_mut().find(|c| c.id == id).ok_or(format!("No hay ningún sonido {id}"))?;
+    if let Some(t) = opt_str(a, "track") {
+        c.track = AudioTrack::from_key(&t).ok_or("track: effects, voice o music")?;
+    }
+    for (k, v, hi) in [("volume", &mut c.volume, 2.0), ("fade_in", &mut c.fade_in, 30.0), ("fade_out", &mut c.fade_out, 30.0)] {
+        if let Some(x) = opt_num(a, k) {
+            *v = x.clamp(0.0, hi);
+        }
+    }
+    if let Some(o) = opt_num(a, "offset") {
+        c.offset = o.clamp(0.0, (c.length - 0.05).max(0.0));
+    }
+    if let Some(l) = a["loop"].as_bool() {
+        timeline::set_audio_loop(p, id, l)?;
+    }
+    let c = p.audio.iter().find(|c| c.id == id).ok_or("No se encontró")?;
+    let (start, dur) = (opt_num(a, "start"), opt_num(a, "duration"));
+    if start.is_some() || dur.is_some() {
+        let (start, dur) = (start.unwrap_or(c.start), dur.unwrap_or(c.duration));
+        timeline::move_audio(p, id, start)?;
+        let c = p.audio.iter_mut().find(|c| c.id == id).unwrap();
+        c.duration = if c.looped { dur.max(0.1) } else { dur.max(0.05).min(c.length - c.offset) };
+    }
+    Ok(())
+}
+
 fn text(a: &Value, k: &str) -> Result<String, String> {
     a[k].as_str().map(str::to_string).ok_or(format!("Falta el parámetro «{k}»"))
 }
@@ -1101,6 +1203,9 @@ fn summary(p: &Project, path: &Path) -> Value {
         }).collect::<Vec<_>>(),
         "texts": p.texts.iter().map(|c| json!({"id": c.id, "start": c.start, "end": c.end(), "title": c.title, "subtitle": c.subtitle,
             "place": key_of(&TEXT_PLACES, c.place), "size": key_of(&TEXT_SIZES, c.size), "reveal": key_of(&TEXT_REVEALS, c.reveal), "color": key_of(&TEXT_COLORS, c.color), "make_room": c.make_room})).collect::<Vec<_>>(),
+        "images": p.images.iter().map(|c| json!({"id": c.id, "path": c.path, "start": c.start, "end": c.end(), "x": c.x, "y": c.y, "width": c.width, "opacity": c.opacity, "fade_in": c.fade_in, "fade_out": c.fade_out})).collect::<Vec<_>>(),
+        "sounds": p.audio.iter().map(|c| json!({"id": c.id, "track": c.track.key(), "path": c.path, "start": c.start, "end": c.end(), "offset": c.offset, "file_length": c.length, "volume": c.volume, "fade_in": c.fade_in, "fade_out": c.fade_out, "loop": c.looped})).collect::<Vec<_>>(),
+        "mix": {"recording": p.mix.recording, "effects": p.mix.effects, "voice": p.mix.voice, "music": p.mix.music, "duck_music": p.mix.duck_music},
         "director": {
             "motion": if p.director.motion == DirectorMotion::ThreeD {"3d"} else {"2d"},
             "intensity": p.director.intensity,
@@ -1169,6 +1274,7 @@ fn compose_at(p: &Project, t: f32, mips: &Mips, vw: f32, vh: f32, width: usize, 
     let mut rgba = vec![0u8; ow * oh * 4];
     let touches = timeline::timeline_touches(p);
     let texts = timeline::texts_at(p, t);
+    let images = timeline::images_at(p, t);
     let blur = timeline::shutter(p, t, p.export.fps as f32);
     compose(
         &mut rgba,
@@ -1187,6 +1293,7 @@ fn compose_at(p: &Project, t: f32, mips: &Mips, vw: f32, vh: f32, width: usize, 
             model,
             supersample,
             texts: &texts,
+            images: &images,
             blur: &blur,
             from: None,
         },
@@ -1526,6 +1633,40 @@ pub fn tools() -> Vec<Value> {
             &["text_id"],
         ),
         tool("delete_text", "Elimina un título.", json!({"text_id": i("Texto")}), &["text_id"]),
+        tool(
+            "add_image",
+            "Pone una imagen (PNG, WebP o JPEG; con transparencia) sobre el vídeo, por encima del vídeo y por debajo de los textos. Varias imágenes pueden coincidir.",
+            json!({"path": s("Ruta de la imagen"), "time": n("s"), "duration": n("s (por defecto 3)"), "x": n("Centro, 0..1 del ancho del vídeo"), "y": n("Centro, 0..1 del alto"),
+                   "width": n("Ancho, fracción del ancho del vídeo (por defecto 0,35)"), "opacity": n("0..1"), "fade_in": n("s de fundido de entrada"), "fade_out": n("s de fundido de salida")}),
+            &["path", "time"],
+        ),
+        tool(
+            "update_image",
+            "Cambia una imagen: momento, duración, posición, tamaño, opacidad o fundidos.",
+            json!({"image_id": i("Imagen"), "start": n("s"), "duration": n("s"), "x": n("0..1"), "y": n("0..1"), "width": n("Fracción del ancho"), "opacity": n("0..1"), "fade_in": n("s"), "fade_out": n("s")}),
+            &["image_id"],
+        ),
+        tool("delete_image", "Quita una imagen.", json!({"image_id": i("Imagen")}), &["image_id"]),
+        tool(
+            "add_sound",
+            "Añade un sonido a una pista: effects (efectos), voice (voz en off) o music. Los sonidos de una pista pueden solaparse y se mezclan. La música llena el resto del vídeo (en bucle si el archivo es más corto); efectos y voz suenan una vez.",
+            json!({"path": s("Ruta del archivo (mp3, wav, m4a, ogg, flac…)"), "track": s("effects, voice o music"), "time": n("s en que empieza"), "duration": n("s que suena"),
+                   "offset": n("s del archivo desde donde empieza"), "volume": n("1 = tal cual (0..2)"), "fade_in": n("s"), "fade_out": n("s"), "loop": b("Repetir al acabar el archivo")}),
+            &["path", "track", "time"],
+        ),
+        tool(
+            "update_sound",
+            "Cambia un sonido: pista, momento, duración, desde dónde suena, volumen, fundidos o bucle.",
+            json!({"sound_id": i("Sonido"), "track": s("effects, voice o music"), "start": n("s"), "duration": n("s"), "offset": n("s del archivo"), "volume": n("0..2"), "fade_in": n("s"), "fade_out": n("s"), "loop": b("Repetir")}),
+            &["sound_id"],
+        ),
+        tool("delete_sound", "Quita un sonido.", json!({"sound_id": i("Sonido")}), &["sound_id"]),
+        tool(
+            "set_mix",
+            "Volumen de cada fuente en la mezcla (1 = tal cual, 0..2) y si la música baja mientras habla la voz en off.",
+            json!({"recording": n("Sonido de las grabaciones"), "effects": n("Efectos"), "voice": n("Voz en off"), "music": n("Música"), "duck_music": b("Bajar la música con la voz")}),
+            &[],
+        ),
         tool("export_texts", "Todos los títulos como lista JSON (los mismos campos que add_text), para editarlos fuera y volver a cargarlos con import_texts.", json!({}), &[]),
         tool(
             "import_texts",

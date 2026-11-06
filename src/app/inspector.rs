@@ -121,6 +121,8 @@ impl RecOrdingApp {
             Selection::Device { id, key } => self.device_inspector(ui, id, key),
             Selection::Text(id) => self.text_inspector(ui, id),
             Selection::Target(id) => self.target_inspector(ui, id),
+            Selection::Audio(id) => self.audio_inspector(ui, id),
+            Selection::Image(id) => self.image_inspector(ui, id),
         }
     }
 

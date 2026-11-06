@@ -1,12 +1,12 @@
 # Maintainer: blzkz <sergiobl88@gmail.com>
 pkgname=rec-ording
-pkgver=0.12.0
+pkgver=0.13.0
 pkgrel=1
 pkgdesc="Graba tu móvil Android y conviértelo en un vídeo promocional con marco, fondo y zooms automáticos"
 arch=('x86_64')
 url="https://blzkz.github.io/rec-ording-releases/"
 license=('MIT')
-depends=('vulkan-icd-loader' 'ffmpeg' 'curl')
+depends=('vulkan-icd-loader' 'alsa-lib' 'ffmpeg' 'curl')
 optdepends=(
   'scrcpy: grabar el móvil con sonido y sin límite de tiempo (recomendado)'
   'android-tools: detectar el móvil por USB y registrar los toques (adb)'

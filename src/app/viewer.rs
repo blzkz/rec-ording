@@ -31,7 +31,7 @@ fn draw_on_gpu(
         *view = Some(GpuView { comp, tex: None, key });
     }
     let v = view.as_mut().unwrap();
-    let overlay = crate::text::overlay(ow, oh, inp.style, inp.texts);
+    let overlay = crate::images::overlay(ow, oh, inp.style, inp.images, inp.texts);
     let shown = v.comp.compose_display(inp, overlay.as_ref(), post)?;
     Ok(*v.tex.get_or_insert_with(|| state.renderer.write().register_native_texture(&state.device, shown, wgpu::FilterMode::Linear)))
 }
@@ -150,12 +150,13 @@ impl RecOrdingApp {
         let gpu = self.gpu_state.is_some();
         let full = !self.playing || gpu;
         let texts = if flat { Vec::new() } else { timeline::texts_at(&self.project, self.time) };
+        let images = if flat { Vec::new() } else { timeline::images_at(&self.project, self.time) };
         let blur = if flat || !full { Vec::new() } else { timeline::shutter(&self.project, self.time, self.project.export.fps as f32) };
         let text_hash = {
             use std::hash::{Hash, Hasher};
             let mut h = std::collections::hash_map::DefaultHasher::new();
-            format!("{:?}", self.project.texts).hash(&mut h);
-            (texts.len(), blur.len(), h.finish())
+            format!("{:?}{:?}", self.project.texts, self.project.images).hash(&mut h);
+            (texts.len() + images.len(), blur.len(), h.finish())
         };
         // The dissolve from the previous clip, when playback crossed the cut.
         let from = match (&self.dissolve, timeline::locate(&self.project, self.time)) {
@@ -195,6 +196,7 @@ impl RecOrdingApp {
                 model: self.model_prepared.as_ref().map(|(_, m)| m.as_ref()).filter(|_| style.frame == FrameStyle::Custom),
                 supersample: key.supersample,
                 texts: &texts,
+                images: &images,
                 blur: &blur,
                 from,
             };
@@ -235,6 +237,7 @@ impl RecOrdingApp {
 
         let resp = ui.interact(canvas, Id::new("canvas"), Sense::click_and_drag());
         if !flat {
+            self.pictures_on_canvas(ui, &resp, canvas);
             return;
         }
 

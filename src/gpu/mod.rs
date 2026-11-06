@@ -1090,6 +1090,7 @@ mod tests {
             model,
             supersample: 2,
             texts: &[],
+            images: &[],
             blur: &[],
             from: None,
         }

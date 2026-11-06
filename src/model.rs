@@ -21,6 +21,12 @@ pub struct Project {
     pub device: Vec<DeviceClip>,
     /// Titles shown over the video.
     pub texts: Vec<TextClip>,
+    /// Pictures over the video (with transparency); they may overlap.
+    pub images: Vec<ImageClip>,
+    /// Sound effects, voice-over and music; clips of a track may overlap and are mixed.
+    pub audio: Vec<AudioClip>,
+    /// Volume of each sound source in the final mix.
+    pub mix: Mix,
     pub director: Director,
     pub style: Style,
     pub export: ExportSettings,
@@ -37,6 +43,9 @@ impl Default for Project {
             camera: Vec::new(),
             device: Vec::new(),
             texts: Vec::new(),
+            images: Vec::new(),
+            audio: Vec::new(),
+            mix: Mix::default(),
             director: Director::default(),
             style: Style::default(),
             export: ExportSettings::default(),
@@ -55,6 +64,8 @@ impl Project {
             .chain(self.camera.iter().map(|c| c.id))
             .chain(self.device.iter().map(|c| c.id))
             .chain(self.texts.iter().map(|c| c.id))
+            .chain(self.images.iter().map(|c| c.id))
+            .chain(self.audio.iter().map(|c| c.id))
             .chain(self.director.targets.iter().map(|t| t.id));
         ids.max().unwrap_or(0) + 1
     }
@@ -469,6 +480,136 @@ impl TextColor {
             TextColor::Auto => "Automático",
             TextColor::Light => "Blanco",
             TextColor::Dark => "Negro",
+        }
+    }
+}
+
+/// A picture over the video: a PNG, WebP or JPEG (transparency kept), centred on (`x`, `y`) of
+/// the frame (0..1) and `width` of the frame's width wide, its height following the picture.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ImageClip {
+    pub id: u64,
+    pub path: String,
+    pub start: f32,
+    pub duration: f32,
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    /// Width / height of the picture, kept so the layout does not need to read the file.
+    pub aspect: f32,
+    pub opacity: f32,
+    pub fade_in: f32,
+    pub fade_out: f32,
+}
+
+impl Default for ImageClip {
+    fn default() -> Self {
+        Self { id: 0, path: String::new(), start: 0.0, duration: 3.0, x: 0.5, y: 0.5, width: 0.35, aspect: 1.0, opacity: 1.0, fade_in: 0.3, fade_out: 0.3 }
+    }
+}
+
+impl ImageClip {
+    pub fn end(&self) -> f32 {
+        self.start + self.duration
+    }
+}
+
+/// The three sound tracks besides the recordings' own sound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+pub enum AudioTrack {
+    #[default]
+    Effects,
+    Voice,
+    Music,
+}
+
+impl AudioTrack {
+    pub const ALL: [AudioTrack; 3] = [AudioTrack::Effects, AudioTrack::Voice, AudioTrack::Music];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            AudioTrack::Effects => "Efectos",
+            AudioTrack::Voice => "Voz en off",
+            AudioTrack::Music => "Música",
+        }
+    }
+
+    /// The name agents use (MCP).
+    pub fn key(self) -> &'static str {
+        match self {
+            AudioTrack::Effects => "effects",
+            AudioTrack::Voice => "voice",
+            AudioTrack::Music => "music",
+        }
+    }
+
+    pub fn from_key(k: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|t| t.key() == k)
+    }
+}
+
+/// A sound on one of the audio tracks: `duration` seconds of the file from `offset`, played at
+/// timeline second `start`. A looped clip starts over at the end of the file.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AudioClip {
+    pub id: u64,
+    pub track: AudioTrack,
+    pub path: String,
+    pub start: f32,
+    pub duration: f32,
+    pub offset: f32,
+    /// Length of the whole file.
+    pub length: f32,
+    /// 1 = as recorded.
+    pub volume: f32,
+    pub fade_in: f32,
+    pub fade_out: f32,
+    pub looped: bool,
+}
+
+impl Default for AudioClip {
+    fn default() -> Self {
+        Self { id: 0, track: AudioTrack::Effects, path: String::new(), start: 0.0, duration: 1.0, offset: 0.0, length: 1.0, volume: 1.0, fade_in: 0.0, fade_out: 0.0, looped: false }
+    }
+}
+
+impl AudioClip {
+    pub fn end(&self) -> f32 {
+        self.start + self.duration
+    }
+
+    pub fn name(&self) -> String {
+        Path::new(&self.path).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
+    }
+}
+
+/// Volume of each source in the final mix (1 = as is).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Mix {
+    /// The sound of the recordings.
+    pub recording: f32,
+    pub effects: f32,
+    pub voice: f32,
+    pub music: f32,
+    /// Lowers the music while the voice-over speaks.
+    pub duck_music: bool,
+}
+
+impl Default for Mix {
+    fn default() -> Self {
+        Self { recording: 1.0, effects: 1.0, voice: 1.0, music: 0.8, duck_music: true }
+    }
+}
+
+impl Mix {
+    pub fn track(&self, t: AudioTrack) -> f32 {
+        match t {
+            AudioTrack::Effects => self.effects,
+            AudioTrack::Voice => self.voice,
+            AudioTrack::Music => self.music,
         }
     }
 }

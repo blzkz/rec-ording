@@ -78,18 +78,6 @@ fn collect_stderr(child: &mut Child) -> Arc<Mutex<String>> {
     buf
 }
 
-/// `atempo` filters for a speed change (each one takes 0,5× to 2×).
-fn atempo(speed: f32) -> String {
-    let mut s = speed.clamp(0.25, 4.0);
-    let mut out = String::new();
-    while (s - 1.0).abs() > 1e-3 {
-        let step = s.clamp(0.5, 2.0);
-        out.push_str(&format!(",atempo={step:.4}"));
-        s /= step;
-    }
-    out
-}
-
 fn codec_of(format: ExportFormat) -> Option<Codec> {
     match format {
         ExportFormat::H264 => Some(Codec::H264),
@@ -126,7 +114,6 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
         from: f32,
         len: f32,
         frames: usize,
-        audio: bool,
         speed: f32,
         /// A still: the frame at `from`, held.
         still: bool,
@@ -143,7 +130,6 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
                 from: c.clip.source_in,
                 len: if c.clip.freeze.is_some() { 0.0 } else { c.clip.source_out - c.clip.source_in },
                 frames,
-                audio: m.info.has_audio && c.clip.freeze.is_none(),
                 speed: c.clip.speed.max(0.01),
                 still: c.clip.freeze.is_some(),
             })
@@ -183,40 +169,12 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
         enc.args(hwenc::color_tags());
     }
     enc.args(["-i", "-"]);
-    let audio = settings.include_audio && parts.iter().any(|p| p.audio) && settings.format != ExportFormat::Gif;
-    if audio {
-        let mut filter = String::new();
-        for (k, part) in parts.iter().enumerate() {
-            // Seconds on the timeline (stills and speed changes included).
-            let shown = format!("{:.3}", part.frames as f32 / fps as f32);
-            if part.audio {
-                let len = format!("{:.3}", part.len);
-                enc.args(["-ss", &format!("{:.3}", part.from), "-t", &len, "-i", &part.path]);
-                filter.push_str(&format!(
-                    "[{i}:a]aresample=48000,aformat=channel_layouts=stereo,atrim=0:{len},asetpts=PTS-STARTPTS{tempo},atrim=0:{shown}[a{k}];",
-                    i = k + 1,
-                    tempo = atempo(part.speed)
-                ));
-            } else {
-                // Silence for stills and clips without sound, so the rest stays in sync.
-                enc.args(["-f", "lavfi", "-t", &shown, "-i", "anullsrc=r=48000:cl=stereo"]);
-                filter.push_str(&format!("[{i}:a]atrim=0:{shown},asetpts=PTS-STARTPTS[a{k}];", i = k + 1));
-            }
-        }
-        for k in 0..parts.len() {
-            filter.push_str(&format!("[a{k}]"));
-        }
-        // Fades of the sound with the picture's.
-        let fin = &project.style.finish;
-        let mut fades = String::new();
-        if fin.fade_in > 0.0 {
-            fades.push_str(&format!(",afade=t=in:d={:.3}", fin.fade_in));
-        }
-        if fin.fade_out > 0.0 {
-            fades.push_str(&format!(",afade=t=out:st={:.3}:d={:.3}", (dur - fin.fade_out).max(0.0), fin.fade_out));
-        }
-        filter.push_str(&format!("concat=n={}:v=0:a=1{fades}[aout]", parts.len()));
-        enc.args(["-filter_complex", &filter, "-map", "0:v", "-map", "[aout]"]);
+    // Sound: the recordings and the effects, voice and music tracks, mixed (inputs from 1).
+    let mix = (settings.include_audio && settings.format != ExportFormat::Gif).then(|| crate::audio::graph(project, 1, Some(fps as f32))).flatten();
+    let audio = mix.is_some();
+    if let Some(g) = &mix {
+        enc.args(&g.args);
+        enc.args(["-filter_complex", &g.filter, "-map", "0:v", "-map", "[aout]"]);
     }
     let crf = |base: u32| -> u32 {
         match settings.quality {
@@ -353,14 +311,15 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
         }
     });
 
-    // Writer thread: adds the titles to RGBA frames (overlapping with drawing the next one)
+    // Writer thread: adds the pictures and titles to RGBA frames (overlapping with drawing the next one)
     // and feeds the encoder.
     let (out_tx, out_rx) = bounded::<(Vec<u8>, f32)>(3);
     let mut enc_in = encoder.stdin.take().ok_or("ffmpeg sin entrada")?;
-    let (texts, style) = (project.texts.clone(), project.style.clone());
+    let (texts, images, style) = (project.texts.clone(), project.images.clone(), project.style.clone());
     let writer = thread::spawn(move || -> bool {
         for (mut buf, t) in out_rx {
             if !yuv {
+                crate::images::draw(&mut buf, ow, oh, &crate::images::shown(&images, t));
                 crate::text::draw(&mut buf, ow, oh, &style, &timeline::texts_in(&texts, t));
                 crate::post::apply(&mut buf, ow, oh, &crate::post::at(&style, t, dur, fps as f32));
             }
@@ -370,14 +329,15 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
         }
         true
     });
-    // With YUV output the titles go to the card as an overlay, prepared ahead on this thread.
+    // With YUV output the pictures and titles go to the card as an overlay, prepared ahead on this thread.
     let (overlay_tx, overlay_rx) = bounded::<Option<crate::text::Overlay>>(4);
     if yuv {
-        let (texts, style) = (project.texts.clone(), project.style.clone());
+        let (texts, images, style) = (project.texts.clone(), project.images.clone(), project.style.clone());
         thread::spawn(move || {
             for i in 0..total {
                 let t = i as f32 / fps as f32;
-                if overlay_tx.send(crate::text::overlay(ow, oh, &style, &timeline::texts_in(&texts, t))).is_err() {
+                let overlay = crate::images::overlay(ow, oh, &style, &crate::images::shown(&images, t), &timeline::texts_in(&texts, t));
+                if overlay_tx.send(overlay).is_err() {
                     return;
                 }
             }
@@ -439,6 +399,7 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
             model: model.as_ref(),
             supersample: ss,
             texts: &[],
+            images: &[],
             blur: &blur,
             from,
         };

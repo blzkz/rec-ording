@@ -1,5 +1,6 @@
 mod home;
 mod inspector;
+mod layers;
 mod sheets;
 mod timeline_ui;
 mod viewer;
@@ -47,6 +48,12 @@ enum AppEvent {
     /// The picture of a recent project (None: it has no video yet).
     ProjectThumb { path: PathBuf, thumb: Option<((usize, usize), Vec<u8>)> },
     ProjectPicked(PathBuf),
+    /// A sound file read and ready to add at `at`.
+    SoundReady { track: AudioTrack, path: String, length: f32, at: f32 },
+    PictureReady { path: String, aspect: f32, at: f32 },
+    Peaks { path: String, peaks: Option<Vec<f32>> },
+    PictureThumb { path: String, thumb: Option<((usize, usize), Vec<u8>)> },
+    MixRendered { key: u64, samples: Result<Vec<f32>, String> },
     UpdateFound(update::Release),
     UpdateInstalled(Result<(), String>),
 }
@@ -95,6 +102,8 @@ enum Selection {
     Device { id: u64, key: Option<usize> },
     Text(u64),
     Target(u64),
+    Audio(u64),
+    Image(u64),
 }
 
 #[derive(PartialEq, Clone)]
@@ -222,6 +231,20 @@ pub struct RecOrdingApp {
     /// A new version was found: ask about it as soon as nothing else is on screen.
     update_prompt: bool,
 
+    // Pictures and sounds
+    /// Waveforms of the sound files (None while being read or unreadable).
+    peaks: HashMap<String, Option<Arc<Vec<f32>>>>,
+    /// Small pictures of the image files, for the timeline.
+    image_thumbs: HashMap<String, Option<TextureHandle>>,
+    /// Plays the preview's sound (None without a sound output).
+    player: Option<crate::audio::Player>,
+    /// The mix the player has, and the one being rendered.
+    mix_have: u64,
+    mix_busy: Option<u64>,
+    last_mix_check: Instant,
+    /// Where the picture being dragged on the viewer was grabbed, from its centre.
+    picture_grab: Option<Vec2>,
+
     toast: Option<(String, Instant)>,
 }
 
@@ -337,6 +360,13 @@ impl RecOrdingApp {
             recent_thumbs: HashMap::new(),
             inspector_open: true,
             update_prompt: false,
+            peaks: HashMap::new(),
+            image_thumbs: HashMap::new(),
+            player: crate::audio::Player::new(),
+            mix_have: 0,
+            mix_busy: None,
+            last_mix_check: Instant::now(),
+            picture_grab: None,
             toast: None,
         };
         app.refresh_recent();
@@ -802,6 +832,13 @@ impl RecOrdingApp {
                     });
                     self.recent_thumbs.insert(path, tex);
                 }
+                AppEvent::SoundReady { track, path, length, at } => self.sound_ready(track, path, length, at),
+                AppEvent::PictureReady { path, aspect, at } => self.picture_ready(path, aspect, at),
+                AppEvent::Peaks { path, peaks } => {
+                    self.peaks.insert(path, peaks.map(Arc::new));
+                }
+                AppEvent::PictureThumb { path, thumb } => self.picture_thumb(path, thumb),
+                AppEvent::MixRendered { key, samples } => self.mix_rendered(key, samples),
                 AppEvent::ProjectPicked(p) => {
                     self.sheet = Sheet::None;
                     self.open_from_home(p);
@@ -1142,6 +1179,8 @@ impl RecOrdingApp {
             Selection::Device { id, .. } => timeline::delete_device_clip(p, id),
             Selection::Text(id) => timeline::delete_text(p, id),
             Selection::Target(id) => timeline::remove_target(p, id),
+            Selection::Audio(id) => timeline::delete_audio(p, id),
+            Selection::Image(id) => timeline::delete_image(p, id),
             Selection::None => return,
         };
         if let Err(e) = r {
@@ -1299,15 +1338,22 @@ impl eframe::App for RecOrdingApp {
 
         let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().filter_map(|f| f.path.clone()).collect());
         if let Some(p) = dropped.into_iter().next() {
-            if self.recording.is_none() && !self.saving_recording {
+            if self.recording.is_none() && !self.saving_recording && !self.home {
                 self.sheet = Sheet::None;
-                self.import(p);
+                // Sounds and pictures go on their tracks at the cursor; videos at the end.
+                if !self.project.is_empty() && (layers::has_ext(&p, &layers::SOUND_EXTS) || layers::has_ext(&p, &layers::IMAGE_EXTS)) {
+                    self.drop_layer_file(p);
+                } else {
+                    self.import(p);
+                }
             }
         }
 
         self.shortcuts(ctx);
         self.tick();
         self.sync_model();
+        self.prepare_layers();
+        self.sync_sound(ctx);
 
         if let Some(rec) = &mut self.recording {
             if rec.started.elapsed() > Duration::from_secs(2) && rec.check_exited().is_some() {
@@ -2009,6 +2055,9 @@ impl RecOrdingApp {
             ui.label(RichText::new("Fundidos desde y a negro (con el sonido) y entre clips.").color(TEXT_3).font(regular(11.5)));
         });
 
+        self.mix_inspector(ui);
+        let style = &mut self.project.style;
+
         section(ui, "Toques", |ui| {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Mostrar los toques").color(TEXT));
@@ -2216,7 +2265,7 @@ impl RecOrdingApp {
 
     fn export_sheet(&mut self, ctx: &egui::Context) {
         let mut action: Option<&str> = None;
-        let has_audio = self.project.media.iter().any(|m| m.info.has_audio);
+        let has_audio = self.project.media.iter().any(|m| m.info.has_audio) || !self.project.audio.is_empty();
         let dur = timeline::duration(&self.project);
         Self::sheet_window(ctx, "export", 460.0, |ui| match &self.export_ui {
             ExportUi::Running { fraction, eta, encoder, .. } => {

@@ -188,6 +188,33 @@ fn an_agent_builds_and_exports_a_video() {
     let r = mcp.request("tools/call", json!({"name": "add_zoom", "arguments": {"mark": n + 5}}));
     assert_eq!(r["result"]["isError"], true);
 
+    // A logo with transparency and a sound effect, on their tracks.
+    let logo = dir.join("logo.png");
+    let ok = Command::new("ffmpeg")
+        .args(["-nostdin", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=white@0.6:s=64x32,format=rgba", "-frames:v", "1"])
+        .arg(&logo)
+        .status()
+        .unwrap()
+        .success();
+    let pop = dir.join("pop.wav");
+    let ok = ok
+        && Command::new("ffmpeg")
+            .args(["-nostdin", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=880:duration=0.4"])
+            .arg(&pop)
+            .status()
+            .unwrap()
+            .success();
+    assert!(ok);
+    let added = mcp.text("add_image", json!({"path": logo.to_string_lossy(), "time": 0.5, "duration": 2, "x": 0.8, "y": 0.1, "width": 0.2}));
+    assert!(added.contains("imagen"), "{added}");
+    let added = mcp.text("add_sound", json!({"path": pop.to_string_lossy(), "track": "effects", "time": 1.0, "volume": 0.8}));
+    assert!(added.contains("efectos"), "{added}");
+    let p = mcp.project();
+    assert_eq!((p["images"].as_array().unwrap().len(), p["sounds"].as_array().unwrap().len()), (1, 1));
+    assert_eq!(p["sounds"][0]["track"], "effects");
+    let r = mcp.request("tools/call", json!({"name": "add_sound", "arguments": {"path": video, "track": "nope", "time": 0}}));
+    assert_eq!(r["result"]["isError"], true);
+
     // The lightest finish: CI machines export with two cores and no graphics card (blur and
     // edges are checked against the GPU in the unit tests).
     mcp.call("set_style", json!({"motion_blur": "off", "antialias": "normal"}));

@@ -451,6 +451,10 @@ pub enum Icon {
     Plus,
     Folder,
     Home,
+    Image,
+    Effect,
+    Mic,
+    Music,
 }
 
 fn polyline(p: &egui::Painter, pts: Vec<Pos2>, st: Stroke) {
@@ -588,6 +592,40 @@ pub fn paint_icon(p: &egui::Painter, icon: Icon, c: Pos2, s: f32, col: Color32) 
         Icon::Folder => {
             p.add(egui::Shape::closed_line(vec![v(-0.46, -0.32), v(-0.12, -0.32), v(0.0, -0.2), v(0.46, -0.2), v(0.46, 0.36), v(-0.46, 0.36)], st));
             p.line_segment([v(-0.46, -0.08), v(0.46, -0.08)], st);
+        }
+        Icon::Image => {
+            let r = Rect::from_center_size(c, Vec2::new(s * 0.94, s * 0.74));
+            p.rect_stroke(r, Rounding::same(s * 0.1), st);
+            p.circle_filled(v(0.2, -0.14), s * 0.08, col);
+            polyline(p, vec![v(-0.38, 0.28), v(-0.12, 0.0), v(0.06, 0.16), v(0.18, 0.06), v(0.4, 0.28)], st);
+        }
+        Icon::Effect => {
+            // A sparkle: a four-pointed star and a small one.
+            let star = |cx: f32, cy: f32, r: f32| -> Vec<Pos2> {
+                (0..8)
+                    .map(|i| {
+                        let a = (i as f32 * 45.0 - 90.0).to_radians();
+                        let k = if i % 2 == 0 { r } else { r * 0.3 };
+                        v(cx + k * a.cos(), cy + k * a.sin())
+                    })
+                    .collect()
+            };
+            p.add(egui::Shape::closed_line(star(-0.08, 0.06, 0.4), st));
+            p.add(egui::Shape::closed_line(star(0.32, -0.3, 0.16), Stroke::new(st.width * 0.8, col)));
+        }
+        Icon::Mic => {
+            let capsule = Rect::from_min_max(v(-0.15, -0.46), v(0.15, 0.1));
+            p.rect_stroke(capsule, Rounding::same(s * 0.15), st);
+            polyline(p, arc(v(0.0, -0.06), s * 0.3, 0.0, 180.0), st);
+            p.line_segment([v(0.0, 0.24), v(0.0, 0.42)], st);
+            p.line_segment([v(-0.18, 0.44), v(0.18, 0.44)], st);
+        }
+        Icon::Music => {
+            p.circle_filled(v(-0.26, 0.3), s * 0.13, col);
+            p.circle_filled(v(0.26, 0.2), s * 0.13, col);
+            p.line_segment([v(-0.14, 0.3), v(-0.14, -0.32)], st);
+            p.line_segment([v(0.38, 0.2), v(0.38, -0.42)], st);
+            p.line_segment([v(-0.14, -0.32), v(0.38, -0.42)], Stroke::new(st.width * 1.8, col));
         }
         Icon::Home => {
             p.add(egui::Shape::line(vec![v(-0.46, -0.02), v(0.0, -0.42), v(0.46, -0.02)], st));

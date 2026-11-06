@@ -1,5 +1,5 @@
 //! The timeline: video clips (trim, reorder, split), camera clips with keyframes, device
-//! motion, titles, Director markers and the playhead.
+//! motion, titles, pictures, the three sound tracks, Director markers and the playhead.
 
 use super::*;
 
@@ -8,6 +8,60 @@ const MOVE_COLOR: Color32 = Color32::from_rgb(255, 159, 10);
 const DIRECTOR_COLOR: Color32 = Color32::from_rgb(90, 200, 250);
 const DEVICE_COLOR: Color32 = Color32::from_rgb(52, 170, 90);
 const TEXT_COLOR: Color32 = Color32::from_rgb(235, 68, 120);
+/// Height of one lane of the pictures and sound tracks (overlapping clips stack in lanes).
+const LANE_H: f32 = 22.0;
+
+/// The tracks where clips may overlap: pictures and the three sound tracks.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(super) enum Layer {
+    Images,
+    Audio(AudioTrack),
+}
+
+const LAYERS: [Layer; 4] = [Layer::Images, Layer::Audio(AudioTrack::Effects), Layer::Audio(AudioTrack::Voice), Layer::Audio(AudioTrack::Music)];
+
+impl Layer {
+    fn label(self) -> &'static str {
+        match self {
+            Layer::Images => "Imágenes",
+            Layer::Audio(AudioTrack::Effects) => "Efectos",
+            Layer::Audio(AudioTrack::Voice) => "Voz",
+            Layer::Audio(AudioTrack::Music) => "Música",
+        }
+    }
+
+    fn color(self) -> Color32 {
+        match self {
+            Layer::Images => Color32::from_rgb(94, 92, 230),
+            Layer::Audio(AudioTrack::Effects) => Color32::from_rgb(214, 150, 0),
+            Layer::Audio(AudioTrack::Voice) => Color32::from_rgb(0, 168, 160),
+            Layer::Audio(AudioTrack::Music) => Color32::from_rgb(176, 80, 220),
+        }
+    }
+
+    fn empty_hint(self) -> &'static str {
+        match self {
+            Layer::Images => "Sin imágenes · arrastra un PNG a la ventana o haz doble clic aquí",
+            Layer::Audio(AudioTrack::Effects) => "Sin efectos de sonido · doble clic aquí",
+            Layer::Audio(AudioTrack::Voice) => "Sin voz en off · doble clic aquí",
+            Layer::Audio(AudioTrack::Music) => "Sin música · doble clic aquí",
+        }
+    }
+}
+
+/// One pictures or sound track laid out: its clips (id, start, end, lane).
+struct Row {
+    layer: Layer,
+    rect: Rect,
+    items: Vec<(u64, f32, f32, usize)>,
+}
+
+impl Row {
+    fn lane_rect(&self, tl: &Tl, start: f32, end: f32, lane: usize) -> Rect {
+        let top = self.rect.top() + 1.0 + lane as f32 * LANE_H;
+        Rect::from_min_max(Pos2::new(tl.x(start), top + 1.0), Pos2::new(tl.x(end).max(tl.x(start) + 6.0), top + LANE_H - 1.0))
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(super) enum Drag {
@@ -23,6 +77,9 @@ pub(super) enum Drag {
     TextMove { id: u64, grab: f32 },
     TextStart { id: u64, end: f32 },
     TextEnd { id: u64, start: f32 },
+    ItemMove { layer: Layer, id: u64, grab: f32 },
+    ItemStart { layer: Layer, id: u64, end: f32 },
+    ItemEnd { layer: Layer, id: u64, start: f32 },
     Marker { id: u64 },
 }
 
@@ -46,6 +103,10 @@ enum Hit {
     TextEnd(u64),
     TextBody(u64, f32),
     TextEmpty,
+    ItemStart(Layer, u64),
+    ItemEnd(Layer, u64),
+    ItemBody(Layer, u64, f32),
+    LayerEmpty(Layer),
     None,
 }
 
@@ -59,6 +120,9 @@ struct Tl {
     camera: Rect,
     device: Rect,
     text: Rect,
+    rows: Vec<Row>,
+    /// Bottom of the last track.
+    bottom: f32,
 }
 
 impl Tl {
@@ -78,6 +142,14 @@ fn camera_color(kind: CameraKind) -> Color32 {
     }
 }
 
+/// The selection for a clip of a pictures or sound track.
+fn select(layer: Layer, id: u64) -> Selection {
+    match layer {
+        Layer::Images => Selection::Image(id),
+        Layer::Audio(_) => Selection::Audio(id),
+    }
+}
+
 fn diamond(p: &egui::Painter, c: Pos2, r: f32, fill: Color32, stroke: Color32) {
     let pts = vec![Pos2::new(c.x, c.y - r), Pos2::new(c.x + r, c.y), Pos2::new(c.x, c.y + r), Pos2::new(c.x - r, c.y)];
     p.add(egui::Shape::convex_polygon(pts, fill, Stroke::new(1.0_f32, stroke)));
@@ -86,7 +158,9 @@ fn diamond(p: &egui::Painter, c: Pos2, r: f32, fill: Color32, stroke: Color32) {
 impl RecOrdingApp {
     pub(super) fn timeline(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::bottom("timeline")
-            .exact_height(256.0)
+            .resizable(true)
+            .default_height(400.0)
+            .height_range(240.0..=760.0)
             .frame(
                 egui::Frame::none()
                     .fill(WINDOW)
@@ -96,9 +170,42 @@ impl RecOrdingApp {
             .show(ctx, |ui| {
                 self.timeline_header(ui);
                 ui.add_space(4.0);
-                let body = ui.available_rect_before_wrap();
-                self.timeline_body(ui, body);
+                // The tracks scroll when they do not fit (many overlapping sounds or pictures).
+                let width = ui.available_width() - 12.0;
+                let height = self.tracks_height();
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    let (body, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+                    self.timeline_body(ui, body);
+                });
             });
+    }
+
+    /// The clips of a pictures or sound track: (id, start, end).
+    fn layer_items(&self, layer: Layer) -> Vec<(u64, f32, f32)> {
+        match layer {
+            Layer::Images => self.project.images.iter().map(|c| (c.id, c.start, c.end())).collect(),
+            Layer::Audio(t) => self.project.audio.iter().filter(|c| c.track == t).map(|c| (c.id, c.start, c.end())).collect(),
+        }
+    }
+
+    /// The pictures and sound tracks laid out from `top`, with their lanes.
+    fn layer_rows(&self, left: f32, width: f32, mut top: f32) -> Vec<Row> {
+        LAYERS
+            .iter()
+            .map(|&layer| {
+                let items = self.layer_items(layer);
+                let (lanes, n) = timeline::lanes(&items);
+                let rect = Rect::from_min_size(Pos2::new(left, top + 6.0), Vec2::new(width, n as f32 * LANE_H + 2.0));
+                top = rect.bottom();
+                Row { layer, rect, items: items.iter().zip(lanes).map(|(&(id, a, b), l)| (id, a, b, l)).collect() }
+            })
+            .collect()
+    }
+
+    /// Height of all the tracks and the ruler.
+    fn tracks_height(&self) -> f32 {
+        let fixed = 18.0 + 6.0 + 58.0 + 8.0 + 30.0 + 6.0 + 24.0 + 6.0 + 24.0;
+        self.layer_rows(0.0, 1.0, fixed).last().map(|r| r.rect.bottom()).unwrap_or(fixed) + 4.0
     }
 
     fn timeline_header(&mut self, ui: &mut Ui) {
@@ -134,6 +241,20 @@ impl RecOrdingApp {
                         }
                     }
                 });
+            });
+            tool_group(ui, |ui| {
+                if icon_button(ui, Icon::Image, "Añadir una imagen en el cursor (PNG con transparencia)", "", false, true).clicked() {
+                    self.pick_picture(self.time);
+                }
+                if icon_button(ui, Icon::Effect, "Añadir un efecto de sonido en el cursor", "", false, true).clicked() {
+                    self.pick_sound(Some(AudioTrack::Effects), self.time);
+                }
+                if icon_button(ui, Icon::Mic, "Añadir voz en off en el cursor", "", false, true).clicked() {
+                    self.pick_sound(Some(AudioTrack::Voice), self.time);
+                }
+                if icon_button(ui, Icon::Music, "Añadir música en el cursor", "", false, true).clicked() {
+                    self.pick_sound(Some(AudioTrack::Music), self.time);
+                }
             });
             tool_group(ui, |ui| {
                 if icon_button(ui, Icon::Director, "Director: marca lo que debe verse y se generan los planos", "", self.director_mode, true).clicked() {
@@ -261,6 +382,29 @@ impl RecOrdingApp {
             }
             return Hit::TextEmpty;
         }
+        for row in &tl.rows {
+            if !row.rect.expand2(Vec2::new(0.0, 2.0)).contains(pos) {
+                continue;
+            }
+            let lane = ((pos.y - row.rect.top() - 1.0) / LANE_H).floor().max(0.0) as usize;
+            for &(id, start, end, l) in row.items.iter().rev().filter(|i| i.3 == lane) {
+                let r = row.lane_rect(tl, start, end, l);
+                let (a, b) = (r.left(), r.right());
+                if pos.x < a - EDGE || pos.x > b + EDGE {
+                    continue;
+                }
+                if (pos.x - b).abs() <= EDGE && b - a > 3.0 * EDGE {
+                    return Hit::ItemEnd(row.layer, id);
+                }
+                if (pos.x - a).abs() <= EDGE && b - a > 3.0 * EDGE {
+                    return Hit::ItemStart(row.layer, id);
+                }
+                if pos.x >= a && pos.x <= b {
+                    return Hit::ItemBody(row.layer, id, tl.t(pos.x) - start);
+                }
+            }
+            return Hit::LayerEmpty(row.layer);
+        }
         Hit::None
     }
 
@@ -271,22 +415,24 @@ impl RecOrdingApp {
         let camera = Rect::from_min_size(Pos2::new(body.left(), video.bottom() + 8.0), Vec2::new(body.width(), 30.0));
         let device = Rect::from_min_size(Pos2::new(body.left(), camera.bottom() + 6.0), Vec2::new(body.width(), 24.0));
         let text = Rect::from_min_size(Pos2::new(body.left(), device.bottom() + 6.0), Vec2::new(body.width(), 24.0));
-        let tl = Tl { x0: body.left() + LABEL_W, x1: body.right() - 2.0, dur, ruler, video, camera, device, text };
+        let rows = self.layer_rows(body.left(), body.width(), text.bottom());
+        let bottom = rows.last().map(|r| r.rect.bottom()).unwrap_or(text.bottom());
+        let tl = Tl { x0: body.left() + LABEL_W, x1: body.right() - 2.0, dur, ruler, video, camera, device, text, rows, bottom };
 
-        let resp = ui.interact(Rect::from_min_max(ruler.min, text.max), Id::new("timeline"), Sense::click_and_drag());
+        let resp = ui.interact(Rect::from_min_max(ruler.min, Pos2::new(body.right(), bottom)), Id::new("timeline"), Sense::click_and_drag());
         let hover_hit = resp.hover_pos().map(|p| self.hit(&tl, p)).unwrap_or(Hit::None);
         match self.drag {
-            Some(Drag::TrimIn { .. } | Drag::TrimOut { .. } | Drag::CamStart { .. } | Drag::CamEnd { .. } | Drag::TextStart { .. } | Drag::TextEnd { .. }) => {
+            Some(Drag::TrimIn { .. } | Drag::TrimOut { .. } | Drag::CamStart { .. } | Drag::CamEnd { .. } | Drag::TextStart { .. } | Drag::TextEnd { .. } | Drag::ItemStart { .. } | Drag::ItemEnd { .. }) => {
                 ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal)
             }
-            Some(Drag::CamMove { .. } | Drag::DevMove { .. } | Drag::TextMove { .. } | Drag::ClipMove { .. } | Drag::CamKey { .. } | Drag::Marker { .. }) => {
+            Some(Drag::CamMove { .. } | Drag::DevMove { .. } | Drag::TextMove { .. } | Drag::ItemMove { .. } | Drag::ClipMove { .. } | Drag::CamKey { .. } | Drag::Marker { .. }) => {
                 ui.ctx().set_cursor_icon(CursorIcon::Grabbing)
             }
             _ => match hover_hit {
-                Hit::ClipIn(_) | Hit::ClipOut(_) | Hit::CamStart(_) | Hit::CamEnd(_) | Hit::TextStart(_) | Hit::TextEnd(_) => {
+                Hit::ClipIn(_) | Hit::ClipOut(_) | Hit::CamStart(_) | Hit::CamEnd(_) | Hit::TextStart(_) | Hit::TextEnd(_) | Hit::ItemStart(..) | Hit::ItemEnd(..) => {
                     ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal)
                 }
-                Hit::CamBody(..) | Hit::DevBody(..) | Hit::TextBody(..) | Hit::CamKey(..) | Hit::DevKey(..) | Hit::Marker(_) => {
+                Hit::CamBody(..) | Hit::DevBody(..) | Hit::TextBody(..) | Hit::ItemBody(..) | Hit::CamKey(..) | Hit::DevKey(..) | Hit::Marker(_) => {
                     ui.ctx().set_cursor_icon(CursorIcon::Grab)
                 }
                 _ => {}
@@ -312,6 +458,9 @@ impl RecOrdingApp {
                     Hit::TextBody(id, grab) => Some(Drag::TextMove { id, grab }),
                     Hit::TextStart(id) => self.project.texts.iter().find(|c| c.id == id).map(|c| Drag::TextStart { id, end: c.end() }),
                     Hit::TextEnd(id) => self.project.texts.iter().find(|c| c.id == id).map(|c| Drag::TextEnd { id, start: c.start }),
+                    Hit::ItemBody(layer, id, grab) => Some(Drag::ItemMove { layer, id, grab }),
+                    Hit::ItemStart(layer, id) => self.layer_items(layer).iter().find(|i| i.0 == id).map(|i| Drag::ItemStart { layer, id, end: i.2 }),
+                    Hit::ItemEnd(layer, id) => self.layer_items(layer).iter().find(|i| i.0 == id).map(|i| Drag::ItemEnd { layer, id, start: i.1 }),
                     Hit::Marker(id) => Some(Drag::Marker { id }),
                     Hit::None => None,
                     _ => Some(Drag::Scrub),
@@ -323,6 +472,7 @@ impl RecOrdingApp {
                     Some(Drag::DevMove { id, .. }) => self.selection = Selection::Device { id, key: None },
                     Some(Drag::TextMove { id, .. } | Drag::TextStart { id, .. } | Drag::TextEnd { id, .. }) => self.selection = Selection::Text(id),
                     Some(Drag::Marker { id }) => self.selection = Selection::Target(id),
+                    Some(Drag::ItemMove { layer, id, .. } | Drag::ItemStart { layer, id, .. } | Drag::ItemEnd { layer, id, .. }) => self.selection = select(layer, id),
                     _ => {}
                 }
                 if self.playing {
@@ -333,6 +483,16 @@ impl RecOrdingApp {
         if resp.dragged() {
             if let (Some(d), Some(pos)) = (self.drag, resp.interact_pointer_pos()) {
                 self.apply_drag(d, tl.t(pos.x));
+                // A sound dragged onto another sound track moves to it.
+                if let Drag::ItemMove { layer: Layer::Audio(from), id, grab } = d {
+                    let over = tl.rows.iter().find(|r| pos.y >= r.rect.top() && pos.y < r.rect.bottom() + 6.0).map(|r| r.layer);
+                    if let Some(Layer::Audio(to)) = over.filter(|l| *l != Layer::Audio(from)) {
+                        if let Some(c) = self.project.audio.iter_mut().find(|c| c.id == id) {
+                            c.track = to;
+                            self.drag = Some(Drag::ItemMove { layer: Layer::Audio(to), id, grab });
+                        }
+                    }
+                }
             }
         }
         if resp.drag_stopped() {
@@ -363,7 +523,11 @@ impl RecOrdingApp {
                         self.selection = Selection::Text(id);
                         self.seek(t);
                     }
-                    Hit::VideoEmpty | Hit::CamEmpty | Hit::DevEmpty | Hit::TextEmpty => {
+                    Hit::ItemStart(layer, id) | Hit::ItemEnd(layer, id) | Hit::ItemBody(layer, id, _) => {
+                        self.selection = select(layer, id);
+                        self.seek(t);
+                    }
+                    Hit::VideoEmpty | Hit::CamEmpty | Hit::DevEmpty | Hit::TextEmpty | Hit::LayerEmpty(_) => {
                         self.selection = Selection::None;
                         self.seek(t);
                     }
@@ -406,6 +570,8 @@ impl RecOrdingApp {
                 match self.hit(&tl, pos) {
                     Hit::CamEmpty => self.add_zoom_at(tl.t(pos.x)),
                     Hit::TextEmpty => self.add_text_at(tl.t(pos.x)),
+                    Hit::LayerEmpty(Layer::Images) => self.pick_picture(tl.t(pos.x)),
+                    Hit::LayerEmpty(Layer::Audio(track)) => self.pick_sound(Some(track), tl.t(pos.x)),
                     _ => {}
                 }
             }
@@ -495,6 +661,35 @@ impl RecOrdingApp {
             Drag::TextEnd { id, start } => {
                 let _ = timeline::place_text(&mut self.project, id, start, t.max(start + 0.8));
             }
+            Drag::ItemMove { layer, id, grab } => {
+                let start = timeline::snap_to_mark(&self.project, (t - grab).max(0.0), 0.12);
+                match layer {
+                    Layer::Images => {
+                        if let Some(len) = self.project.images.iter().find(|c| c.id == id).map(|c| c.duration) {
+                            let _ = timeline::place_image(&mut self.project, id, start, start + len);
+                        }
+                    }
+                    Layer::Audio(_) => {
+                        let _ = timeline::move_audio(&mut self.project, id, start);
+                    }
+                }
+            }
+            Drag::ItemStart { layer, id, end } => match layer {
+                Layer::Images => {
+                    let _ = timeline::place_image(&mut self.project, id, t.min(end - 0.2), end);
+                }
+                Layer::Audio(_) => {
+                    let _ = timeline::trim_audio(&mut self.project, id, t.min(end - 0.1), end);
+                }
+            },
+            Drag::ItemEnd { layer, id, start } => match layer {
+                Layer::Images => {
+                    let _ = timeline::place_image(&mut self.project, id, start, t.max(start + 0.2));
+                }
+                Layer::Audio(_) => {
+                    let _ = timeline::trim_audio(&mut self.project, id, start, t.max(start + 0.1));
+                }
+            },
             Drag::Marker { id } => {
                 if let Some(tg) = self.project.director.targets.iter_mut().find(|x| x.id == id) {
                     tg.time = t;
@@ -505,13 +700,88 @@ impl RecOrdingApp {
         }
     }
 
+    /// A pictures or sound track: its clips in their lanes, with the waveform or a thumbnail.
+    fn paint_layer(&self, ui: &Ui, p: &egui::Painter, tl: &Tl, row: &Row, hover: Hit) {
+        let track = Rect::from_min_max(Pos2::new(tl.x0, row.rect.top()), Pos2::new(tl.x1, row.rect.bottom()));
+        p.rect_filled(track, Rounding::same(6.0), TRACK);
+        if row.items.is_empty() {
+            p.text(track.center(), Align2::CENTER_CENTER, row.layer.empty_hint(), regular(11.5), TEXT_3);
+        }
+        let base = row.layer.color();
+        for &(id, start, end, lane) in &row.items {
+            let r = row.lane_rect(tl, start, end, lane);
+            let selected = self.selection == select(row.layer, id);
+            let hovered = matches!(hover, Hit::ItemBody(l, i, _) | Hit::ItemStart(l, i) | Hit::ItemEnd(l, i) if l == row.layer && i == id);
+            p.rect_filled(r, Rounding::same(5.0), if selected || hovered { lerp_color(base, Color32::WHITE, 0.15) } else { base });
+            let inner = ui.painter_at(r.shrink(1.0));
+            let mut text_x = r.left() + 7.0;
+            let name = match row.layer {
+                Layer::Images => {
+                    let Some(c) = self.project.images.iter().find(|c| c.id == id) else { continue };
+                    if let Some(Some(tex)) = self.image_thumbs.get(&c.path) {
+                        let h = r.height() - 4.0;
+                        let [tw, th] = tex.size();
+                        let w = (h * tw as f32 / th.max(1) as f32).min(h * 2.0);
+                        let pic = Rect::from_min_size(Pos2::new(r.left() + 4.0, r.top() + 2.0), Vec2::new(w, h));
+                        inner.rect_filled(pic, Rounding::same(2.0), Color32::from_black_alpha(60));
+                        inner.image(tex.id(), pic, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+                        text_x = pic.right() + 6.0;
+                    }
+                    std::path::Path::new(&c.path).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
+                }
+                Layer::Audio(_) => {
+                    let Some(c) = self.project.audio.iter().find(|c| c.id == id) else { continue };
+                    // The waveform, repeated when the sound loops.
+                    if let Some(Some(peaks)) = self.peaks.get(&c.path) {
+                        let per = crate::audio::PEAKS_PER_SECOND;
+                        let mid = r.center().y;
+                        let half = r.height() * 0.42;
+                        let mut x = r.left().max(tl.x0);
+                        while x < r.right() {
+                            let mut at = c.offset + (tl.t(x) - c.start);
+                            if c.looped && c.length > 0.0 {
+                                at = at.rem_euclid(c.length);
+                            }
+                            let v = peaks.get((at * per) as usize).copied().unwrap_or(0.0) * c.volume.clamp(0.0, 1.5) / 1.5;
+                            let h = (v * half).max(0.5);
+                            inner.line_segment([Pos2::new(x, mid - h), Pos2::new(x, mid + h)], Stroke::new(1.0_f32, Color32::from_white_alpha(110)));
+                            x += 2.0;
+                        }
+                    }
+                    if c.looped {
+                        // Where the file starts over.
+                        let mut k = c.start + (c.length - c.offset);
+                        while k < c.end() && c.length > 0.05 {
+                            let x = tl.x(k);
+                            inner.line_segment([Pos2::new(x, r.top()), Pos2::new(x, r.bottom())], Stroke::new(1.0_f32, Color32::from_black_alpha(90)));
+                            k += c.length;
+                        }
+                    }
+                    c.name()
+                }
+            };
+            if r.right() - text_x > 24.0 {
+                let g = inner.layout_no_wrap(name, regular(10.5), Color32::WHITE);
+                let label = Rect::from_min_size(Pos2::new(text_x - 3.0, r.center().y - g.size().y / 2.0 - 1.0), g.size() + Vec2::new(6.0, 2.0));
+                inner.rect_filled(label, Rounding::same(3.0), Color32::from_black_alpha(90));
+                inner.galley(Pos2::new(text_x, r.center().y - g.size().y / 2.0), g, Color32::WHITE);
+            }
+            if selected {
+                p.rect_stroke(r, Rounding::same(5.0), Stroke::new(2.0_f32, YELLOW));
+            }
+        }
+    }
+
     fn paint_timeline(&self, ui: &Ui, tl: &Tl, hover: Hit, drop_x: Option<f32>) {
-        let p = ui.painter_at(Rect::from_min_max(tl.ruler.min - Vec2::new(0.0, 2.0), tl.text.max + Vec2::new(0.0, 2.0)));
+        let p = ui.painter_at(Rect::from_min_max(tl.ruler.min - Vec2::new(0.0, 2.0), Pos2::new(tl.text.right(), tl.bottom + 2.0)));
         let dur = tl.dur;
 
         // Row labels
         for (r, label) in [(tl.video, "Vídeo"), (tl.camera, "Cámara"), (tl.device, "Móvil"), (tl.text, "Texto")] {
             p.text(Pos2::new(r.left(), r.center().y), Align2::LEFT_CENTER, label, regular(11.5), TEXT_3);
+        }
+        for row in &tl.rows {
+            p.text(Pos2::new(row.rect.left(), row.rect.top() + 1.0 + LANE_H / 2.0), Align2::LEFT_CENTER, row.layer.label(), regular(11.5), TEXT_3);
         }
 
         // Ruler
@@ -690,6 +960,11 @@ impl RecOrdingApp {
             }
         }
 
+        // Pictures and sounds
+        for row in &tl.rows {
+            self.paint_layer(ui, &p, tl, row, hover);
+        }
+
         // Director markers
         for (n, t) in self.project.director.targets.iter().enumerate() {
             let c = Pos2::new(tl.x(t.time), tl.ruler.center().y + 1.0);
@@ -700,7 +975,7 @@ impl RecOrdingApp {
 
         // Playhead
         let x = tl.x(self.time);
-        p.line_segment([Pos2::new(x, tl.ruler.top() + 4.0), Pos2::new(x, tl.text.bottom())], Stroke::new(1.5_f32, RED));
+        p.line_segment([Pos2::new(x, tl.ruler.top() + 4.0), Pos2::new(x, tl.bottom)], Stroke::new(1.5_f32, RED));
         let head = vec![
             Pos2::new(x - 5.0, tl.ruler.top()),
             Pos2::new(x + 5.0, tl.ruler.top()),

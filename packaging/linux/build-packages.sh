@@ -43,7 +43,7 @@ Version: $version-1
 Architecture: amd64
 Maintainer: blzkz <sergiobl88@gmail.com>
 Installed-Size: $(du -sk --exclude=DEBIAN "$deb" | cut -f1)
-Depends: libc6 (>= 2.35), libgcc-s1, libvulkan1, ffmpeg, curl
+Depends: libc6 (>= 2.35), libgcc-s1, libasound2 | libasound2t64, libvulkan1, ffmpeg, curl
 Recommends: adb, scrcpy, zenity, unzip, pkexec | policykit-1
 Section: video
 Priority: optional

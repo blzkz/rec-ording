@@ -1,6 +1,6 @@
 [package]
 name = "rec-ording"
-version = "0.12.0"
+version = "0.13.0"
 edition = "2021"
 authors = ["blzkz <sergiobl88@gmail.com>"]
 description = "Graba tu móvil Android y conviértelo en un vídeo promocional con marco, fondo y zooms automáticos"
@@ -22,6 +22,8 @@ ab_glyph = "0.2"
 # Composing export frames on the graphics card (already used by the window).
 wgpu = { version = "23", default-features = false, features = ["wgsl"] }
 pollster = "0.4"
+# Plays the preview's sound.
+cpal = "0.15"
 bytemuck = "1"
 gltf = { version = "1.4", features = ["KHR_texture_transform", "KHR_materials_unlit", "KHR_materials_transmission", "KHR_materials_ior", "KHR_materials_emissive_strength"] }
 

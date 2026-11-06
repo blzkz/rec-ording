@@ -251,6 +251,8 @@ pub struct ComposeInput<'a> {
     pub supersample: usize,
     /// Titles on screen, drawn over everything.
     pub texts: &'a [crate::text::Shown<'a>],
+    /// Pictures on screen, drawn under the titles.
+    pub images: &'a [crate::images::Shown<'a>],
     /// Instants averaged for motion blur (see `timeline::shutter`); empty for none.
     pub blur: &'a [(f32, CameraValue, PoseValue)],
     /// During a dissolve between clips: the last frame of the previous clip and how much of it
@@ -497,6 +499,7 @@ pub fn device_pose(style: &Style, cam: &CameraValue, pose: &PoseValue, since_sta
 /// shutter when it moves fast), then the titles.
 pub fn compose(out: &mut [u8], ow: usize, oh: usize, inp: &ComposeInput) {
     compose_frame(out, ow, oh, inp);
+    crate::images::draw(out, ow, oh, inp.images);
     crate::text::draw(out, ow, oh, inp.style, inp.texts);
 }
 
@@ -1097,6 +1100,7 @@ mod tests {
             model: None,
             supersample: 1,
             texts: &[],
+            images: &[],
             blur: &[],
             from: None,
         };
@@ -1172,7 +1176,7 @@ mod pose_tests {
         let style = Style { tilt: 38.0, ..Style::default() };
         let (w, h) = (320usize, 180usize);
         let mut out = vec![0u8; w * h * 4];
-        let inp = ComposeInput { style: &style, screen: None, video_w: 1080.0, video_h: 2400.0, cam: CameraValue::REST, pose: PoseValue::REST, touches: &[], time: 0.0, since_start: 5.0, model: None, supersample: 1, texts: &[], blur: &[], from: None };
+        let inp = ComposeInput { style: &style, screen: None, video_w: 1080.0, video_h: 2400.0, cam: CameraValue::REST, pose: PoseValue::REST, touches: &[], time: 0.0, since_start: 5.0, model: None, supersample: 1, texts: &[], images: &[], blur: &[], from: None };
         compose(&mut out, w, h, &inp);
         // Top and bottom rows are background (no dark device pixels).
         for y in [0, h - 1] {
