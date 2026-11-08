@@ -148,6 +148,10 @@ Todo el plan de `plan-iluminacion-postproceso.md`, más las mejoras pedidas tras
 - Botón del engranaje en la barra de arriba, también en el inicio: versión instalada, **Buscar actualizaciones**, **Actualizaciones automáticas** (activadas por defecto; desactivadas, la app no busca versiones al abrirse) y enlace a **Licencias y créditos**.
 - La página de descargas incluye `licencias.html`: el modelo 3D, la tipografía, los programas externos y las bibliotecas de Rust que usa la app en Linux y Windows, sacadas de `cargo metadata`.
 
+## v0.15.0: volumen en la cabecera de las pistas
+
+- Efectos, voz y música tienen su control de volumen junto al nombre de la pista, en la línea de tiempo (0 a 200 %, cada uno por separado). Son los mismos valores que la sección **Sonido** del panel, y la forma de onda de los clips sigue al volumen.
+
 ## Ideas para siguientes versiones
 
 - Luz animada con fotogramas clave (un barrido de luz durante un giro).

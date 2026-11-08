@@ -387,8 +387,16 @@ mod tests {
         let quiet = rms(&render(&p, rate).unwrap(), rate, 5.0, 5.9);
         assert!((quiet / loud - 0.25 / 0.8).abs() < 0.05, "{quiet} vs {loud}");
 
-        // A voice-over over the music: the music steps back while it speaks.
+        // Each track has its own volume: lowering one leaves the other as it was.
         p.mix.music = 0.8;
+        let base = render(&p, rate).unwrap();
+        p.mix.effects = 0.5;
+        let softer = render(&p, rate).unwrap();
+        assert!((rms(&softer, rate, 1.1, 1.4) / rms(&base, rate, 1.1, 1.4) - 0.5).abs() < 0.03, "effects at half");
+        assert!((rms(&softer, rate, 3.2, 3.9) / rms(&base, rate, 3.2, 3.9) - 1.0).abs() < 0.01, "the music does not change");
+        p.mix.effects = 1.0;
+
+        // A voice-over over the music: the music steps back while it speaks.
         let voice = tone("voice", 1.0, 440);
         timeline::add_audio(&mut p, AudioTrack::Voice, &voice, 1.0, 4.8).unwrap();
         let ducked = render(&p, rate).unwrap();

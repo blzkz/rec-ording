@@ -605,6 +605,14 @@ impl Default for Mix {
 }
 
 impl Mix {
+    pub fn track_mut(&mut self, t: AudioTrack) -> &mut f32 {
+        match t {
+            AudioTrack::Effects => &mut self.effects,
+            AudioTrack::Voice => &mut self.voice,
+            AudioTrack::Music => &mut self.music,
+        }
+    }
+
     pub fn track(&self, t: AudioTrack) -> f32 {
         match t {
             AudioTrack::Effects => self.effects,

@@ -1,6 +1,6 @@
 # Maintainer: blzkz <sergiobl88@gmail.com>
 pkgname=rec-ording
-pkgver=0.14.0
+pkgver=0.15.0
 pkgrel=1
 pkgdesc="Graba tu móvil Android y conviértelo en un vídeo promocional con marco, fondo y zooms automáticos"
 arch=('x86_64')

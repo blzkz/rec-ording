@@ -3,7 +3,8 @@
 
 use super::*;
 
-const LABEL_W: f32 = 64.0;
+/// Width of the track headers: name and, on the sound tracks, their volume.
+const LABEL_W: f32 = 150.0;
 const MOVE_COLOR: Color32 = Color32::from_rgb(255, 159, 10);
 const DIRECTOR_COLOR: Color32 = Color32::from_rgb(90, 200, 250);
 const DEVICE_COLOR: Color32 = Color32::from_rgb(52, 170, 90);
@@ -590,6 +591,25 @@ impl RecOrdingApp {
             _ => None,
         };
         self.paint_timeline(ui, &tl, hover_hit, drop_x);
+        self.track_volumes(ui, &tl);
+    }
+
+    /// The volume of each sound track, in its header. Added after the timeline's own area, so
+    /// the sliders get the mouse first.
+    fn track_volumes(&mut self, ui: &mut Ui, tl: &Tl) {
+        for row in &tl.rows {
+            let Layer::Audio(track) = row.layer else { continue };
+            let y = row.rect.top() + 1.0 + LANE_H / 2.0;
+            let rect = Rect::from_min_size(Pos2::new(row.rect.left() + 56.0, y - 9.0), Vec2::new(54.0, 18.0));
+            let volume = self.project.mix.track_mut(track);
+            let builder = UiBuilder::new().id_salt(("track-volume", track)).max_rect(rect).layout(egui::Layout::left_to_right(Align::Center));
+            let mut c = ui.new_child(builder);
+            c.spacing_mut().slider_width = rect.width();
+            c.spacing_mut().interact_size.y = 18.0;
+            c.add(egui::Slider::new(volume, 0.0..=2.0).show_value(false)).on_hover_text(format!("Volumen de {}", track.label().to_lowercase()));
+            let text = format!("{:.0} %", *volume * 100.0);
+            ui.painter().text(Pos2::new(tl.x0 - 8.0, y), Align2::RIGHT_CENTER, text, regular(10.5), TEXT_3);
+        }
     }
 
     /// Where a dragged clip lands: before the first other clip whose middle is past `t`.
@@ -742,7 +762,7 @@ impl RecOrdingApp {
                             if c.looped && c.length > 0.0 {
                                 at = at.rem_euclid(c.length);
                             }
-                            let v = peaks.get((at * per) as usize).copied().unwrap_or(0.0) * c.volume.clamp(0.0, 1.5) / 1.5;
+                            let v = peaks.get((at * per) as usize).copied().unwrap_or(0.0) * (c.volume * self.project.mix.track(c.track)).clamp(0.0, 1.5) / 1.5;
                             let h = (v * half).max(0.5);
                             inner.line_segment([Pos2::new(x, mid - h), Pos2::new(x, mid + h)], Stroke::new(1.0_f32, Color32::from_white_alpha(110)));
                             x += 2.0;
