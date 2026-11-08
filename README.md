@@ -6,6 +6,43 @@ Graba tu móvil Android por USB y conviértelo en un vídeo promocional listo pa
 
 Pensado para la ficha de Google Play, YouTube, Reels/Shorts o redes, sin pasar por un editor de vídeo.
 
+<p align="center">
+  <img src="documentacion/capturas/demo.gif" alt="Vídeo promocional hecho con rec·ording: un móvil 3D con la app, títulos que aparecen junto a él y un giro completo" width="720">
+</p>
+
+<p align="center"><strong><a href="https://blzkz.github.io/rec-ording-releases/">Descargar para Windows y Linux</a></strong></p>
+
+## Capturas
+
+**Inicio.** Crea un proyecto o vuelve a uno reciente, cada uno con una imagen de su vídeo.
+
+![Pantalla de inicio con cinco proyectos recientes](documentacion/capturas/inicio.png)
+
+**Editor.** El móvil en 3D con tu grabación, y debajo todas las pistas: vídeo, cámara, móvil, texto, imágenes y sonido.
+
+![Editor con la vista previa, el panel de ajustes y la línea de tiempo](documentacion/capturas/editor.png)
+
+**Imágenes con transparencia.** Se colocan arrastrándolas sobre el vídeo.
+
+![Un logo seleccionado en la vista previa, con su panel de tamaño, posición y opacidad](documentacion/capturas/imagen.png)
+
+**Efectos, voz y música.** Varios sonidos por pista, con su forma de onda, y la música baja sola cuando habla la voz.
+
+![Pistas de la línea de tiempo con efectos solapados, voz en off y música en bucle](documentacion/capturas/pistas.png)
+
+<table>
+  <tr>
+    <th>Luz y acabado</th>
+    <th>Ajustes de un sonido</th>
+    <th>Ajustes de la app</th>
+  </tr>
+  <tr>
+    <td valign="top"><img src="documentacion/capturas/luz-y-acabado.png" alt="Panel de iluminación, fondo, composición y acabado" width="260"></td>
+    <td valign="top"><img src="documentacion/capturas/panel-sonido.png" alt="Panel de un clip de voz en off con pista, volumen, fundidos y bucle" width="260"></td>
+    <td valign="top"><img src="documentacion/capturas/ajustes.png" alt="Ajustes con la versión, las actualizaciones automáticas y las licencias" width="320"></td>
+  </tr>
+</table>
+
 ## Cómo se usa
 
 Al abrir la app ves el **inicio**: crea un proyecto nuevo, abre uno que ya tengas (o un archivo `.recproj.json` de otra carpeta) o elige uno de los cinco últimos, que aparecen con una imagen de su vídeo. **Proyectos**, en la barra de arriba, guarda el proyecto abierto y vuelve al inicio.
@@ -106,19 +143,21 @@ cargo build --release
 
 ### Actualizaciones
 
-Al abrirse, la app lee el `latest.json` de la página de descargas (GitHub Pages del repositorio público `blzkz/rec-ording-releases`, que solo tiene los paquetes; el del código es privado). No se usan las releases de GitHub porque siempre muestran unos archivos «Source code». Si la hay, se abre una ventana que lo cuenta y ofrece actualizar (también queda el botón **Actualización** en la barra):
+Al abrirse, la app lee el `latest.json` de la página de descargas (GitHub Pages del repositorio público `blzkz/rec-ording-releases`, que solo tiene los paquetes). No se usan las releases de GitHub porque siempre muestran unos archivos «Source code». Si la hay, se abre una ventana que lo cuenta y ofrece actualizar (también queda el botón **Actualización** en la barra):
 
 - en Linux instala el paquete con el gestor del sistema a través de `pkexec` (pacman, apt, dnf o zypper, según cómo se instaló; pide tu contraseña), o reemplaza el archivo si es un AppImage;
 - en Windows reemplaza los archivos de la carpeta de rec-ording;
 - en una copia compilada a mano, abre la página de descarga.
 
-Después basta con reiniciar. Las descargas se comprueban con la suma SHA-256 que publica GitHub.
+Después basta con reiniciar. Las descargas se comprueban con la suma SHA-256 de `latest.json`.
+
+El botón del engranaje, en la barra de arriba, muestra la versión instalada y el enlace a las licencias y créditos, busca actualizaciones a mano y permite desactivar **Actualizaciones automáticas** (activadas por defecto): sin ellas, la app no busca versiones nuevas al abrirse.
 
 Para publicar una versión, sube una etiqueta `vX.Y.Z` (con la versión de `Cargo.toml` y del `PKGBUILD`). El workflow **Release** pasa los tests y compila en Arch, en Ubuntu 22.04 (`.deb`, `.rpm` y AppImage con `packaging/linux/build-packages.sh`) y en Windows, y publica la página de descargas: `packaging/site/make-site.py` genera `index.html` y `latest.json` con los paquetes y sus sumas SHA-256, y se suben a la rama `gh-pages` del repositorio público (solo la última versión). Las notas son el mensaje de la etiqueta anotada, en Markdown (`git tag -a vX.Y.Z -F notas.md`). Necesita el secret `RELEASES_TOKEN`: un token *fine-grained* con permiso *Contents: read and write* solo sobre `blzkz/rec-ording-releases`. Sin él, los paquetes quedan como artefactos de la ejecución y el paso de publicar falla avisándolo.
 
 ### Windows
 
-Descarga `rec-ording-<versión>-windows-x64.zip`, descomprímelo y abre `rec-ording.exe`. Lo genera el workflow **Release** de GitHub Actions al subir una etiqueta `v*` (también se puede lanzar a mano desde la pestaña Actions para probar la compilación, sin publicar); solo corre entonces, para no gastar los minutos de Actions del repositorio privado. Instala las herramientas con:
+Descarga `rec-ording-<versión>-windows-x64.zip`, descomprímelo y abre `rec-ording.exe`. Lo genera el workflow **Release** de GitHub Actions al subir una etiqueta `v*` (también se puede lanzar a mano desde la pestaña Actions para probar la compilación, sin publicar). Instala las herramientas con:
 
 ```powershell
 winget install Gyan.FFmpeg

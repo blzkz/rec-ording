@@ -115,6 +115,73 @@ impl RecOrdingApp {
         }
     }
 
+    /// The app's version, updates and credits.
+    pub(super) fn settings_sheet(&mut self, ctx: &egui::Context) {
+        let mut close = false;
+        let mut check = false;
+        let mut credits = false;
+        let mut auto = self.auto_update;
+        Self::sheet_window(ctx, "settings", 420.0, |ui| {
+            ui.vertical_centered(|ui| {
+                let (r, _) = ui.allocate_exact_size(Vec2::splat(52.0), Sense::hover());
+                fill_gradient(ui.painter(), &rounded_rect_points(r, 13.0), Color32::from_rgb(255, 95, 80), PURPLE, 135.0);
+                ui.painter().circle_filled(r.center(), 10.5, Color32::WHITE);
+                ui.add_space(4.0);
+                ui.label(with_name(APP_NAME, medium(20.0), TEXT));
+                ui.label(RichText::new(format!("Versión {}", update::CURRENT)).color(TEXT_2));
+            });
+            ui.add_space(14.0);
+            toggle_row(ui, "Actualizaciones automáticas", "Al abrir la app, busca si hay una versión nueva y te ofrece instalarla", &mut auto);
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let checking = matches!(self.update_check, UpdateCheck::Checking);
+                if ui.add_enabled(!checking, egui::Button::new(RichText::new("Buscar actualizaciones").color(TEXT)).min_size(Vec2::new(0.0, 28.0))).clicked() {
+                    check = true;
+                }
+                match &self.update_check {
+                    UpdateCheck::Idle => {}
+                    UpdateCheck::Checking => {
+                        ui.add(egui::Spinner::new().size(14.0).color(TEXT_2));
+                    }
+                    UpdateCheck::UpToDate => {
+                        ui.label(RichText::new("Tienes la última versión").color(GREEN).font(regular(12.5)));
+                    }
+                    UpdateCheck::Failed(_) => {
+                        ui.label(RichText::new("No se pudo comprobar").color(RED).font(regular(12.5)));
+                    }
+                }
+            });
+            if let UpdateCheck::Failed(e) = &self.update_check {
+                ui.label(RichText::new(e).color(TEXT_3).font(regular(11.5)));
+            }
+            ui.add_space(10.0);
+            ui.separator();
+            ui.add_space(6.0);
+            if ui.link(RichText::new("Licencias y créditos").font(regular(13.0)).color(ACCENT)).on_hover_text("Se abre en el navegador").clicked() {
+                credits = true;
+            }
+            ui.add_space(10.0);
+            button_row(ui, |ui| {
+                if secondary_button(ui, "Cerrar").clicked() {
+                    close = true;
+                }
+            });
+        });
+        if auto != self.auto_update {
+            self.auto_update = auto;
+            update::set_auto(auto);
+        }
+        if check {
+            self.check_for_update_now();
+        }
+        if credits {
+            crate::platform::open_path(std::path::Path::new(&format!("{}/licencias.html", update::DOWNLOADS)));
+        }
+        if close {
+            self.sheet = Sheet::None;
+        }
+    }
+
     pub(super) fn update_sheet(&mut self, ctx: &egui::Context) {
         let Some(r) = self.update.clone() else {
             self.sheet = Sheet::None;

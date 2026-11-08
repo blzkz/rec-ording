@@ -55,6 +55,8 @@ enum AppEvent {
     PictureThumb { path: String, thumb: Option<((usize, usize), Vec<u8>)> },
     MixRendered { key: u64, samples: Result<Vec<f32>, String> },
     UpdateFound(update::Release),
+    /// The answer to looking for updates by hand.
+    UpdateChecked(Result<Option<update::Release>, String>),
     UpdateInstalled(Result<(), String>),
 }
 
@@ -67,6 +69,7 @@ enum Sheet {
     DeleteModel,
     Projects,
     NewProject,
+    Settings,
     Assistant,
     Update,
 }
@@ -75,6 +78,14 @@ enum UpdateUi {
     Idle,
     Installing,
     Installed,
+    Failed(String),
+}
+
+/// The "look for updates" button in the settings.
+enum UpdateCheck {
+    Idle,
+    Checking,
+    UpToDate,
     Failed(String),
 }
 
@@ -212,6 +223,9 @@ pub struct RecOrdingApp {
     new_project_name: String,
     update: Option<update::Release>,
     update_ui: UpdateUi,
+    update_check: UpdateCheck,
+    /// Look for a new version when the app opens.
+    auto_update: bool,
     /// Put the cursor in the headline of the selected title (just added).
     focus_title: bool,
     /// The clip whose video the file picker replaces (instead of adding a clip).
@@ -351,6 +365,8 @@ impl RecOrdingApp {
             new_project_name: String::new(),
             update: None,
             update_ui: UpdateUi::Idle,
+            update_check: UpdateCheck::Idle,
+            auto_update: update::auto_enabled(),
             focus_title: false,
             replacing: None,
             dissolve: None,
@@ -382,8 +398,11 @@ impl RecOrdingApp {
         app
     }
 
-    /// Looks for a newer release in the background; a button appears in the toolbar if there is one.
+    /// Looks for a newer release in the background, unless turned off in the settings.
     fn check_for_update(&self) {
+        if !self.auto_update {
+            return;
+        }
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
         thread::spawn(move || {
             if let Ok(Some(r)) = update::check() {
@@ -392,6 +411,19 @@ impl RecOrdingApp {
                     ctx.request_repaint();
                 }
             }
+        });
+    }
+
+    /// Looks for a newer release because the user asked (a skipped version counts here).
+    fn check_for_update_now(&mut self) {
+        if matches!(self.update_check, UpdateCheck::Checking) {
+            return;
+        }
+        self.update_check = UpdateCheck::Checking;
+        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        thread::spawn(move || {
+            let _ = tx.send(AppEvent::UpdateChecked(update::check()));
+            ctx.request_repaint();
         });
     }
 
@@ -843,6 +875,20 @@ impl RecOrdingApp {
                     self.sheet = Sheet::None;
                     self.open_from_home(p);
                 }
+                AppEvent::UpdateChecked(res) => match res {
+                    Ok(Some(r)) => {
+                        self.update = Some(r);
+                        self.update_check = UpdateCheck::Idle;
+                        // Straight to it from the settings; otherwise as soon as nothing is open.
+                        if self.sheet == Sheet::Settings {
+                            self.sheet = Sheet::Update;
+                        } else {
+                            self.update_prompt = true;
+                        }
+                    }
+                    Ok(None) => self.update_check = UpdateCheck::UpToDate,
+                    Err(e) => self.update_check = UpdateCheck::Failed(e),
+                },
                 AppEvent::UpdateFound(r) => {
                     self.update = Some(r);
                     self.update_prompt = true;
@@ -1385,6 +1431,7 @@ impl eframe::App for RecOrdingApp {
             Sheet::RenameModel | Sheet::DeleteModel => self.model_edit_sheet(ctx),
             Sheet::Projects => self.projects_sheet(ctx),
             Sheet::NewProject => self.new_project_sheet(ctx),
+            Sheet::Settings => self.settings_sheet(ctx),
             Sheet::Assistant => self.assistant_sheet(ctx),
             Sheet::Update => self.update_sheet(ctx),
             Sheet::None => {}
@@ -1504,6 +1551,11 @@ impl RecOrdingApp {
                     .clicked()
                 {
                     self.sheet = Sheet::Assistant;
+                }
+                right.add_space(6.0);
+                if icon_button(&mut right, Icon::Gear, "Ajustes e información", "", false, true).clicked() {
+                    self.update_check = UpdateCheck::Idle;
+                    self.sheet = Sheet::Settings;
                 }
                 if let Some(r) = &self.update {
                     let tip = format!("{APP_NAME} {} está disponible", r.version);

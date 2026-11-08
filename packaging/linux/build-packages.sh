@@ -64,7 +64,7 @@ Name:           rec-ording
 Version:        $version
 Release:        1
 Summary:        $summary
-License:        Proprietary
+License:        MIT
 URL:            https://blzkz.github.io/rec-ording-releases/
 BuildArch:      x86_64
 # Vulkan, ffmpeg and curl are opened or run at runtime, so they are named here; file and

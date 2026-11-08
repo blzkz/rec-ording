@@ -1,5 +1,5 @@
-//! Updates from the public download page (GitHub Pages of blzkz/rec-ording-releases; the source
-//! repository is private). The app reads its `latest.json` when it opens and installs the new
+//! Updates from the public download page (GitHub Pages of blzkz/rec-ording-releases). The app
+//! reads its `latest.json` when it opens and installs the new
 //! version on request: with the system's
 //! package manager through pkexec (pacman, apt, dnf or zypper), by replacing the AppImage, or by
 //! swapping the files next to the .exe on Windows.
@@ -364,12 +364,50 @@ pub fn skipped() -> Option<String> {
 }
 
 pub fn skip(version: &str) {
-    let _ = fs::write(skip_path(), serde_json::json!({ "omitir": version }).to_string());
+    save_setting("omitir", serde_json::json!(version));
+}
+
+/// Whether the app looks for a new version when it opens (it does unless turned off).
+pub fn auto_enabled() -> bool {
+    let raw = fs::read_to_string(skip_path()).unwrap_or_default();
+    auto_in(&raw)
+}
+
+pub fn set_auto(on: bool) {
+    save_setting("auto", serde_json::json!(on));
+}
+
+fn auto_in(raw: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(raw).ok().and_then(|v| v["auto"].as_bool()).unwrap_or(true)
+}
+
+fn save_setting(key: &str, value: serde_json::Value) {
+    let raw = fs::read_to_string(skip_path()).unwrap_or_default();
+    let _ = fs::write(skip_path(), with_setting(&raw, key, value));
+}
+
+/// The settings file with `key` changed and the others kept.
+fn with_setting(raw: &str, key: &str, value: serde_json::Value) -> String {
+    let mut v = serde_json::from_str::<serde_json::Value>(raw).ok().filter(|v| v.is_object()).unwrap_or_else(|| serde_json::json!({}));
+    v[key] = value;
+    v.to_string()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn automatic_updates_are_on_unless_turned_off() {
+        assert!(auto_in("") && auto_in("no es json") && auto_in(r#"{"omitir":"1.0"}"#));
+        let off = with_setting(r#"{"omitir":"1.0"}"#, "auto", serde_json::json!(false));
+        assert!(!auto_in(&off));
+        // Skipping a version keeps the setting, and the other way round.
+        let skipped = with_setting(&off, "omitir", serde_json::json!("2.0"));
+        let v: serde_json::Value = serde_json::from_str(&skipped).unwrap();
+        assert_eq!((v["omitir"].as_str(), v["auto"].as_bool()), (Some("2.0"), Some(false)));
+        assert!(auto_in(&with_setting("no es json", "auto", serde_json::json!(true))));
+    }
 
     #[test]
     fn compares_versions() {

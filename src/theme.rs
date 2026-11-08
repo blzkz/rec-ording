@@ -455,6 +455,7 @@ pub enum Icon {
     Effect,
     Mic,
     Music,
+    Gear,
 }
 
 fn polyline(p: &egui::Painter, pts: Vec<Pos2>, st: Stroke) {
@@ -626,6 +627,15 @@ pub fn paint_icon(p: &egui::Painter, icon: Icon, c: Pos2, s: f32, col: Color32) 
             p.line_segment([v(-0.14, 0.3), v(-0.14, -0.32)], st);
             p.line_segment([v(0.38, 0.2), v(0.38, -0.42)], st);
             p.line_segment([v(-0.14, -0.32), v(0.38, -0.42)], Stroke::new(st.width * 1.8, col));
+        }
+        Icon::Gear => {
+            for k in 0..8 {
+                let a = (k as f32 * 45.0).to_radians();
+                let d = Vec2::new(a.cos(), a.sin()) * s;
+                p.line_segment([c + d * 0.3, c + d * 0.47], Stroke::new(st.width * 1.5, col));
+            }
+            p.circle_stroke(c, s * 0.3, st);
+            p.circle_stroke(c, s * 0.1, st);
         }
         Icon::Home => {
             p.add(egui::Shape::line(vec![v(-0.46, -0.02), v(0.0, -0.42), v(0.46, -0.02)], st));

@@ -143,6 +143,11 @@ Todo el plan de `plan-iluminacion-postproceso.md`, más las mejoras pedidas tras
 - Al recortar o mover clips de vídeo, imágenes y sonidos siguen a su momento de la grabación, como los textos.
 - MCP: `add_image`, `update_image`, `delete_image`, `add_sound`, `update_sound`, `delete_sound` y `set_mix`; `add_image` y `add_sound` aceptan `mark`.
 
+## v0.14.0: ajustes e información
+
+- Botón del engranaje en la barra de arriba, también en el inicio: versión instalada, **Buscar actualizaciones**, **Actualizaciones automáticas** (activadas por defecto; desactivadas, la app no busca versiones al abrirse) y enlace a **Licencias y créditos**.
+- La página de descargas incluye `licencias.html`: el modelo 3D, la tipografía, los programas externos y las bibliotecas de Rust que usa la app en Linux y Windows, sacadas de `cargo metadata`.
+
 ## Ideas para siguientes versiones
 
 - Luz animada con fotogramas clave (un barrido de luz durante un giro).
