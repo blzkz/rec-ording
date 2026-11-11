@@ -28,7 +28,7 @@ mod update;
 fn main() -> eframe::Result<()> {
     i18n::init();
     if std::env::args().any(|a| a == "--mcp") {
-        i18n::use_lang(i18n::Lang::Es);
+        i18n::use_lang(i18n::Lang::En);
         mcp::run(std::env::args().any(|a| a == "--resumed"));
         return Ok(());
     }

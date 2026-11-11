@@ -102,7 +102,7 @@ Recordings and exports are saved to `rec-ording` in your Videos folder. Projects
 
 ## Assistant (MCP)
 
-An agent (Claude, Cursor, Codex…) can edit the video for you with `rec-ording --mcp`, an MCP server over stdio that edits the project open in the app (the app shows its changes right away and they can be undone). The app's **Assistant** button shows the configuration ready to copy. The server's tool descriptions and replies are in Spanish, whatever language the app shows. For example, in Claude Code:
+An agent (Claude, Cursor, Codex…) can edit the video for you with `rec-ording --mcp`, an MCP server over stdio that edits the project open in the app (the app shows its changes right away and they can be undone). The app's **Assistant** button shows the configuration ready to copy. The server speaks English (tool descriptions and replies), whatever language the app shows. For example, in Claude Code:
 
 ```bash
 claude mcp add rec-ording -- /usr/bin/rec-ording --mcp

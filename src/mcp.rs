@@ -66,7 +66,7 @@ pub fn run(resumed: bool) {
         }
         let response = match serde_json::from_str::<Value>(&line) {
             Ok(msg) => server.handle(&msg),
-            Err(e) => Some(json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": format!("JSON no válido: {e}")}})),
+            Err(e) => Some(json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": format!("Invalid JSON: {e}")}})),
         };
         if let Some(r) = response {
             let _ = writeln!(stdout, "{r}");
@@ -102,7 +102,7 @@ fn restart_if_updated(_exe: Option<&Path>, _started: Option<std::time::SystemTim
 /// One gesture of play_gestures.
 fn gesture(g: &Value) -> Result<capture::Gesture, String> {
     use capture::Gesture;
-    let n = |k: &str| g[k].as_f64().map(|v| v as f32).ok_or(format!("Al gesto le falta {k}"));
+    let n = |k: &str| g[k].as_f64().map(|v| v as f32).ok_or(format!("The gesture is missing {k}"));
     Ok(match g["type"].as_str().unwrap_or("") {
         "tap" => Gesture::Tap { x: n("x")?, y: n("y")? },
         "swipe" => Gesture::Swipe { x0: n("x")?, y0: n("y")?, x1: n("to_x")?, y1: n("to_y")?, duration: n("duration").unwrap_or(0.3) },
@@ -110,11 +110,11 @@ fn gesture(g: &Value) -> Result<capture::Gesture, String> {
             let (x, y) = (n("x")?, n("y")?);
             Gesture::Swipe { x0: x, y0: y, x1: x, y1: y, duration: n("duration").unwrap_or(0.8) }
         }
-        "text" => Gesture::Text(g["text"].as_str().ok_or("Al gesto le falta text")?.to_string()),
-        "key" => Gesture::Key(g["key"].as_str().ok_or("Al gesto le falta key")?.to_string()),
+        "text" => Gesture::Text(g["text"].as_str().ok_or("The gesture is missing text")?.to_string()),
+        "key" => Gesture::Key(g["key"].as_str().ok_or("The gesture is missing key")?.to_string()),
         "wait" => Gesture::Wait(n("duration")?),
-        "pinch" => return Err("Pellizcar no se puede: adb solo inyecta un dedo".into()),
-        other => return Err(format!("Gesto desconocido «{other}» (tap, swipe, long_press, text, key, wait)")),
+        "pinch" => return Err("Pinching isn't possible: adb only injects one finger".into()),
+        other => return Err(format!("Unknown gesture “{other}” (tap, swipe, long_press, text, key, wait)")),
     })
 }
 
@@ -152,7 +152,7 @@ impl Server {
                     Err(e) => Err(e),
                 };
                 // Every answer says which project it acted on.
-                let which = load_project(&self.path()).map(|p| format!("Proyecto: «{}»", p.name)).unwrap_or_default();
+                let which = load_project(&self.path()).map(|p| format!("Project: “{}”", p.name)).unwrap_or_default();
                 self.target = None;
                 Ok(match reply {
                     Ok(Reply::Text(t)) => json!({"content": [{"type": "text", "text": t}, {"type": "text", "text": which}], "isError": false}),
@@ -164,7 +164,7 @@ impl Server {
                     Err(e) => json!({"content": [{"type": "text", "text": e}, {"type": "text", "text": which}], "isError": true}),
                 })
             }
-            _ => Err(json!({"code": -32601, "message": format!("Método desconocido: {method}")})),
+            _ => Err(json!({"code": -32601, "message": format!("Unknown method: {method}")})),
         };
         Some(match result {
             Ok(r) => json!({"jsonrpc": "2.0", "id": id, "result": r}),
@@ -217,7 +217,7 @@ impl Server {
             }
         }
         let src = model3d::load(&cm.path)?;
-        let part = cm.screen(src.guess, src.parts.len()).ok_or("No se encontró la pantalla del modelo")?;
+        let part = cm.screen(src.guess, src.parts.len()).ok_or("The model's screen was not found")?;
         let m = Arc::new(model3d::prepare(&src, part, cm.quarter_turns)?);
         self.model_cache = Some((cm, m.clone()));
         Ok(Some(m))
@@ -229,7 +229,7 @@ impl Server {
         let a = match a["mark"].as_u64() {
             Some(i) if MARKED_TOOLS.contains(&name) => {
                 let marks = timeline::timeline_marks(&self.read()?);
-                let t = *marks.get(i as usize).ok_or(format!("No hay marca {i}: hay {} (detect_marks las busca)", marks.len()))?;
+                let t = *marks.get(i as usize).ok_or(format!("There is no mark {i}: there are {} (detect_marks finds them)", marks.len()))?;
                 let mut b = a.clone();
                 if name == "add_zoom" {
                     b["start"] = json!(t);
@@ -260,7 +260,7 @@ impl Server {
                         }
                     }
                     let all = timeline::timeline_marks(p);
-                    Ok(format!("{} cambios de pantalla en la línea de tiempo: {:?}", all.len(), all.iter().map(|t| (t * 100.0).round() / 100.0).collect::<Vec<_>>()))
+                    Ok(format!("{} screen changes on the timeline: {:?}", all.len(), all.iter().map(|t| (t * 100.0).round() / 100.0).collect::<Vec<_>>()))
                 })
             }
             // ----- Projects -----
@@ -280,41 +280,41 @@ impl Server {
                 set_current_project(&path);
                 self.undo.clear();
                 self.redo.clear();
-                Ok(Reply::Text(format!("Proyecto «{name}» creado y abierto")))
+                Ok(Reply::Text(format!("Project “{name}” created and opened")))
             }
             "open_project" => {
                 let name = text(a, "name")?;
                 let entry = list_projects()
                     .into_iter()
                     .find(|e| e.name == name || e.path.file_name().is_some_and(|f| f.to_string_lossy() == name))
-                    .ok_or(format!("No hay ningún proyecto «{name}»"))?;
+                    .ok_or(format!("There is no project “{name}”"))?;
                 set_current_project(&entry.path);
                 self.undo.clear();
                 self.redo.clear();
-                Ok(Reply::Text(format!("Proyecto «{}» abierto", entry.name)))
+                Ok(Reply::Text(format!("Project “{}” opened", entry.name)))
             }
             "rename_project" => {
                 let name = text(a, "name")?;
                 self.edit(|p| {
                     p.name = name.clone();
-                    Ok(format!("Proyecto renombrado a «{name}»"))
+                    Ok(format!("Project renamed to “{name}”"))
                 })
             }
             "undo" | "redo" => {
                 let (from, to) = if name == "undo" { (&mut self.undo, &mut self.redo) } else { (&mut self.redo, &mut self.undo) };
-                let (path, mut prev) = from.pop().ok_or("No hay nada que deshacer o rehacer en esta sesión")?;
+                let (path, mut prev) = from.pop().ok_or("Nothing to undo or redo in this session")?;
                 let now = load_project(&path)?;
                 prev.revision = now.revision;
                 save_project_to(&path, &mut prev)?;
                 to.push((path, now));
-                Ok(Reply::Text(if name == "undo" { format!("Deshecho en «{}»", prev.name) } else { format!("Rehecho en «{}»", prev.name) }))
+                Ok(Reply::Text(if name == "undo" { format!("Undone in “{}”", prev.name) } else { format!("Redone in “{}”", prev.name) }))
             }
 
             "batch" => {
                 if self.batch.is_some() {
-                    return Err("batch no se puede anidar".into());
+                    return Err("batch can't be nested".into());
                 }
-                let ops = a["operations"].as_array().ok_or("Falta operations: una lista de {name, arguments}")?.clone();
+                let ops = a["operations"].as_array().ok_or("Missing operations: a list of {name, arguments}")?.clone();
                 let path = self.path();
                 let before = load_project(&path)?;
                 self.batch = Some(before.clone());
@@ -322,13 +322,13 @@ impl Server {
                 for (i, op) in ops.iter().enumerate() {
                     let tool = op["name"].as_str().unwrap_or("");
                     let args = op.get("arguments").cloned().unwrap_or(json!({}));
-                    let r = if NOT_IN_BATCH.contains(&tool) { Err(format!("{tool} no se puede usar dentro de batch")) } else { self.call(tool, &args) };
+                    let r = if NOT_IN_BATCH.contains(&tool) { Err(format!("{tool} can't be used inside batch")) } else { self.call(tool, &args) };
                     match r {
                         Ok(Reply::Text(t)) => done.push(format!("{}. {tool}: {t}", i + 1)),
                         Ok(Reply::Image { caption, .. }) => done.push(format!("{}. {tool}: {caption}", i + 1)),
                         Err(e) => {
                             self.batch = None;
-                            return Err(format!("La operación {} ({tool}) falló: {e}. No se ha aplicado ninguna.", i + 1));
+                            return Err(format!("Operation {} ({tool}) failed: {e}. None was applied.", i + 1));
                         }
                     }
                 }
@@ -337,7 +337,7 @@ impl Server {
                     save_project_to(&path, &mut p)?;
                     self.push_undo(path, before);
                 }
-                Ok(Reply::Text(format!("{} operaciones aplicadas (se deshacen de una vez):\n{}", done.len(), done.join("\n"))))
+                Ok(Reply::Text(format!("{} operations applied (undone in one step):\n{}", done.len(), done.join("\n"))))
             }
 
             // ----- Recording and media -----
@@ -350,7 +350,7 @@ impl Server {
             }
             "start_recording" => {
                 if self.recording.is_some() {
-                    return Err("Ya hay una grabación en marcha".into());
+                    return Err("A recording is already running".into());
                 }
                 let serial = match a["serial"].as_str() {
                     Some(s) => s.to_string(),
@@ -358,7 +358,7 @@ impl Server {
                         .into_iter()
                         .find(|d| d.state == capture::DeviceState::Ready)
                         .map(|d| d.serial)
-                        .ok_or("No hay ningún móvil Android conectado y autorizado")?,
+                        .ok_or("There is no Android phone connected and authorized")?,
                 };
                 let opts = capture::RecordOptions {
                     audio: a["audio"].as_bool().unwrap_or(true),
@@ -366,10 +366,10 @@ impl Server {
                     clean_status_bar: a["clean_status_bar"].as_bool().unwrap_or(true),
                 };
                 self.recording = Some(capture::start(&serial, &opts, capture::detect_tools())?);
-                Ok(Reply::Text(format!("Grabando {serial}. Llama a stop_recording para terminar.")))
+                Ok(Reply::Text(format!("Recording {serial}. Call stop_recording to finish.")))
             }
             "play_gestures" => {
-                let gestures = a["gestures"].as_array().ok_or("Falta gestures (una lista)")?.iter().map(gesture).collect::<Result<Vec<_>, String>>()?;
+                let gestures = a["gestures"].as_array().ok_or("Missing gestures (a list)")?.iter().map(gesture).collect::<Result<Vec<_>, String>>()?;
                 let n = match &self.recording {
                     Some(rec) => rec.play(&gestures)?,
                     None => {
@@ -379,19 +379,19 @@ impl Server {
                                 .into_iter()
                                 .find(|d| d.state == capture::DeviceState::Ready)
                                 .map(|d| d.serial)
-                                .ok_or("No hay ningún móvil Android conectado y autorizado")?,
+                                .ok_or("There is no Android phone connected and authorized")?,
                         };
                         capture::play(&serial, &gestures, |_, _, _| {})?
                     }
                 };
                 Ok(Reply::Text(if self.recording.is_some() {
-                    format!("{n} gestos hechos y apuntados en la grabación (tendrán círculos y zooms automáticos)")
+                    format!("{n} gestures played and recorded (they get tap circles and automatic zooms)")
                 } else {
-                    format!("{n} gestos hechos (no se está grabando, así que no se apuntan)")
+                    format!("{n} gestures played (not recording, so they aren't recorded)")
                 }))
             }
             "stop_recording" => {
-                let rec = self.recording.take().ok_or("No hay ninguna grabación en marcha")?;
+                let rec = self.recording.take().ok_or("No recording is running")?;
                 match rec.stop_blocking() {
                     CaptureResult::Done { path, touches } => {
                         let info = media::probe(&path.to_string_lossy())?;
@@ -400,7 +400,7 @@ impl Server {
                             let id = timeline::append_media(p, info, touches);
                             let scale = p.style.auto_zoom_scale;
                             let zooms = if n > 0 { timeline::regenerate_auto_zooms(p, scale) } else { 0 };
-                            Ok(format!("Grabación añadida como clip {id} ({n} toques, {zooms} zooms automáticos)"))
+                            Ok(format!("Recording added as clip {id} ({n} taps, {zooms} automatic zooms)"))
                         })
                     }
                     CaptureResult::Failed(e) => Err(e),
@@ -411,49 +411,49 @@ impl Server {
                 let info = media::probe(&path)?;
                 self.edit(move |p| {
                     let id = timeline::append_media(p, info, Vec::new());
-                    Ok(format!("Vídeo añadido al final como clip {id}"))
+                    Ok(format!("Video added at the end as clip {id}"))
                 })
             }
             "split_clip" => {
                 let t = num(a, "time")?;
-                self.edit(|p| timeline::split_at(p, t).map(|id| format!("Dividido; el clip nuevo es {id}")))
+                self.edit(|p| timeline::split_at(p, t).map(|id| format!("Split; the new clip is {id}")))
             }
             "trim_clip" => {
                 let id = int(a, "clip_id")?;
                 let (i, o) = (opt_num(a, "source_in"), opt_num(a, "source_out"));
-                self.edit(|p| timeline::trim_clip(p, id, i, o).map(|_| "Clip recortado".into()))
+                self.edit(|p| timeline::trim_clip(p, id, i, o).map(|_| "Clip trimmed".into()))
             }
             "move_clip" => {
                 let (id, index) = (int(a, "clip_id")?, int(a, "index")? as usize);
-                self.edit(|p| timeline::move_clip(p, id, index).map(|_| "Clip movido".into()))
+                self.edit(|p| timeline::move_clip(p, id, index).map(|_| "Clip moved".into()))
             }
             "delete_clip" => {
                 let id = int(a, "clip_id")?;
                 self.edit(|p| {
                     timeline::delete_clip(p, id).map(|lost| match lost {
-                        0 => "Clip eliminado; lo demás sigue con su grabación".into(),
-                        n => format!("Clip eliminado, con {n} elementos que estaban sobre él (zooms, movimientos, textos u objetivos); lo demás sigue con su grabación"),
+                        0 => "Clip deleted; everything else stays with its recording".into(),
+                        n => format!("Clip deleted, with {n} items that were on it (zooms, moves, titles or targets); everything else stays with its recording"),
                     })
                 })
             }
 
             "set_clip_speed" => {
                 let (id, speed) = (int(a, "clip_id")?, num(a, "speed")?);
-                self.edit(|p| timeline::set_clip_speed(p, id, speed).map(|_| format!("Velocidad {speed}×; lo que hay encima se ha movido con el clip")))
+                self.edit(|p| timeline::set_clip_speed(p, id, speed).map(|_| format!("Speed {speed}×; what was on top moved with the clip")))
             }
             "freeze_frame" => {
                 let (t, secs) = (num(a, "time")?, opt_num(a, "duration").unwrap_or(2.0));
-                self.edit(|p| timeline::freeze_frame(p, t, secs).map(|id| format!("Fotograma congelado {secs} s (clip {id}); lo que venía después se ha desplazado")))
+                self.edit(|p| timeline::freeze_frame(p, t, secs).map(|id| format!("Frame frozen for {secs} s (clip {id}); what came after was shifted")))
             }
             "set_freeze_duration" => {
                 let (id, secs) = (int(a, "clip_id")?, num(a, "duration")?);
-                self.edit(|p| timeline::set_freeze_duration(p, id, secs).map(|_| "Duración cambiada".into()))
+                self.edit(|p| timeline::set_freeze_duration(p, id, secs).map(|_| "Duration changed".into()))
             }
             "replace_clip_video" => {
                 let id = int(a, "clip_id")?;
                 let path = text(a, "path")?;
                 let info = media::probe(&path)?;
-                self.edit(move |p| timeline::replace_clip_video(p, id, info, Vec::new()).map(|_| "Vídeo sustituido; el recorte, la velocidad y lo que hay encima se conservan".into()))
+                self.edit(move |p| timeline::replace_clip_video(p, id, info, Vec::new()).map(|_| "Video replaced; the trim, the speed and everything on top are kept".into()))
             }
 
             // ----- Camera -----
@@ -463,62 +463,62 @@ impl Server {
                     let s = scale.unwrap_or(p.style.auto_zoom_scale).clamp(1.1, 4.0);
                     p.style.auto_zoom_scale = s;
                     let n = timeline::regenerate_auto_zooms(p, s);
-                    Ok(format!("{n} zooms automáticos a partir de los toques"))
+                    Ok(format!("{n} automatic zooms from the taps"))
                 })
             }
             "add_zoom" => {
                 let (start, end) = (num(a, "start")?, num(a, "end")?);
                 let (zoom, x, y) = (opt_num(a, "zoom").unwrap_or(2.0), opt_num(a, "x").unwrap_or(0.5), opt_num(a, "y").unwrap_or(0.5));
-                self.edit(|p| timeline::add_zoom(p, start, end, zoom, x, y).map(|id| format!("Zoom creado (clip de cámara {id})")))
+                self.edit(|p| timeline::add_zoom(p, start, end, zoom, x, y).map(|id| format!("Zoom created (camera clip {id})")))
             }
             "add_camera_keyframe" => {
                 let t = num(a, "time")?;
                 let a = a.clone();
                 self.edit(move |p| {
                     let (id, i) = timeline::add_camera_key(p, t, |k| apply_cam_fields(k, &a))?;
-                    Ok(format!("Fotograma clave {i} del clip de cámara {id}"))
+                    Ok(format!("Keyframe {i} of camera clip {id}"))
                 })
             }
             "update_camera_keyframe" => {
                 let (id, index) = (int(a, "clip_id")?, int(a, "index")? as usize);
                 let a = a.clone();
                 self.edit(move |p| {
-                    let c = p.camera.iter_mut().find(|c| c.id == id).ok_or(format!("No hay ningún clip de cámara {id}"))?;
-                    let k = c.keys.get_mut(index).ok_or("Ese fotograma clave no existe")?;
+                    let c = p.camera.iter_mut().find(|c| c.id == id).ok_or(format!("There is no camera clip {id}"))?;
+                    let k = c.keys.get_mut(index).ok_or("That keyframe doesn't exist")?;
                     apply_cam_fields(k, &a);
                     if let Some(t) = opt_num(&a, "time") {
                         k.t = t - c.start;
                         timeline::normalize_camera_clip(c);
                     }
-                    Ok("Fotograma clave actualizado".into())
+                    Ok("Keyframe updated".into())
                 })
             }
             "delete_camera_keyframe" => {
                 let (id, index) = (int(a, "clip_id")?, int(a, "index")? as usize);
-                self.edit(|p| timeline::delete_camera_key(p, id, index).map(|_| "Fotograma clave eliminado".into()))
+                self.edit(|p| timeline::delete_camera_key(p, id, index).map(|_| "Keyframe deleted".into()))
             }
             "delete_camera_clip" => {
                 let id = int(a, "clip_id")?;
-                self.edit(|p| timeline::delete_camera_clip(p, id).map(|_| "Clip de cámara eliminado".into()))
+                self.edit(|p| timeline::delete_camera_clip(p, id).map(|_| "Camera clip deleted".into()))
             }
             "move_camera_clip" => {
                 let (id, start) = (int(a, "clip_id")?, num(a, "start")?);
-                self.edit(|p| timeline::move_camera_clip(p, id, start).map(|_| "Clip de cámara movido".into()))
+                self.edit(|p| timeline::move_camera_clip(p, id, start).map(|_| "Camera clip moved".into()))
             }
 
             // ----- Director -----
             "director_add_target" => {
                 let (t, x0, y0, x1, y1) = (num(a, "time")?, num(a, "x0")?, num(a, "y0")?, num(a, "x1")?, num(a, "y1")?);
-                self.edit(|p| timeline::add_target(p, t, x0, y0, x1, y1).map(|id| format!("Objetivo {id} en {t:.2} s")))
+                self.edit(|p| timeline::add_target(p, t, x0, y0, x1, y1).map(|id| format!("Target {id} at {t:.2} s")))
             }
             "director_remove_target" => {
                 let id = int(a, "target_id")?;
-                self.edit(|p| timeline::remove_target(p, id).map(|_| "Objetivo eliminado".into()))
+                self.edit(|p| timeline::remove_target(p, id).map(|_| "Target deleted".into()))
             }
             "director_clear" => self.edit(|p| {
                 p.director.targets.clear();
                 p.camera.retain(|c| c.kind != CameraKind::Director);
-                Ok("Objetivos y planos del Director eliminados".into())
+                Ok("Director targets and shots deleted".into())
             }),
             "director_settings" => {
                 let a = a.clone();
@@ -527,13 +527,13 @@ impl Server {
                         p.director.motion = match m {
                             "2d" | "2D" => DirectorMotion::TwoD,
                             "3d" | "3D" => DirectorMotion::ThreeD,
-                            _ => return Err("motion debe ser \"3d\" o \"2d\"".into()),
+                            _ => return Err("motion must be \"3d\" or \"2d\"".into()),
                         };
                     }
                     if let Some(i) = opt_num(&a, "intensity") {
                         p.director.intensity = i.clamp(0.0, 1.0);
                     }
-                    Ok("Ajustes del Director cambiados".into())
+                    Ok("Director settings changed".into())
                 })
             }
             "director_retake" => {
@@ -543,7 +543,7 @@ impl Server {
                     timeline::retake(p, id);
                     let (w, h) = p.export.dimensions(p.style.aspect);
                     let (n, replaced) = timeline::director_generate(p, w as f32, h as f32, model.as_deref().map(|m| &m.meta))?;
-                    Ok(format!("{n} planos generados de nuevo{}", replaced_note(replaced)))
+                    Ok(format!("{n} shots generated again{}", replaced_note(replaced)))
                 })
             }
             "director_generate" => {
@@ -551,7 +551,7 @@ impl Server {
                 self.edit(move |p| {
                     let (w, h) = p.export.dimensions(p.style.aspect);
                     let (n, replaced) = timeline::director_generate(p, w as f32, h as f32, model.as_deref().map(|m| &m.meta))?;
-                    Ok(format!("{n} planos generados{}", replaced_note(replaced)))
+                    Ok(format!("{n} shots generated{}", replaced_note(replaced)))
                 })
             }
 
@@ -568,21 +568,21 @@ impl Server {
                 let a = a.clone();
                 self.edit(move |p| {
                     if let Some(f) = a["frame"].as_str() {
-                        p.style.frame = FRAME_KEYS.iter().find(|(k, _)| *k == f).map(|(_, v)| *v).ok_or(format!("Marco desconocido: {f}"))?;
+                        p.style.frame = FRAME_KEYS.iter().find(|(k, _)| *k == f).map(|(_, v)| *v).ok_or(format!("Unknown frame: {f}"))?;
                     }
                     if let Some(c) = a["frame_color"].as_str() {
-                        p.style.frame_color = COLOR_KEYS.iter().find(|(k, _)| *k == c).map(|(_, v)| *v).ok_or(format!("Color desconocido: {c}"))?;
+                        p.style.frame_color = COLOR_KEYS.iter().find(|(k, _)| *k == c).map(|(_, v)| *v).ok_or(format!("Unknown color: {c}"))?;
                     }
                     if let Some(m) = a["model"].as_str() {
                         let entry = library::list()
                             .into_iter()
                             .find(|e| e.name == m || e.path == m)
-                            .ok_or(format!("No hay ningún modelo «{m}» en la galería (usa import_model)"))?;
+                            .ok_or(format!("There is no model “{m}” in the gallery (use import_model)"))?;
                         let src = model3d::load(&entry.path)?;
                         p.style.model = Some(CustomModel { path: entry.path, animation: (!src.animations.is_empty()).then_some(0), ..Default::default() });
                         p.style.frame = FrameStyle::Custom;
                     }
-                    Ok("Dispositivo cambiado".into())
+                    Ok("Device changed".into())
                 })
             }
             "import_model" => {
@@ -593,13 +593,13 @@ impl Server {
                 self.edit(move |p| {
                     p.style.model = Some(CustomModel { path: dest.clone(), animation: (anims > 0).then_some(0), ..Default::default() });
                     p.style.frame = FrameStyle::Custom;
-                    Ok(format!("Modelo importado a la galería y en uso ({anims} animaciones)"))
+                    Ok(format!("Model imported into the gallery and in use ({anims} animations)"))
                 })
             }
             "set_model_options" => {
                 let a = a.clone();
                 self.edit(move |p| {
-                    let cm = p.style.model.as_mut().filter(|_| p.style.frame == FrameStyle::Custom).ok_or("No hay ningún modelo 3D en uso")?;
+                    let cm = p.style.model.as_mut().filter(|_| p.style.frame == FrameStyle::Custom).ok_or("No 3D model is in use")?;
                     match &a["screen_part"] {
                         Value::String(s) if s == "auto" => cm.screen_part = None,
                         Value::Number(n) => cm.screen_part = n.as_u64().map(|v| v as usize),
@@ -624,13 +624,13 @@ impl Server {
                             "fill" => VideoFit::Fill,
                             "fit" => VideoFit::Fit,
                             "stretch" => VideoFit::Stretch,
-                            _ => return Err("video_fit debe ser fill, fit o stretch".into()),
+                            _ => return Err("video_fit must be fill, fit or stretch".into()),
                         };
                     }
                     if let Some(v) = opt_num(&a, "fit_pan") {
                         p.style.fit_pan = v.clamp(0.0, 1.0);
                     }
-                    Ok("Ajustes del modelo cambiados".into())
+                    Ok("Model settings changed".into())
                 })
             }
             "set_angle" => {
@@ -655,31 +655,31 @@ impl Server {
                     if let Some(v) = a["intro"].as_bool() {
                         s.intro = v;
                     }
-                    Ok("Ángulo cambiado".into())
+                    Ok("Angle changed".into())
                 })
             }
             "add_device_motion" => {
                 let key = text(a, "preset")?;
-                let preset = DevicePreset::from_key(&key).ok_or(format!("Movimiento desconocido: {key}"))?;
+                let preset = DevicePreset::from_key(&key).ok_or(format!("Unknown move: {key}"))?;
                 let t = num(a, "time")?;
                 let (degrees, secs) = (opt_num(a, "degrees"), opt_num(a, "duration"));
                 let ease = parse_ease(a)?;
                 self.edit(move |p| {
                     let id = timeline::add_device_preset(p, preset, t);
-                    let c = p.device.iter_mut().find(|c| c.id == id).ok_or("No se pudo añadir")?;
+                    let c = p.device.iter_mut().find(|c| c.id == id).ok_or("Couldn't add it")?;
                     if let Some(e) = ease {
                         c.keys.iter_mut().skip(1).for_each(|k| k.ease = e);
                     }
                     if let Some(d) = degrees {
                         if timeline::spin_of(c).is_none() {
-                            return Err("degrees solo vale para full_turn y flip".into());
+                            return Err("degrees only applies to full_turn and flip".into());
                         }
                         timeline::set_spin(c, d);
                     }
                     if let Some(s) = secs {
                         timeline::set_device_duration(c, s);
                     }
-                    Ok(format!("Movimiento «{}» añadido de {:.2} a {:.2} s (clip {id})", preset.label(), c.start, c.end()))
+                    Ok(format!("Move “{}” added from {:.2} to {:.2} s (clip {id})", preset.label(), c.start, c.end()))
                 })
             }
             "update_device_motion" => {
@@ -688,13 +688,13 @@ impl Server {
                 let ease = parse_ease(a)?;
                 self.edit(move |p| {
                     let total = timeline::duration(p);
-                    let c = p.device.iter_mut().find(|c| c.id == id).ok_or(format!("No hay ningún movimiento del dispositivo {id}"))?;
+                    let c = p.device.iter_mut().find(|c| c.id == id).ok_or(format!("There is no device move {id}"))?;
                     if let Some(e) = ease {
                         c.keys.iter_mut().skip(1).for_each(|k| k.ease = e);
                     }
                     if let Some(d) = degrees {
                         if timeline::spin_of(c).is_none() {
-                            return Err("degrees solo vale para los giros (full_turn y flip)".into());
+                            return Err("degrees only applies to turns (full_turn and flip)".into());
                         }
                         timeline::set_spin(c, d);
                     }
@@ -706,12 +706,12 @@ impl Server {
                     }
                     let (a, b) = (c.start, c.end());
                     p.device.sort_by(|x, y| x.start.total_cmp(&y.start));
-                    Ok(format!("Movimiento actualizado: de {a:.2} a {b:.2} s"))
+                    Ok(format!("Move updated: from {a:.2} to {b:.2} s"))
                 })
             }
             "delete_device_motion" => {
                 let id = int(a, "clip_id")?;
-                self.edit(|p| timeline::delete_device_clip(p, id).map(|_| "Movimiento eliminado".into()))
+                self.edit(|p| timeline::delete_device_clip(p, id).map(|_| "Move deleted".into()))
             }
 
             // ----- Titles -----
@@ -721,21 +721,21 @@ impl Server {
                 let title = text(&a, "title")?;
                 self.edit(move |p| {
                     let id = timeline::add_text(p, t, &title)?;
-                    let c = p.texts.iter_mut().find(|c| c.id == id).ok_or("No se pudo añadir")?;
+                    let c = p.texts.iter_mut().find(|c| c.id == id).ok_or("Couldn't add it")?;
                     set_text_fields(c, &a)?;
                     let start = c.start;
                     if let Some(d) = opt_num(&a, "duration") {
                         timeline::place_text(p, id, start, start + d)?;
                     }
-                    let c = p.texts.iter().find(|c| c.id == id).ok_or("No se pudo añadir")?;
-                    Ok(format!("Texto añadido de {:.2} a {:.2} s (texto {id})", c.start, c.end()))
+                    let c = p.texts.iter().find(|c| c.id == id).ok_or("Couldn't add it")?;
+                    Ok(format!("Title added from {:.2} to {:.2} s (text {id})", c.start, c.end()))
                 })
             }
             "update_text" => {
                 let a = a.clone();
                 let id = int(&a, "text_id")?;
                 self.edit(move |p| {
-                    let c = p.texts.iter_mut().find(|c| c.id == id).ok_or(format!("No hay ningún texto {id}"))?;
+                    let c = p.texts.iter_mut().find(|c| c.id == id).ok_or(format!("There is no text {id}"))?;
                     set_text_fields(c, &a)?;
                     if let Some(v) = opt_str(&a, "title") {
                         c.title = v;
@@ -743,12 +743,12 @@ impl Server {
                     let start = opt_num(&a, "start").unwrap_or(c.start);
                     let end = start + opt_num(&a, "duration").unwrap_or(c.duration);
                     timeline::place_text(p, id, start, end)?;
-                    Ok("Texto actualizado".into())
+                    Ok("Title updated".into())
                 })
             }
             "export_texts" => Ok(Reply::Text(Value::Array(self.read()?.texts.iter().map(text_json).collect()).to_string())),
             "import_texts" => {
-                let items = a["texts"].as_array().ok_or("Falta texts: la lista que da export_texts")?.clone();
+                let items = a["texts"].as_array().ok_or("Missing texts: the list that export_texts returns")?.clone();
                 let replace = a["replace"].as_bool().unwrap_or(true);
                 self.edit(move |p| {
                     if replace {
@@ -757,21 +757,21 @@ impl Server {
                     for (i, it) in items.iter().enumerate() {
                         let mut c = TextClip {
                             id: p.next_id(),
-                            start: num(it, "time").map_err(|e| format!("Texto {}: {e}", i + 1))?.max(0.0),
+                            start: num(it, "time").map_err(|e| format!("Title {}: {e}", i + 1))?.max(0.0),
                             duration: opt_num(it, "duration").unwrap_or(3.0).max(0.8),
                             title: it["title"].as_str().unwrap_or_default().to_string(),
                             ..TextClip::default()
                         };
-                        set_text_fields(&mut c, it).map_err(|e| format!("Texto {}: {e}", i + 1))?;
+                        set_text_fields(&mut c, it).map_err(|e| format!("Title {}: {e}", i + 1))?;
                         p.texts.push(c);
                     }
                     p.texts.sort_by(|a, b| a.start.total_cmp(&b.start));
-                    Ok(format!("{} textos importados", items.len()))
+                    Ok(format!("{} titles imported", items.len()))
                 })
             }
             "delete_text" => {
                 let id = int(a, "text_id")?;
-                self.edit(|p| timeline::delete_text(p, id).map(|_| "Texto eliminado".into()))
+                self.edit(|p| timeline::delete_text(p, id).map(|_| "Title deleted".into()))
             }
 
             // ----- Pictures and sounds -----
@@ -783,41 +783,41 @@ impl Server {
                 self.edit(move |p| {
                     let id = timeline::add_image(p, &path, w as f32 / h as f32, t)?;
                     set_image_fields(p, id, &a)?;
-                    let c = p.images.iter().find(|c| c.id == id).ok_or("No se pudo añadir")?;
-                    Ok(format!("Imagen añadida de {:.2} a {:.2} s (imagen {id})", c.start, c.end()))
+                    let c = p.images.iter().find(|c| c.id == id).ok_or("Couldn't add it")?;
+                    Ok(format!("Image added from {:.2} to {:.2} s (image {id})", c.start, c.end()))
                 })
             }
             "update_image" => {
                 let a = a.clone();
                 let id = int(&a, "image_id")?;
-                self.edit(move |p| set_image_fields(p, id, &a).map(|_| "Imagen actualizada".into()))
+                self.edit(move |p| set_image_fields(p, id, &a).map(|_| "Image updated".into()))
             }
             "delete_image" => {
                 let id = int(a, "image_id")?;
-                self.edit(|p| timeline::delete_image(p, id).map(|_| "Imagen eliminada".into()))
+                self.edit(|p| timeline::delete_image(p, id).map(|_| "Image deleted".into()))
             }
             "add_sound" => {
                 let a = a.clone();
                 let path = text(&a, "path")?;
-                let track = AudioTrack::from_key(&text(&a, "track")?).ok_or("track: effects, voice o music")?;
+                let track = AudioTrack::from_key(&text(&a, "track")?).ok_or("track: effects, voice or music")?;
                 let length = crate::audio::length(&path)?;
                 let t = num(&a, "time")?;
                 self.edit(move |p| {
                     let id = timeline::add_audio(p, track, &path, length, t)?;
                     set_sound_fields(p, id, &a)?;
-                    let c = p.audio.iter().find(|c| c.id == id).ok_or("No se pudo añadir")?;
-                    let looped = if c.looped { ", en bucle" } else { "" };
-                    Ok(format!("Sonido añadido a {} de {:.2} a {:.2} s{looped} (sonido {id})", track.label().to_lowercase(), c.start, c.end()))
+                    let c = p.audio.iter().find(|c| c.id == id).ok_or("Couldn't add it")?;
+                    let looped = if c.looped { ", looped" } else { "" };
+                    Ok(format!("Sound added to {} from {:.2} to {:.2} s{looped} (sound {id})", track.label().to_lowercase(), c.start, c.end()))
                 })
             }
             "update_sound" => {
                 let a = a.clone();
                 let id = int(&a, "sound_id")?;
-                self.edit(move |p| set_sound_fields(p, id, &a).map(|_| "Sonido actualizado".into()))
+                self.edit(move |p| set_sound_fields(p, id, &a).map(|_| "Sound updated".into()))
             }
             "delete_sound" => {
                 let id = int(a, "sound_id")?;
-                self.edit(|p| timeline::delete_audio(p, id).map(|_| "Sonido eliminado".into()))
+                self.edit(|p| timeline::delete_audio(p, id).map(|_| "Sound deleted".into()))
             }
             "set_mix" => {
                 let a = a.clone();
@@ -831,7 +831,7 @@ impl Server {
                     if let Some(b) = a["duck_music"].as_bool() {
                         m.duck_music = b;
                     }
-                    Ok("Mezcla actualizada".into())
+                    Ok("Mix updated".into())
                 })
             }
 
@@ -841,10 +841,10 @@ impl Server {
                 self.edit(move |p| {
                     let s = &mut p.style;
                     if let Some(v) = a["aspect"].as_str() {
-                        s.aspect = Aspect::ALL.into_iter().find(|x| x.label() == v).ok_or("aspect debe ser 16:9, 9:16, 1:1 o 4:5")?;
+                        s.aspect = Aspect::ALL.into_iter().find(|x| x.label() == v).ok_or("aspect must be 16:9, 9:16, 1:1 or 4:5")?;
                     }
                     if let Some(v) = a["background_preset"].as_str() {
-                        let b = BACKGROUND_PRESETS.iter().find(|b| b.name.eq_ignore_ascii_case(v)).ok_or(format!("Fondo desconocido: {v}"))?;
+                        let b = BACKGROUND_PRESETS.iter().find(|b| crate::i18n::lz(b.name).eq_ignore_ascii_case(v) || b.name.to_lowercase() == v.to_lowercase()).ok_or(format!("Unknown background: {v}"))?;
                         s.background = Background { a: b.a, b: b.b, angle: b.angle };
                     }
                     if let Some(v) = a["background_a"].as_str() {
@@ -898,7 +898,7 @@ impl Server {
                             *field = v.clamp(0.0, max);
                         }
                     }
-                    Ok("Estilo cambiado".into())
+                    Ok("Style changed".into())
                 })
             }
 
@@ -909,7 +909,7 @@ impl Server {
                 let width = a["width"].as_u64().unwrap_or(960).clamp(160, 1920) as usize;
                 let model = self.prepared_model(&p)?;
                 let png = render_png(&p, t, width, model.as_deref())?;
-                Ok(Reply::Image { png, caption: format!("Fotograma en {t:.2} s") })
+                Ok(Reply::Image { png, caption: format!("Frame at {t:.2} s") })
             }
             "render_strip" => {
                 let p = self.read()?;
@@ -923,13 +923,13 @@ impl Server {
                     }
                 };
                 if times.is_empty() || times.len() > 24 {
-                    return Err("Hacen falta entre 1 y 24 tiempos".into());
+                    return Err("Between 1 and 24 times are needed".into());
                 }
                 let width = a["width"].as_u64().unwrap_or(320).clamp(120, 960) as usize;
                 let columns = a["columns"].as_u64().map(|c| c as usize).unwrap_or(if times.len() <= 4 { times.len() } else { 4 });
                 let model = self.prepared_model(&p)?;
                 let png = render_strip(&p, &times, width, columns, model.as_deref())?;
-                Ok(Reply::Image { png, caption: format!("{} fotogramas: {}", times.len(), times.iter().map(|t| format!("{t:.2} s")).collect::<Vec<_>>().join(", ")) })
+                Ok(Reply::Image { png, caption: format!("{} frames: {}", times.len(), times.iter().map(|t| format!("{t:.2} s")).collect::<Vec<_>>().join(", ")) })
             }
             "render_preview" => {
                 let p = self.read()?;
@@ -937,31 +937,31 @@ impl Server {
                 let t0 = num(a, "start")?.clamp(0.0, total);
                 let t1 = num(a, "end")?.clamp(t0, total);
                 if t1 - t0 < 0.05 {
-                    return Err("El tramo es demasiado corto".into());
+                    return Err("The stretch is too short".into());
                 }
                 if t1 - t0 > 20.0 {
-                    return Err("Como mucho 20 segundos; para más, usa export".into());
+                    return Err("20 seconds at most; for more, use export".into());
                 }
                 let gif = a["format"].as_str() == Some("gif");
                 let width = a["width"].as_u64().unwrap_or(480).clamp(160, 960) as usize;
                 let fps = a["fps"].as_u64().unwrap_or(if gif { 15 } else { 30 }).clamp(5, 60) as f32;
                 let model = self.prepared_model(&p)?;
-                let out = std::env::temp_dir().join(format!("rec-ording vista previa {}.{}", timestamp_for_filename(), if gif { "gif" } else { "mp4" }));
+                let out = std::env::temp_dir().join(format!("rec-ording preview {}.{}", timestamp_for_filename(), if gif { "gif" } else { "mp4" }));
                 let started = std::time::Instant::now();
                 render_preview(&p, t0, t1, width, fps, gif, model.as_deref(), &out)?;
-                Ok(Reply::Text(format!("Vista previa de {t0:.2} s a {t1:.2} s ({width} px, {fps} fps) en {} ({:.1} s)", out.display(), started.elapsed().as_secs_f32())))
+                Ok(Reply::Text(format!("Preview from {t0:.2} s to {t1:.2} s ({width} px, {fps} fps) at {} ({:.1} s)", out.display(), started.elapsed().as_secs_f32())))
             }
             "export" => {
                 if self.export.as_ref().is_some_and(|e| !e.done) {
-                    return Err("Ya hay una exportación en marcha (mira export_status)".into());
+                    return Err("An export is already running (see export_status)".into());
                 }
                 let a = a.clone();
                 let mut p = self.read()?;
                 if p.is_empty() {
-                    return Err("El proyecto no tiene vídeo".into());
+                    return Err("The project has no video".into());
                 }
                 if let Some(v) = a["resolution"].as_str() {
-                    p.export.resolution = Resolution::ALL.into_iter().find(|r| r.label().eq_ignore_ascii_case(v)).ok_or("resolution debe ser 720p, 1080p o 4K")?;
+                    p.export.resolution = Resolution::ALL.into_iter().find(|r| r.label().eq_ignore_ascii_case(v)).ok_or("resolution must be 720p, 1080p or 4K")?;
                 }
                 if let Some(v) = a["fps"].as_u64() {
                     p.export.fps = if v >= 45 { 60 } else { 30 };
@@ -971,7 +971,7 @@ impl Server {
                         "h264" => ExportFormat::H264,
                         "hevc" => ExportFormat::Hevc,
                         "gif" => ExportFormat::Gif,
-                        _ => return Err("format debe ser h264, hevc o gif".into()),
+                        _ => return Err("format must be h264, hevc or gif".into()),
                     };
                 }
                 if let Some(v) = a["quality"].as_str() {
@@ -979,7 +979,7 @@ impl Server {
                         "standard" => Quality::Standard,
                         "high" => Quality::High,
                         "max" => Quality::Max,
-                        _ => return Err("quality debe ser standard, high o max".into()),
+                        _ => return Err("quality must be standard, high or max".into()),
                     };
                 }
                 if let Some(v) = a["hardware"].as_bool() {
@@ -990,7 +990,7 @@ impl Server {
                 }
                 if let Some(v) = a["folder"].as_str() {
                     if !Path::new(v).is_dir() {
-                        return Err(format!("La carpeta {v} no existe"));
+                        return Err(format!("The folder {v} doesn't exist"));
                     }
                     p.export.folder = v.to_string();
                 }
@@ -998,8 +998,8 @@ impl Server {
                 let (tx, rx) = unbounded();
                 let cancel = Arc::new(AtomicBool::new(false));
                 export::start(p, cancel.clone(), tx);
-                self.export = Some(ExportJob { rx, cancel, status: "Exportando… 0 %".into(), encoder: String::new(), done: false });
-                Ok(Reply::Text("Exportación iniciada; consulta export_status".into()))
+                self.export = Some(ExportJob { rx, cancel, status: "Exporting… 0 %".into(), encoder: String::new(), done: false });
+                Ok(Reply::Text("Export started; check export_status".into()))
             }
             "get_hardware" => {
                 let card = crate::gpu::detect();
@@ -1008,18 +1008,18 @@ impl Server {
                     "graphics_card": card,
                     "encoder": enc.as_ref().map(|e| json!({"name": e.name, "h264": e.h264, "hevc": e.hevc})),
                     "export_uses_it_by_default": true,
-                    "note": "Con la gráfica, la exportación dibuja los fotogramas en ella y codifica con su codificador si lo tiene; export con hardware=false lo hace todo en el procesador.",
+                    "note": "With a graphics card, the export draws the frames on it and encodes with its encoder if it has one; export with hardware=false does everything on the processor.",
                 });
                 Ok(Reply::Text(v.to_string()))
             }
             "export_status" => {
-                let job = self.export.as_mut().ok_or("No se ha iniciado ninguna exportación")?;
+                let job = self.export.as_mut().ok_or("No export has been started")?;
                 while let Ok(ev) = job.rx.try_recv() {
                     match ev {
-                        ExportEvent::Progress { fraction, .. } => job.status = format!("Exportando… {:.0} % ({})", fraction * 100.0, job.encoder),
+                        ExportEvent::Progress { fraction, .. } => job.status = format!("Exporting… {:.0} % ({})", fraction * 100.0, job.encoder),
                         ExportEvent::Encoder(name) => job.encoder = name,
                         ExportEvent::Done(path) => {
-                            job.status = format!("Terminado: {}", path.display());
+                            job.status = format!("Done: {}", path.display());
                             job.done = true;
                         }
                         ExportEvent::Failed(e) => {
@@ -1027,7 +1027,7 @@ impl Server {
                             job.done = true;
                         }
                         ExportEvent::Cancelled => {
-                            job.status = "Cancelada".into();
+                            job.status = "Cancelled".into();
                             job.done = true;
                         }
                     }
@@ -1035,16 +1035,16 @@ impl Server {
                 Ok(Reply::Text(job.status.clone()))
             }
             "cancel_export" => {
-                let job = self.export.as_ref().ok_or("No se ha iniciado ninguna exportación")?;
+                let job = self.export.as_ref().ok_or("No export has been started")?;
                 job.cancel.store(true, Ordering::Relaxed);
-                Ok(Reply::Text("Cancelando…".into()))
+                Ok(Reply::Text("Cancelling…".into()))
             }
-            _ => Err(format!("Herramienta desconocida: {name}")),
+            _ => Err(format!("Unknown tool: {name}")),
         }
     }
 }
 
-const INSTRUCTIONS: &str = "rec·ording crea vídeos promocionales de apps Android: grabaciones del móvil dentro de un marco o modelo 3D, sobre un fondo, con zooms y movimientos de cámara. Los tiempos son segundos de la línea de tiempo (los clips de vídeo se reproducen seguidos). Las coordenadas x/y son de la grabación, de 0 a 1 (0,0 arriba a la izquierda). Empieza con get_project; usa render_frame para ver el resultado. Cada cambio se guarda en el proyecto abierto en la app y se puede deshacer con undo.";
+const INSTRUCTIONS: &str = "rec·ording makes promo videos of Android apps: phone recordings inside a frame or 3D model, on a background, with zooms and camera moves. Times are seconds on the timeline (video clips play back to back). x/y coordinates are in the recording, from 0 to 1 (0,0 is top left). Start with get_project; use render_frame to see the result. Every change is saved to the project open in the app and can be undone with undo.";
 
 const FRAME_KEYS: &[(&str, FrameStyle)] = &[
     ("rounded", FrameStyle::Rounded),
@@ -1065,8 +1065,8 @@ const COLOR_KEYS: &[(&str, FrameColor)] = &[
 fn replaced_note(n: usize) -> String {
     match n {
         0 => String::new(),
-        1 => " (sustituyen 1 movimiento de cámara que se solapaba; undo lo recupera)".into(),
-        n => format!(" (sustituyen {n} movimientos de cámara que se solapaban; undo los recupera)"),
+        1 => " (they replace 1 overlapping camera move; undo brings it back)".into(),
+        n => format!(" (they replace {n} overlapping camera moves; undo brings them back)"),
     }
 }
 
@@ -1074,7 +1074,7 @@ fn replaced_note(n: usize) -> String {
 fn parse_ease(a: &Value) -> Result<Option<Ease>, String> {
     match a["ease"].as_str() {
         None => Ok(None),
-        Some(s) => Ease::ALL.into_iter().find(|e| ease_key(*e) == s).map(Some).ok_or("ease debe ser spring, smooth, linear o hold".into()),
+        Some(s) => Ease::ALL.into_iter().find(|e| ease_key(*e) == s).map(Some).ok_or("ease must be spring, smooth, linear or hold".into()),
     }
 }
 
@@ -1113,7 +1113,7 @@ fn apply_cam_fields(k: &mut CamKey, a: &Value) {
 
 /// Position, size, look and timing of a picture from the arguments that are present.
 fn set_image_fields(p: &mut Project, id: u64, a: &Value) -> Result<(), String> {
-    let c = p.images.iter_mut().find(|c| c.id == id).ok_or(format!("No hay ninguna imagen {id}"))?;
+    let c = p.images.iter_mut().find(|c| c.id == id).ok_or(format!("There is no image {id}"))?;
     for (k, v, lo, hi) in [("x", &mut c.x, -0.5, 1.5), ("y", &mut c.y, -0.5, 1.5), ("width", &mut c.width, 0.01, 2.0), ("opacity", &mut c.opacity, 0.0, 1.0), ("fade_in", &mut c.fade_in, 0.0, 10.0), ("fade_out", &mut c.fade_out, 0.0, 10.0)] {
         if let Some(x) = opt_num(a, k) {
             *v = x.clamp(lo, hi);
@@ -1126,9 +1126,9 @@ fn set_image_fields(p: &mut Project, id: u64, a: &Value) -> Result<(), String> {
 
 /// Track, timing, volume and fades of a sound from the arguments that are present.
 fn set_sound_fields(p: &mut Project, id: u64, a: &Value) -> Result<(), String> {
-    let c = p.audio.iter_mut().find(|c| c.id == id).ok_or(format!("No hay ningún sonido {id}"))?;
+    let c = p.audio.iter_mut().find(|c| c.id == id).ok_or(format!("There is no sound {id}"))?;
     if let Some(t) = opt_str(a, "track") {
-        c.track = AudioTrack::from_key(&t).ok_or("track: effects, voice o music")?;
+        c.track = AudioTrack::from_key(&t).ok_or("track: effects, voice or music")?;
     }
     for (k, v, hi) in [("volume", &mut c.volume, 2.0), ("fade_in", &mut c.fade_in, 30.0), ("fade_out", &mut c.fade_out, 30.0)] {
         if let Some(x) = opt_num(a, k) {
@@ -1141,7 +1141,7 @@ fn set_sound_fields(p: &mut Project, id: u64, a: &Value) -> Result<(), String> {
     if let Some(l) = a["loop"].as_bool() {
         timeline::set_audio_loop(p, id, l)?;
     }
-    let c = p.audio.iter().find(|c| c.id == id).ok_or("No se encontró")?;
+    let c = p.audio.iter().find(|c| c.id == id).ok_or("Not found")?;
     let (start, dur) = (opt_num(a, "start"), opt_num(a, "duration"));
     if start.is_some() || dur.is_some() {
         let (start, dur) = (start.unwrap_or(c.start), dur.unwrap_or(c.duration));
@@ -1153,11 +1153,11 @@ fn set_sound_fields(p: &mut Project, id: u64, a: &Value) -> Result<(), String> {
 }
 
 fn text(a: &Value, k: &str) -> Result<String, String> {
-    a[k].as_str().map(str::to_string).ok_or(format!("Falta el parámetro «{k}»"))
+    a[k].as_str().map(str::to_string).ok_or(format!("Missing parameter “{k}”"))
 }
 
 fn num(a: &Value, k: &str) -> Result<f32, String> {
-    opt_num(a, k).ok_or(format!("Falta el parámetro numérico «{k}»"))
+    opt_num(a, k).ok_or(format!("Missing numeric parameter “{k}”"))
 }
 
 fn opt_num(a: &Value, k: &str) -> Option<f32> {
@@ -1165,14 +1165,14 @@ fn opt_num(a: &Value, k: &str) -> Option<f32> {
 }
 
 fn int(a: &Value, k: &str) -> Result<u64, String> {
-    a[k].as_u64().ok_or(format!("Falta el parámetro entero «{k}»"))
+    a[k].as_u64().ok_or(format!("Missing integer parameter “{k}”"))
 }
 
 fn hex(s: &str) -> Result<[u8; 3], String> {
     let h = s.trim_start_matches('#');
-    let v = u32::from_str_radix(h, 16).map_err(|_| format!("Color no válido: {s} (usa #rrggbb)"))?;
+    let v = u32::from_str_radix(h, 16).map_err(|_| format!("Invalid color: {s} (use #rrggbb)"))?;
     if h.len() != 6 {
-        return Err(format!("Color no válido: {s} (usa #rrggbb)"));
+        return Err(format!("Invalid color: {s} (use #rrggbb)"));
     }
     Ok([(v >> 16) as u8, (v >> 8) as u8, v as u8])
 }
@@ -1199,7 +1199,7 @@ fn summary(p: &Project, path: &Path) -> Value {
                 let axis = ["vertical", "horizontal", "plane"][axis];
                 json!({"axis": axis, "degrees": deg})
             });
-            json!({"id": d.id, "name": d.name, "start": d.start, "end": d.end(), "spin": spin})
+            json!({"id": d.id, "name": crate::i18n::lz(&d.name), "start": d.start, "end": d.end(), "spin": spin})
         }).collect::<Vec<_>>(),
         "texts": p.texts.iter().map(|c| json!({"id": c.id, "start": c.start, "end": c.end(), "title": c.title, "subtitle": c.subtitle,
             "place": key_of(&TEXT_PLACES, c.place), "size": key_of(&TEXT_SIZES, c.size), "reveal": key_of(&TEXT_REVEALS, c.reveal), "color": key_of(&TEXT_COLORS, c.color), "make_room": c.make_room})).collect::<Vec<_>>(),
@@ -1229,8 +1229,8 @@ fn summary(p: &Project, path: &Path) -> Value {
 
 /// Decodes one frame of the recording under `t`.
 fn decode_frame(p: &Project, t: f32) -> Result<(Frame, f32, f32), String> {
-    let c = timeline::locate(p, t).ok_or("El proyecto no tiene vídeo")?;
-    let m = p.media(c.clip.media).ok_or("Falta la grabación")?;
+    let c = timeline::locate(p, t).ok_or("The project has no video")?;
+    let m = p.media(c.clip.media).ok_or("The recording is missing")?;
     let (w, h) = media::preview_size(&m.info);
     let fps = m.info.fps.max(1.0);
     let (input, timed) = media::timed_input(&m.info.path, timeline::source_time(&c, t), 1.0 / fps, fps, 1.0);
@@ -1244,7 +1244,7 @@ fn decode_frame(p: &Project, t: f32) -> Result<(Frame, f32, f32), String> {
         .spawn()
         .map_err(|e| e.to_string())?;
     let mut data = vec![0u8; w * h * 4];
-    child.stdout.as_mut().unwrap().read_exact(&mut data).map_err(|_| "No se pudo leer ese fotograma".to_string())?;
+    child.stdout.as_mut().unwrap().read_exact(&mut data).map_err(|_| "That frame couldn't be read".to_string())?;
     let _ = child.wait();
     Ok((Frame { w, h, data }, m.info.width as f32, m.info.height as f32))
 }
@@ -1318,7 +1318,7 @@ fn encode_png(rgba: Vec<u8>, ow: usize, oh: usize) -> Result<Vec<u8>, String> {
     let out = enc.wait_with_output().map_err(|e| e.to_string())?;
     let _ = writer.join();
     if out.stdout.is_empty() {
-        return Err("No se pudo crear la imagen".into());
+        return Err("The image couldn't be created".into());
     }
     Ok(out.stdout)
 }
@@ -1367,10 +1367,10 @@ pub fn render_preview(p: &Project, t0: f32, t1: f32, width: usize, fps: f32, gif
     let mut k = 0;
     while k < n {
         let t = t0 + k as f32 / fps;
-        let c = timeline::locate(p, t).ok_or("El proyecto no tiene vídeo")?;
+        let c = timeline::locate(p, t).ok_or("The project has no video")?;
         // The frames of this stretch that fall in this clip, decoded in one go.
         let run = (k..n).take_while(|&j| t0 + j as f32 / fps < c.end || c.end >= total).count().max(1);
-        let m = p.media(c.clip.media).ok_or("Falta la grabación")?;
+        let m = p.media(c.clip.media).ok_or("The recording is missing")?;
         let (w, h) = media::preview_size(&m.info);
         let speed = c.clip.speed.max(0.01);
         let from = timeline::source_time(&c, t);
@@ -1395,10 +1395,10 @@ pub fn render_preview(p: &Project, t0: f32, t1: f32, width: usize, fps: f32, gif
                     last = Some(Mips::build(Frame { w, h, data }));
                 }
             }
-            let mips = last.as_ref().ok_or("No se pudo leer la grabación")?;
+            let mips = last.as_ref().ok_or("The recording couldn't be read")?;
             let tj = t0 + (k + j) as f32 / fps;
             let rgba = compose_at(p, tj, mips, m.info.width as f32, m.info.height as f32, width, model, 1);
-            stdin.write_all(&rgba).map_err(|_| "ffmpeg dejó de aceptar fotogramas".to_string())?;
+            stdin.write_all(&rgba).map_err(|_| "ffmpeg stopped accepting frames".to_string())?;
         }
         let _ = dec.kill();
         let _ = dec.wait();
@@ -1407,7 +1407,7 @@ pub fn render_preview(p: &Project, t0: f32, t1: f32, width: usize, fps: f32, gif
     drop(stdin);
     let res = enc.wait_with_output().map_err(|e| e.to_string())?;
     if !res.status.success() {
-        return Err(format!("No se pudo crear la vista previa: {}", String::from_utf8_lossy(&res.stderr).trim()));
+        return Err(format!("The preview couldn't be created: {}", String::from_utf8_lossy(&res.stderr).trim()));
     }
     Ok(())
 }
@@ -1452,7 +1452,7 @@ fn pick<T: Copy>(table: &[(&str, T)], a: &Value, field: &str) -> Result<Option<T
         return Ok(None);
     };
     let keys: Vec<&str> = table.iter().map(|(k, _)| *k).collect();
-    table.iter().find(|(k, _)| *k == v).map(|(_, x)| Some(*x)).ok_or(format!("{field} debe ser {}", keys.join(", ")))
+    table.iter().find(|(k, _)| *k == v).map(|(_, x)| Some(*x)).ok_or(format!("{field} must be {}", keys.join(", ")))
 }
 
 fn opt_str(a: &Value, field: &str) -> Option<String> {
@@ -1494,19 +1494,19 @@ fn find_project(name: &str) -> Result<PathBuf, String> {
         .into_iter()
         .find(|e| e.name == name || e.path.file_name().is_some_and(|f| f.to_string_lossy() == name))
         .map(|e| e.path)
-        .ok_or(format!("No hay ningún proyecto «{name}»"))
+        .ok_or(format!("There is no project “{name}”"))
 }
 
 fn tool(name: &str, description: &str, mut props: Value, required: &[&str]) -> Value {
     // Any tool can act on a project other than the one open in the app.
     if let Some(map) = props.as_object_mut() {
-        map.insert("project".into(), s("Proyecto en el que actuar (nombre o archivo); por defecto, el abierto en la app"));
+        map.insert("project".into(), s("Project to act on (name or file); by default, the one open in the app"));
     }
     // A screen change (detect_marks) can stand in for the time.
     let marked = MARKED_TOOLS.contains(&name);
     if marked {
         if let Some(map) = props.as_object_mut() {
-            map.insert("mark".into(), i("Número de marca de detect_marks (cambio de pantalla) en lugar del tiempo; lo colocado sigue a ese momento al recortar"));
+            map.insert("mark".into(), i("Mark number from detect_marks (a screen change) instead of the time; what is placed follows that moment when clips are trimmed"));
         }
     }
     let required: Vec<&str> = required.iter().copied().filter(|r| !marked || !matches!(*r, "time" | "start" | "end")).collect();
@@ -1535,9 +1535,9 @@ fn b(desc: &str) -> Value {
 
 fn cam_props(extra: Value) -> Value {
     let mut base = json!({
-        "zoom": n("Zoom (1 = sin zoom)"), "x": n("Punto de enfoque, 0..1 de la grabación"), "y": n("Punto de enfoque, 0..1"),
-        "tilt": n("Inclinación añadida, grados"), "turn": n("Giro añadido, grados"), "roll": n("Rotación añadida, grados"),
-        "ease": s("Cómo se llega: spring, smooth, linear o hold"),
+        "zoom": n("Zoom (1 = no zoom)"), "x": n("Focus point, 0..1 of the recording"), "y": n("Focus point, 0..1"),
+        "tilt": n("Added tilt, degrees"), "turn": n("Added turn, degrees"), "roll": n("Added roll, degrees"),
+        "ease": s("How it arrives: spring, smooth, linear or hold"),
     });
     if let (Some(b), Some(e)) = (base.as_object_mut(), extra.as_object()) {
         b.extend(e.clone());
@@ -1547,182 +1547,182 @@ fn cam_props(extra: Value) -> Value {
 
 pub fn tools() -> Vec<Value> {
     vec![
-        tool("get_project", "Estado completo del proyecto abierto: clips, toques, cámara, Director, estilo y exportación.", json!({}), &[]),
-        tool("list_projects", "Proyectos guardados.", json!({}), &[]),
-        tool("create_project", "Crea un proyecto vacío (con el estilo del actual) y lo abre.", json!({"name": s("Nombre")}), &["name"]),
-        tool("open_project", "Abre un proyecto por nombre o archivo.", json!({"name": s("Nombre o archivo")}), &["name"]),
-        tool("rename_project", "Cambia el nombre del proyecto abierto.", json!({"name": s("Nombre nuevo")}), &["name"]),
-        tool("undo", "Deshace el último cambio hecho por este servidor.", json!({}), &[]),
-        tool("redo", "Rehace el último cambio deshecho.", json!({}), &[]),
-        tool("list_android_devices", "Móviles Android conectados por USB y emuladores abiertos.", json!({}), &[]),
+        tool("get_project", "Full state of the open project: clips, taps, camera, Director, style and export.", json!({}), &[]),
+        tool("list_projects", "Saved projects.", json!({}), &[]),
+        tool("create_project", "Creates an empty project (with the current one's style) and opens it.", json!({"name": s("Name")}), &["name"]),
+        tool("open_project", "Opens a project by name or file.", json!({"name": s("Name or file")}), &["name"]),
+        tool("rename_project", "Renames the open project.", json!({"name": s("New name")}), &["name"]),
+        tool("undo", "Undoes the last change made by this server.", json!({}), &[]),
+        tool("redo", "Redoes the last undone change.", json!({}), &[]),
+        tool("list_android_devices", "Android phones connected over USB and open emulators.", json!({}), &[]),
         tool(
             "start_recording",
-            "Empieza a grabar la pantalla de un móvil (y sus toques).",
-            json!({"serial": s("Serie del móvil (por defecto el primero listo)"), "audio": b("Grabar el sonido del móvil"), "mirror": b("Mostrar la pantalla del móvil en el ordenador"), "clean_status_bar": b("Modo demo de Android mientras graba: hora 9:41, batería llena, sin notificaciones (por defecto sí)")}),
+            "Starts recording a phone's screen (and its taps).",
+            json!({"serial": s("Phone serial (by default the first one ready)"), "audio": b("Record the phone's sound"), "mirror": b("Show the phone's screen on the computer"), "clean_status_bar": b("Android demo mode while recording: 9:41, full battery, no notifications (on by default)")}),
             &[],
         ),
         tool(
             "play_gestures",
-            "Toca, desliza y escribe en el móvil (adb shell input), uno tras otro. Si se está grabando con start_recording, cada toque y deslizamiento queda apuntado en la grabación: tendrá su círculo y sus zooms automáticos. Coordenadas de 0 a 1 de la pantalla. Pellizcar no se puede (adb inyecta un solo dedo).",
+            "Taps, swipes and types on the phone (adb shell input), one after another. While recording with start_recording, every tap and swipe is recorded: it gets its circle and its automatic zooms. Coordinates from 0 to 1 of the screen. Pinching isn't possible (adb injects a single finger).",
             json!({
-                "gestures": {"type": "array", "description": "Gestos en orden", "items": {"type": "object", "properties": {
+                "gestures": {"type": "array", "description": "Gestures in order", "items": {"type": "object", "properties": {
                     "type": {"type": "string", "enum": ["tap", "swipe", "long_press", "text", "key", "wait"]},
                     "x": {"type": "number"}, "y": {"type": "number"},
-                    "to_x": {"type": "number", "description": "Fin del deslizamiento"}, "to_y": {"type": "number"},
-                    "duration": {"type": "number", "description": "Segundos (deslizar 0,3; pulsación larga 0,8; wait: la espera)"},
-                    "text": {"type": "string", "description": "Texto que escribir"},
-                    "key": {"type": "string", "description": "back, home, enter, delete, tab, recents… o un KEYCODE_"}
+                    "to_x": {"type": "number", "description": "End of the swipe"}, "to_y": {"type": "number"},
+                    "duration": {"type": "number", "description": "Seconds (swipe 0.3; long press 0.8; wait: the pause)"},
+                    "text": {"type": "string", "description": "Text to type"},
+                    "key": {"type": "string", "description": "back, home, enter, delete, tab, recents… or a KEYCODE_"}
                 }, "required": ["type"]}},
-                "serial": s("Móvil, si no se está grabando (por defecto el primero listo)")
+                "serial": s("Phone, when not recording (by default the first one ready)")
             }),
             &["gestures"],
         ),
-        tool("stop_recording", "Termina la grabación y la añade al final de la línea de tiempo, con zooms automáticos.", json!({}), &[]),
-        tool("import_video", "Añade un vídeo al final de la línea de tiempo.", json!({"path": s("Ruta del vídeo")}), &["path"]),
-        tool("split_clip", "Divide el clip que hay en un momento.", json!({"time": n("Segundo de la línea de tiempo")}), &["time"]),
-        tool("trim_clip", "Cambia qué parte de la grabación reproduce un clip.", json!({"clip_id": i("Clip"), "source_in": n("Inicio en la grabación, s"), "source_out": n("Fin en la grabación, s")}), &["clip_id"]),
-        tool("move_clip", "Cambia el orden de un clip.", json!({"clip_id": i("Clip"), "index": i("Nueva posición, desde 0")}), &["clip_id", "index"]),
-        tool("delete_clip", "Quita un clip de la línea de tiempo.", json!({"clip_id": i("Clip")}), &["clip_id"]),
+        tool("stop_recording", "Stops recording and adds it at the end of the timeline, with automatic zooms.", json!({}), &[]),
+        tool("import_video", "Adds a video at the end of the timeline.", json!({"path": s("Video path")}), &["path"]),
+        tool("split_clip", "Splits the clip at a moment.", json!({"time": n("Second on the timeline")}), &["time"]),
+        tool("trim_clip", "Changes which part of the recording a clip plays.", json!({"clip_id": i("Clip"), "source_in": n("Start in the recording, s"), "source_out": n("End in the recording, s")}), &["clip_id"]),
+        tool("move_clip", "Changes a clip's order.", json!({"clip_id": i("Clip"), "index": i("New position, from 0")}), &["clip_id", "index"]),
+        tool("delete_clip", "Removes a clip from the timeline.", json!({"clip_id": i("Clip")}), &["clip_id"]),
         tool(
             "detect_marks",
-            "Busca los cambios de pantalla de las grabaciones (scroll, teclado, diálogos…) y los devuelve como marcas en segundos de la línea de tiempo. add_text, add_zoom, add_device_motion, add_camera_keyframe, freeze_frame y director_add_target aceptan mark (el número de marca) en lugar del tiempo. Lo que se coloca así sigue a su momento de la grabación al recortar o mover clips.",
-            json!({"again": b("Volver a buscar aunque ya estén")}),
+            "Finds the screen changes in the recordings (scrolling, keyboard, dialogs…) and returns them as marks in timeline seconds. add_text, add_zoom, add_device_motion, add_camera_keyframe, freeze_frame and director_add_target take mark (the mark number) instead of the time. What is placed this way follows its moment of the recording when clips are trimmed or moved.",
+            json!({"again": b("Search again even if they are there")}),
             &[],
         ),
-        tool("set_clip_speed", "Reproduce un clip más rápido o más lento (0,25 a 4). Lo que hay encima (zooms, textos…) se mueve con él.", json!({"clip_id": i("Clip"), "speed": n("0.25..4")}), &["clip_id", "speed"]),
-        tool("freeze_frame", "Congela la imagen en un momento durante unos segundos (por ejemplo, para alargar el cierre); lo que viene después se desplaza.", json!({"time": n("s"), "duration": n("s (por defecto 2)")}), &["time"]),
-        tool("set_freeze_duration", "Cambia cuánto dura un fotograma congelado.", json!({"clip_id": i("Clip congelado"), "duration": n("s")}), &["clip_id", "duration"]),
-        tool("replace_clip_video", "Pone otra grabación en un clip conservando su recorte, su velocidad y todo lo que hay encima en la línea de tiempo.", json!({"clip_id": i("Clip"), "path": s("Vídeo nuevo")}), &["clip_id", "path"]),
-        tool("auto_zoom", "Rehace los zooms automáticos a partir de los toques (conserva los hechos a mano).", json!({"zoom": n("Intensidad, 1.2..3")}), &[]),
-        tool("add_zoom", "Zoom sobre un punto entre dos momentos.", json!({"start": n("Inicio, s"), "end": n("Fin, s"), "zoom": n("Zoom (por defecto 2)"), "x": n("0..1"), "y": n("0..1")}), &["start", "end"]),
-        tool("add_camera_keyframe", "Fotograma clave de cámara en un momento: dentro del clip de cámara que haya ahí o como movimiento nuevo (que vuelve al reposo). Sirve para giros 3D a mitad del vídeo.", cam_props(json!({"time": n("Segundo de la línea de tiempo")})), &["time"]),
-        tool("update_camera_keyframe", "Cambia un fotograma clave de cámara.", cam_props(json!({"clip_id": i("Clip de cámara"), "index": i("Índice del fotograma clave"), "time": n("Nuevo momento, s")})), &["clip_id", "index"]),
-        tool("delete_camera_keyframe", "Elimina un fotograma clave de cámara.", json!({"clip_id": i("Clip de cámara"), "index": i("Índice")}), &["clip_id", "index"]),
-        tool("delete_camera_clip", "Elimina un clip de cámara (zoom, movimiento o plano).", json!({"clip_id": i("Clip de cámara")}), &["clip_id"]),
-        tool("move_camera_clip", "Mueve un clip de cámara.", json!({"clip_id": i("Clip de cámara"), "start": n("Nuevo inicio, s")}), &["clip_id", "start"]),
-        tool("director_add_target", "Objetivo del Director: un recuadro de la grabación en un momento (sustituye al que hubiera en ese momento).", json!({"time": n("s"), "x0": n("0..1"), "y0": n("0..1"), "x1": n("0..1"), "y1": n("0..1")}), &["time", "x0", "y0", "x1", "y1"]),
-        tool("director_remove_target", "Elimina un objetivo.", json!({"target_id": i("Objetivo")}), &["target_id"]),
-        tool("director_clear", "Elimina todos los objetivos y planos del Director.", json!({}), &[]),
-        tool("director_settings", "Tipo de movimiento e intensidad del Director.", json!({"motion": s("3d o 2d"), "intensity": n("0..1")}), &[]),
-        tool("director_generate", "Genera un plano de cámara por objetivo (sustituye los clips de cámara que se solapen).", json!({}), &[]),
-        tool("director_retake", "Otra variación del movimiento para un objetivo (o todos) y regenera.", json!({"target_id": i("Objetivo (todos si se omite)")}), &[]),
-        tool("list_device_options", "Marcos, colores, modelos 3D de la galería y movimientos del dispositivo disponibles.", json!({}), &[]),
-        tool("set_device", "Elige marco integrado, color o modelo 3D de la galería.", json!({"frame": s("rounded, flat, curved, tablet o none"), "frame_color": s("obsidian, silver, sand, blue o white"), "model": s("Nombre o ruta de un modelo de la galería")}), &[]),
-        tool("import_model", "Importa un modelo .glb/.gltf (o el .zip de la descarga) a la galería y lo usa.", json!({"path": s("Ruta")}), &["path"]),
-        tool("set_model_options", "Ajustes del modelo 3D en uso.", json!({"screen_part": json!({"description": "\"auto\" o índice de pieza"}), "quarter_turns": i("Giros de 90° de la pantalla"), "animation": json!({"description": "Índice de animación o \"none\""}), "loop": b("Repetir en bucle"), "animation_start": n("Segundo en que empieza la animación"), "video_fit": s("fill, fit o stretch"), "fit_pan": n("Encuadre con fill, 0..1")}), &[]),
-        tool("set_angle", "Ángulo de reposo del dispositivo y movimientos globales.", json!({"tilt": n("grados"), "turn": n("grados"), "roll": n("grados"), "straighten_on_zoom": b("Ponerse de frente al hacer zoom"), "float": b("Balanceo suave"), "intro": b("Entrar girando al empezar")}), &[]),
+        tool("set_clip_speed", "Plays a clip faster or slower (0.25 to 4). What is on top of it (zooms, titles…) moves with it.", json!({"clip_id": i("Clip"), "speed": n("0.25..4")}), &["clip_id", "speed"]),
+        tool("freeze_frame", "Freezes the picture at a moment for a few seconds (for example, to make the ending longer); what comes after is shifted.", json!({"time": n("s"), "duration": n("s (2 by default)")}), &["time"]),
+        tool("set_freeze_duration", "Changes how long a frozen frame lasts.", json!({"clip_id": i("Frozen clip"), "duration": n("s")}), &["clip_id", "duration"]),
+        tool("replace_clip_video", "Puts another recording in a clip, keeping its trim, its speed and everything on top of it on the timeline.", json!({"clip_id": i("Clip"), "path": s("New video")}), &["clip_id", "path"]),
+        tool("auto_zoom", "Rebuilds the automatic zooms from the taps (keeps the ones made by hand).", json!({"zoom": n("Intensity, 1.2..3")}), &[]),
+        tool("add_zoom", "Zoom on a point between two moments.", json!({"start": n("Start, s"), "end": n("End, s"), "zoom": n("Zoom (2 by default)"), "x": n("0..1"), "y": n("0..1")}), &["start", "end"]),
+        tool("add_camera_keyframe", "Camera keyframe at a moment: inside the camera clip at that moment, or as a new move (which returns to rest). Use it for 3D turns halfway through the video.", cam_props(json!({"time": n("Second on the timeline")})), &["time"]),
+        tool("update_camera_keyframe", "Changes a camera keyframe.", cam_props(json!({"clip_id": i("Camera clip"), "index": i("Keyframe index"), "time": n("New moment, s")})), &["clip_id", "index"]),
+        tool("delete_camera_keyframe", "Deletes a camera keyframe.", json!({"clip_id": i("Camera clip"), "index": i("Index")}), &["clip_id", "index"]),
+        tool("delete_camera_clip", "Deletes a camera clip (zoom, move or shot).", json!({"clip_id": i("Camera clip")}), &["clip_id"]),
+        tool("move_camera_clip", "Moves a camera clip.", json!({"clip_id": i("Camera clip"), "start": n("New start, s")}), &["clip_id", "start"]),
+        tool("director_add_target", "Director target: a box of the recording at a moment (replaces the one at that moment).", json!({"time": n("s"), "x0": n("0..1"), "y0": n("0..1"), "x1": n("0..1"), "y1": n("0..1")}), &["time", "x0", "y0", "x1", "y1"]),
+        tool("director_remove_target", "Deletes a target.", json!({"target_id": i("Target")}), &["target_id"]),
+        tool("director_clear", "Deletes every Director target and shot.", json!({}), &[]),
+        tool("director_settings", "Director movement type and intensity.", json!({"motion": s("3d or 2d"), "intensity": n("0..1")}), &[]),
+        tool("director_generate", "Generates one camera shot per target (replaces the camera clips that overlap).", json!({}), &[]),
+        tool("director_retake", "Another variation of the move for a target (or all of them) and regenerates.", json!({"target_id": i("Target (all if omitted)")}), &[]),
+        tool("list_device_options", "Frames, colors, 3D models in the gallery and device moves available.", json!({}), &[]),
+        tool("set_device", "Chooses a built-in frame, a color or a 3D model from the gallery.", json!({"frame": s("rounded, flat, curved, tablet or none"), "frame_color": s("obsidian, silver, sand, blue or white"), "model": s("Name or path of a gallery model")}), &[]),
+        tool("import_model", "Imports a .glb/.gltf model (or the downloaded .zip) into the gallery and uses it.", json!({"path": s("Path")}), &["path"]),
+        tool("set_model_options", "Settings of the 3D model in use.", json!({"screen_part": json!({"description": "\"auto\" or a part index"}), "quarter_turns": i("90° turns of the screen"), "animation": json!({"description": "Animation index or \"none\""}), "loop": b("Loop"), "animation_start": n("Second the animation starts at"), "video_fit": s("fill, fit or stretch"), "fit_pan": n("Framing with fill, 0..1")}), &[]),
+        tool("set_angle", "Resting angle of the device and global movements.", json!({"tilt": n("degrees"), "turn": n("degrees"), "roll": n("degrees"), "straighten_on_zoom": b("Face the camera when zooming in"), "float": b("Gentle sway"), "intro": b("Spin in at the start")}), &[]),
         tool(
             "add_device_motion",
-            "Añade un movimiento del dispositivo en un momento. full_turn gira 360° sobre el eje vertical y flip sobre el horizontal; cerca de un cambio de clip se centran en él, para que el corte ocurra mientras se ve la trasera.",
-            json!({"preset": s("full_turn, flip, spin_in, drop_in, rise_up, hop o exit"), "time": n("s (exit termina en ese momento)"), "degrees": n("Solo giros: grados (360, 720, -360 para el otro sentido…)"), "duration": n("s"), "ease": s("Curva: spring (con rebote), smooth, linear o hold")}),
+            "Adds a device move at a moment. full_turn turns 360° around the vertical axis and flip around the horizontal one; near a cut they center on it, so the cut happens while the back is showing.",
+            json!({"preset": s("full_turn, flip, spin_in, drop_in, rise_up, hop or exit"), "time": n("s (exit ends at that moment)"), "degrees": n("Turns only: degrees (360, 720, -360 for the other direction…)"), "duration": n("s"), "ease": s("Curve: spring (with bounce), smooth, linear or hold")}),
             &["preset", "time"],
         ),
         tool(
             "add_text",
-            "Añade un título sobre el vídeo, al estilo de los anuncios de Apple: frases cortas junto al móvil, que se aparta para dejarle sitio. Usa saltos de línea (\\n) para varias líneas.",
-            json!({"time": n("s"), "title": s("Titular"), "subtitle": s("Línea más pequeña debajo (opcional)"), "duration": n("s (por defecto 3)"),
-                   "place": s("left, right, top, bottom o center"), "size": s("small, medium o large (large: cifra o titular grande)"),
-                   "reveal": s("fade, words (palabra a palabra) o lines (línea a línea, las anteriores se atenúan)"), "color": s("auto, light o dark"), "make_room": b("Apartar el móvil (por defecto sí)"), "face_text": b("El móvil gira un poco hacia el texto al apartarse"), "move_time": n("s que tarda el móvil en apartarse y volver (por defecto 0,7)")}),
+            "Adds a title over the video, in the style of Apple's ads: short phrases next to the phone, which moves aside to make room. Use line breaks (\\n) for several lines.",
+            json!({"time": n("s"), "title": s("Headline"), "subtitle": s("Smaller line below (optional)"), "duration": n("s (3 by default)"),
+                   "place": s("left, right, top, bottom or center"), "size": s("small, medium or large (large: a figure or a big headline)"),
+                   "reveal": s("fade, words (word by word) or lines (line by line, earlier lines dim)"), "color": s("auto, light or dark"), "make_room": b("Move the phone aside (on by default)"), "face_text": b("The phone turns slightly towards the title as it moves aside"), "move_time": n("s the phone takes to move aside and back (0.7 by default)")}),
             &["time", "title"],
         ),
         tool(
             "update_text",
-            "Cambia un título: texto, momento, duración o estilo.",
-            json!({"text_id": i("Texto"), "title": s("Titular"), "subtitle": s("Línea pequeña"), "start": n("s"), "duration": n("s"), "place": s("left, right, top, bottom o center"),
-                   "size": s("small, medium o large"), "reveal": s("fade, words o lines"), "color": s("auto, light o dark"), "make_room": b("Apartar el móvil"), "face_text": b("Girar el móvil hacia el texto"), "move_time": n("s del movimiento de apartarse")}),
+            "Changes a title: text, moment, duration or style.",
+            json!({"text_id": i("Text"), "title": s("Headline"), "subtitle": s("Small line"), "start": n("s"), "duration": n("s"), "place": s("left, right, top, bottom or center"),
+                   "size": s("small, medium or large"), "reveal": s("fade, words or lines"), "color": s("auto, light or dark"), "make_room": b("Move the phone aside"), "face_text": b("Turn the phone towards the title"), "move_time": n("s of the move aside")}),
             &["text_id"],
         ),
-        tool("delete_text", "Elimina un título.", json!({"text_id": i("Texto")}), &["text_id"]),
+        tool("delete_text", "Deletes a title.", json!({"text_id": i("Text")}), &["text_id"]),
         tool(
             "add_image",
-            "Pone una imagen (PNG, WebP o JPEG; con transparencia) sobre el vídeo, por encima del vídeo y por debajo de los textos. Varias imágenes pueden coincidir.",
-            json!({"path": s("Ruta de la imagen"), "time": n("s"), "duration": n("s (por defecto 3)"), "x": n("Centro, 0..1 del ancho del vídeo"), "y": n("Centro, 0..1 del alto"),
-                   "width": n("Ancho, fracción del ancho del vídeo (por defecto 0,35)"), "opacity": n("0..1"), "fade_in": n("s de fundido de entrada"), "fade_out": n("s de fundido de salida")}),
+            "Puts an image (PNG, WebP or JPEG; with transparency) over the video, above the video and below the titles. Several images can show at once.",
+            json!({"path": s("Image path"), "time": n("s"), "duration": n("s (3 by default)"), "x": n("Center, 0..1 of the video's width"), "y": n("Center, 0..1 of the height"),
+                   "width": n("Width, fraction of the video's width (0.35 by default)"), "opacity": n("0..1"), "fade_in": n("s of fade in"), "fade_out": n("s of fade out")}),
             &["path", "time"],
         ),
         tool(
             "update_image",
-            "Cambia una imagen: momento, duración, posición, tamaño, opacidad o fundidos.",
-            json!({"image_id": i("Imagen"), "start": n("s"), "duration": n("s"), "x": n("0..1"), "y": n("0..1"), "width": n("Fracción del ancho"), "opacity": n("0..1"), "fade_in": n("s"), "fade_out": n("s")}),
+            "Changes an image: moment, duration, position, size, opacity or fades.",
+            json!({"image_id": i("Image"), "start": n("s"), "duration": n("s"), "x": n("0..1"), "y": n("0..1"), "width": n("Fraction of the width"), "opacity": n("0..1"), "fade_in": n("s"), "fade_out": n("s")}),
             &["image_id"],
         ),
-        tool("delete_image", "Quita una imagen.", json!({"image_id": i("Imagen")}), &["image_id"]),
+        tool("delete_image", "Removes an image.", json!({"image_id": i("Image")}), &["image_id"]),
         tool(
             "add_sound",
-            "Añade un sonido a una pista: effects (efectos), voice (voz en off) o music. Los sonidos de una pista pueden solaparse y se mezclan. La música llena el resto del vídeo (en bucle si el archivo es más corto); efectos y voz suenan una vez.",
-            json!({"path": s("Ruta del archivo (mp3, wav, m4a, ogg, flac…)"), "track": s("effects, voice o music"), "time": n("s en que empieza"), "duration": n("s que suena"),
-                   "offset": n("s del archivo desde donde empieza"), "volume": n("1 = tal cual (0..2)"), "fade_in": n("s"), "fade_out": n("s"), "loop": b("Repetir al acabar el archivo")}),
+            "Adds a sound to a track: effects, voice (voice-over) or music. The sounds of a track can overlap and are mixed. Music fills the rest of the video (looping if the file is shorter); effects and voice play once.",
+            json!({"path": s("File path (mp3, wav, m4a, ogg, flac…)"), "track": s("effects, voice or music"), "time": n("s it starts at"), "duration": n("s it plays for"),
+                   "offset": n("s into the file where it starts"), "volume": n("1 = as is (0..2)"), "fade_in": n("s"), "fade_out": n("s"), "loop": b("Start over when the file ends")}),
             &["path", "track", "time"],
         ),
         tool(
             "update_sound",
-            "Cambia un sonido: pista, momento, duración, desde dónde suena, volumen, fundidos o bucle.",
-            json!({"sound_id": i("Sonido"), "track": s("effects, voice o music"), "start": n("s"), "duration": n("s"), "offset": n("s del archivo"), "volume": n("0..2"), "fade_in": n("s"), "fade_out": n("s"), "loop": b("Repetir")}),
+            "Changes a sound: track, moment, duration, where it starts in the file, volume, fades or looping.",
+            json!({"sound_id": i("Sound"), "track": s("effects, voice or music"), "start": n("s"), "duration": n("s"), "offset": n("s into the file"), "volume": n("0..2"), "fade_in": n("s"), "fade_out": n("s"), "loop": b("Repeat")}),
             &["sound_id"],
         ),
-        tool("delete_sound", "Quita un sonido.", json!({"sound_id": i("Sonido")}), &["sound_id"]),
+        tool("delete_sound", "Removes a sound.", json!({"sound_id": i("Sound")}), &["sound_id"]),
         tool(
             "set_mix",
-            "Volumen de cada fuente en la mezcla (1 = tal cual, 0..2) y si la música baja mientras habla la voz en off.",
-            json!({"recording": n("Sonido de las grabaciones"), "effects": n("Efectos"), "voice": n("Voz en off"), "music": n("Música"), "duck_music": b("Bajar la música con la voz")}),
+            "Volume of each source in the mix (1 = as is, 0..2) and whether the music lowers while the voice-over speaks.",
+            json!({"recording": n("Sound of the recordings"), "effects": n("Effects"), "voice": n("Voice-over"), "music": n("Music"), "duck_music": b("Lower the music under the voice")}),
             &[],
         ),
-        tool("export_texts", "Todos los títulos como lista JSON (los mismos campos que add_text), para editarlos fuera y volver a cargarlos con import_texts.", json!({}), &[]),
+        tool("export_texts", "Every title as a JSON list (the same fields as add_text), to edit them elsewhere and load them back with import_texts.", json!({}), &[]),
         tool(
             "import_texts",
-            "Carga una lista de títulos (como la de export_texts). Por defecto sustituye a los que hay.",
-            json!({"texts": json!({"type": "array", "items": {"type": "object"}, "description": "Títulos: time, duration, title, subtitle, place, size, reveal, color, make_room"}), "replace": b("Sustituir los títulos actuales (por defecto sí)")}),
+            "Loads a list of titles (like the one from export_texts). By default it replaces the current ones.",
+            json!({"texts": json!({"type": "array", "items": {"type": "object"}, "description": "Titles: time, duration, title, subtitle, place, size, reveal, color, make_room"}), "replace": b("Replace the current titles (yes by default)")}),
             &["texts"],
         ),
         tool(
             "batch",
-            "Varias operaciones en una sola llamada y un solo paso de deshacer. Si una falla, no se aplica ninguna. Útil para animaciones con muchos fotogramas clave.",
-            json!({"operations": json!({"type": "array", "items": {"type": "object", "properties": {"name": s("Herramienta"), "arguments": json!({"type": "object"})}, "required": ["name"]}, "description": "Lista de {name, arguments}"})}),
+            "Several operations in a single call and a single undo step. If one fails, none is applied. Useful for animations with many keyframes.",
+            json!({"operations": json!({"type": "array", "items": {"type": "object", "properties": {"name": s("Tool"), "arguments": json!({"type": "object"})}, "required": ["name"]}, "description": "List of {name, arguments}"})}),
             &["operations"],
         ),
         tool(
             "update_device_motion",
-            "Cambia un movimiento del dispositivo ya añadido: cuándo empieza, cuánto dura y, en los giros, cuántos grados gira (360, 720, -360 para el otro sentido…).",
-            json!({"clip_id": i("Clip"), "start": n("s"), "duration": n("s"), "degrees": n("Solo giros"), "ease": s("Curva: spring, smooth, linear o hold")}),
+            "Changes a device move already added: when it starts, how long it lasts and, for turns, how many degrees it turns (360, 720, -360 for the other direction…).",
+            json!({"clip_id": i("Clip"), "start": n("s"), "duration": n("s"), "degrees": n("Turns only"), "ease": s("Curve: spring, smooth, linear or hold")}),
             &["clip_id"],
         ),
-        tool("delete_device_motion", "Elimina un movimiento del dispositivo.", json!({"clip_id": i("Clip")}), &["clip_id"]),
+        tool("delete_device_motion", "Deletes a device move.", json!({"clip_id": i("Clip")}), &["clip_id"]),
         tool(
             "get_hardware",
-            "Qué tarjeta gráfica y qué codificador por hardware usará la exportación en este equipo (si hay).",
+            "Which graphics card and which hardware encoder the export will use on this computer (if any).",
             json!({}),
             &[],
         ),
         tool(
             "set_style",
-            "Formato, fondo, margen, sombra, toques, iluminación y acabado (desenfoque de movimiento, bordes, viñeta, grano y fundidos).",
-            json!({"aspect": s("16:9, 9:16, 1:1 o 4:5"), "background_preset": s("Medianoche, Aurora, Atardecer, Lavanda, Menta, Océano, Melocotón, Bosque, Grafito o Nube"), "background_a": s("#rrggbb"), "background_b": s("#rrggbb"), "background_angle": n("grados"), "padding": n("0.02..0.25"), "shadow": n("0..1"), "show_touches": b("Mostrar los toques"), "touch_size": n("0.5..2"),
-                "lighting": s("studio, soft, dramatic (luz lateral y borde de luz, para fondos oscuros), backlit (contraluz), warm o cool"), "light_angle": n("Gira la luz, grados (-180..180)"), "light_intensity": n("0.5..1.5"), "glare": n("Reflejo en el cristal, 0..2"),
-                "motion_blur": s("off, soft, cinematic o strong"), "antialias": s("normal, high o max (más limpio, más lento)"), "vignette": n("0..1"), "grain": n("0..1"),
-                "fade_in": n("s desde negro al empezar"), "fade_out": n("s a negro al acabar"), "crossfade": n("s de fundido entre clips (0 = corte)")}),
+            "Format, background, margin, shadow, taps, lighting and finish (motion blur, edges, vignette, grain and fades).",
+            json!({"aspect": s("16:9, 9:16, 1:1 or 4:5"), "background_preset": s("Midnight, Aurora, Sunset, Lavender, Mint, Ocean, Peach, Forest, Graphite or Cloud"), "background_a": s("#rrggbb"), "background_b": s("#rrggbb"), "background_angle": n("degrees"), "padding": n("0.02..0.25"), "shadow": n("0..1"), "show_touches": b("Show the taps"), "touch_size": n("0.5..2"),
+                "lighting": s("studio, soft, dramatic (side light and a rim of light, for dark backgrounds), backlit, warm or cool"), "light_angle": n("Turns the light, degrees (-180..180)"), "light_intensity": n("0.5..1.5"), "glare": n("Glare on the glass, 0..2"),
+                "motion_blur": s("off, soft, cinematic or strong"), "antialias": s("normal, high or max (cleaner, slower)"), "vignette": n("0..1"), "grain": n("0..1"),
+                "fade_in": n("s from black at the start"), "fade_out": n("s to black at the end"), "crossfade": n("s of crossfade between clips (0 = cut)")}),
             &[],
         ),
-        tool("render_frame", "Imagen de cómo queda el vídeo en un momento.", json!({"time": n("s"), "width": i("Ancho en píxeles (por defecto 960)")}), &["time"]),
+        tool("render_frame", "Picture of how the video looks at a moment.", json!({"time": n("s"), "width": i("Width in pixels (960 by default)")}), &["time"]),
         tool(
             "export",
-            "Exporta el vídeo (en segundo plano). Por defecto codifica con la tarjeta gráfica si hay una compatible (NVIDIA, AMD o Intel); si falla, con el procesador.",
-            json!({"resolution": s("720p, 1080p o 4K"), "fps": i("30 o 60"), "format": s("h264, hevc o gif"), "quality": s("standard, high o max"), "include_audio": b("Incluir sonido"), "folder": s("Carpeta de destino"), "hardware": b("Codificar con la tarjeta gráfica")}),
+            "Exports the video (in the background). By default it encodes on the graphics card if there is a compatible one (NVIDIA, AMD or Intel); if that fails, on the processor.",
+            json!({"resolution": s("720p, 1080p or 4K"), "fps": i("30 or 60"), "format": s("h264, hevc or gif"), "quality": s("standard, high or max"), "include_audio": b("Include sound"), "folder": s("Destination folder"), "hardware": b("Encode on the graphics card")}),
             &[],
         ),
         tool(
             "render_strip",
-            "Varios momentos en una sola imagen, en cuadrícula y con el tiempo escrito en cada uno. Da times, o start, end y count (repartidos).",
-            json!({"times": {"type": "array", "items": {"type": "number"}, "description": "Segundos (hasta 24)"}, "start": n("s"), "end": n("s"), "count": i("Cuántos entre start y end (por defecto 8)"), "width": i("Ancho de cada fotograma (por defecto 320)"), "columns": i("Columnas (por defecto 4)")}),
+            "Several moments in one picture, in a grid, with the time written on each one. Give times, or start, end and count (spread out).",
+            json!({"times": {"type": "array", "items": {"type": "number"}, "description": "Seconds (up to 24)"}, "start": n("s"), "end": n("s"), "count": i("How many between start and end (8 by default)"), "width": i("Width of each frame (320 by default)"), "columns": i("Columns (4 by default)")}),
             &[],
         ),
         tool(
             "render_preview",
-            "Vídeo corto y pequeño de un tramo (hasta 20 s) para ver si una animación va fluida o rebota. Devuelve la ruta del archivo.",
-            json!({"start": n("s"), "end": n("s"), "format": {"type": "string", "enum": ["mp4", "gif"]}, "width": i("Ancho (por defecto 480)"), "fps": i("Fotogramas por segundo (30 en mp4, 15 en gif)")}),
+            "A short, small video of a stretch (up to 20 s) to see whether an animation is smooth or bounces. Returns the file's path.",
+            json!({"start": n("s"), "end": n("s"), "format": {"type": "string", "enum": ["mp4", "gif"]}, "width": i("Width (480 by default)"), "fps": i("Frames per second (30 in mp4, 15 in gif)")}),
             &["start", "end"],
         ),
-        tool("export_status", "Progreso o resultado de la exportación.", json!({}), &[]),
-        tool("cancel_export", "Cancela la exportación en marcha.", json!({}), &[]),
+        tool("export_status", "Export progress or result.", json!({}), &[]),
+        tool("cancel_export", "Cancels the running export.", json!({}), &[]),
     ]
 }
 

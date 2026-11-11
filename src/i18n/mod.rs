@@ -57,8 +57,8 @@ pub fn init() {
     store(saved.unwrap_or(Lang::En));
 }
 
-/// Uses `l` in this process without saving it (the MCP server speaks Spanish, like its tools'
-/// descriptions, whatever the app shows).
+/// Uses `l` in this process without saving it (the MCP server always speaks English, which
+/// language models handle best, whatever the app shows).
 pub fn use_lang(l: Lang) {
     store(l);
 }

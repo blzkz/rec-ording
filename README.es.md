@@ -102,7 +102,7 @@ Las grabaciones y exportaciones se guardan en `~/Vídeos/rec-ording`. Los proyec
 
 ## Asistente (MCP)
 
-Un agente (Claude, Cursor, Codex…) puede montar el vídeo por ti con `rec-ording --mcp`, un servidor MCP por stdio que edita el proyecto abierto en la app (la app muestra sus cambios al momento y se pueden deshacer). El botón **Asistente** de la app muestra la configuración lista para copiar. El servidor responde en español aunque la app esté en inglés. Por ejemplo, en Claude Code:
+Un agente (Claude, Cursor, Codex…) puede montar el vídeo por ti con `rec-ording --mcp`, un servidor MCP por stdio que edita el proyecto abierto en la app (la app muestra sus cambios al momento y se pueden deshacer). El botón **Asistente** de la app muestra la configuración lista para copiar. El servidor funciona en inglés (descripciones de las herramientas y respuestas), que es como mejor lo entienden los modelos de lenguaje, sea cual sea el idioma de la app. Por ejemplo, en Claude Code:
 
 ```bash
 claude mcp add rec-ording -- /usr/bin/rec-ording --mcp

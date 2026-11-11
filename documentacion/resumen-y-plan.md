@@ -156,8 +156,13 @@ Todo el plan de `plan-iluminacion-postproceso.md`, más las mejoras pedidas tras
 
 - La interfaz está en inglés (por defecto) y en español; el idioma se elige en Ajustes y cambia al momento. El texto español es la clave (`i18n::lz("…")` y `tr!("…", …)`), el inglés está en `src/i18n/en.rs` y un test comprueba que ningún texto se queda sin traducir y que las traducciones llevan los mismos valores. Si una palabra española significa dos cosas, la clave lleva un contexto tras `@` (`"Salida@móvil"`).
 - Los números usan coma decimal en español y punto en inglés.
-- El servidor MCP sigue en español (descripciones y respuestas), sea cual sea el idioma de la app, y sus valores (tipo de movimiento de cámara, calidad) ya no dependen del idioma.
+- El servidor MCP sigue en español (descripciones y respuestas), sea cual sea el idioma de la app (en la 0.17.0 pasa a inglés), y sus valores (tipo de movimiento de cámara, calidad) ya no dependen del idioma.
 - README en inglés con GIF y capturas en inglés (`documentacion/capturas/en/`); el español conserva los suyos.
+
+## v0.17.0: servidor MCP en inglés
+
+- El servidor MCP funciona siempre en inglés: instrucciones, descripciones de herramientas y parámetros, respuestas y errores (también los que vienen de la línea de tiempo y la exportación). Los modelos de lenguaje trabajan mejor así.
+- Valores en inglés: el tipo de movimiento de cámara en `get_project` es `auto_zoom`, `zoom`, `director` o `move`; los fondos se piden por su nombre en inglés (`Sunset`, `Midnight`…) y siguen aceptando el español.
 
 ## Ideas para siguientes versiones
 

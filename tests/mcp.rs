@@ -110,7 +110,7 @@ fn an_agent_builds_and_exports_a_video() {
     mcp.call("director_add_target", json!({"time": 7.8, "x0": 0.4, "y0": 0.6, "x1": 0.9, "y1": 0.9}));
     mcp.call("director_settings", json!({"motion": "3d", "intensity": 0.8}));
     let msg = mcp.text("director_generate", json!({}));
-    assert!(msg.contains("2 planos") && !msg.contains("sustituyen"), "{msg}");
+    assert!(msg.contains("2 shots") && !msg.contains("replace"), "{msg}");
     mcp.call("add_device_motion", json!({"preset": "hop", "time": 1.0}));
     mcp.call("set_style", json!({"aspect": "9:16", "background_preset": "Atardecer", "padding": 0.1}));
     mcp.call("set_angle", json!({"turn": -15, "straighten_on_zoom": true}));
@@ -119,14 +119,14 @@ fn an_agent_builds_and_exports_a_video() {
 
     let p = mcp.project();
     let kinds: Vec<&str> = p["camera"].as_array().unwrap().iter().map(|c| c["kind"].as_str().unwrap()).collect();
-    assert!(kinds.contains(&"Zoom") && kinds.contains(&"Movimiento") && kinds.iter().filter(|k| **k == "Director").count() == 2, "{kinds:?}");
+    assert!(kinds.contains(&"zoom") && kinds.contains(&"move") && kinds.iter().filter(|k| **k == "director").count() == 2, "{kinds:?}");
     assert_eq!(p["style"]["aspect"], "9:16");
     assert_eq!(p["style"]["frame"], "model");
     assert_eq!(p["device_motion"].as_array().unwrap().len(), 1);
 
     // Titles beside the device, and a double spin that hides the cut between the clips.
     let added = mcp.text("add_text", json!({"time": 0.3, "title": "Camina.", "subtitle": "Tus pasos te mueven.", "duration": 2.5}));
-    let text_id: u64 = added.rsplit("texto ").next().unwrap().trim_end_matches(')').parse().unwrap();
+    let text_id: u64 = added.rsplit("(text ").next().unwrap().trim_end_matches(')').parse().unwrap();
     mcp.call("update_text", json!({"text_id": text_id, "place": "right", "reveal": "words"}));
     let bad = mcp.request("tools/call", json!({"name": "update_text", "arguments": {"text_id": text_id, "place": "fuera"}}));
     assert_eq!(bad["result"]["isError"], true);
@@ -176,14 +176,14 @@ fn an_agent_builds_and_exports_a_video() {
     let strip = mcp.call("render_strip", json!({"start": 0.0, "end": 6.0, "count": 6, "width": 160}));
     assert_eq!(strip["content"][0]["type"], "image");
     let r = mcp.text("render_preview", json!({"start": 3.0, "end": 4.5, "width": 200, "fps": 12}));
-    let path = r.split(" en ").nth(1).and_then(|s| s.rsplit_once(" (")).map(|(p, _)| p.to_string()).expect(&r);
+    let path = r.split(" at ").nth(1).and_then(|s| s.rsplit_once(" (")).map(|(p, _)| p.to_string()).expect(&r);
     let frames = Command::new("ffprobe").args(["-v", "error", "-count_frames", "-show_entries", "stream=nb_read_frames,width", "-of", "csv=p=0"]).arg(&path).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&frames.stdout).trim(), "200,18", "{r}");
     let _ = std::fs::remove_file(&path);
 
     // Screen changes as marks to anchor things to.
     let marks = mcp.text("detect_marks", json!({}));
-    assert!(marks.contains("cambios de pantalla"), "{marks}");
+    assert!(marks.contains("screen changes"), "{marks}");
     let n = mcp.project()["marks"].as_array().unwrap().len();
     let r = mcp.request("tools/call", json!({"name": "add_zoom", "arguments": {"mark": n + 5}}));
     assert_eq!(r["result"]["isError"], true);
@@ -206,9 +206,9 @@ fn an_agent_builds_and_exports_a_video() {
             .success();
     assert!(ok);
     let added = mcp.text("add_image", json!({"path": logo.to_string_lossy(), "time": 0.5, "duration": 2, "x": 0.8, "y": 0.1, "width": 0.2}));
-    assert!(added.contains("imagen"), "{added}");
+    assert!(added.contains("image"), "{added}");
     let added = mcp.text("add_sound", json!({"path": pop.to_string_lossy(), "track": "effects", "time": 1.0, "volume": 0.8}));
-    assert!(added.contains("efectos"), "{added}");
+    assert!(added.contains("effects"), "{added}");
     let p = mcp.project();
     assert_eq!((p["images"].as_array().unwrap().len(), p["sounds"].as_array().unwrap().len()), (1, 1));
     assert_eq!(p["sounds"][0]["track"], "effects");
@@ -222,14 +222,14 @@ fn an_agent_builds_and_exports_a_video() {
     let started = Instant::now();
     let status = loop {
         let s = mcp.text("export_status", json!({}));
-        if s.starts_with("Terminado") || s.starts_with("Error") {
+        if s.starts_with("Done") || s.starts_with("Error") {
             break s;
         }
         assert!(started.elapsed() < Duration::from_secs(600), "export too slow: {s}");
         std::thread::sleep(Duration::from_millis(300));
     };
-    assert!(status.starts_with("Terminado"), "{status}");
-    let out = status.trim_start_matches("Terminado: ").to_string();
+    assert!(status.starts_with("Done"), "{status}");
+    let out = status.trim_start_matches("Done: ").to_string();
     let probe = Command::new("ffprobe").args(["-v", "error", "-show_entries", "stream=codec_type,width,height", "-of", "csv=p=0"]).arg(&out).output().unwrap();
     let probe = String::from_utf8_lossy(&probe.stdout);
     assert!(probe.contains("video,720,1280") && probe.contains("audio"), "{probe}");
@@ -248,9 +248,9 @@ fn batches_projects_and_title_files() {
 
     // Every answer names the project it acted on; `project` picks another one.
     let r = mcp.call("add_text", json!({"time": 0.0, "title": "En Uno", "project": "Uno"}));
-    assert_eq!(r["content"][1]["text"], "Proyecto: «Uno»");
+    assert_eq!(r["content"][1]["text"], "Project: “Uno”");
     let r = mcp.call("get_project", json!({}));
-    assert_eq!(r["content"][1]["text"], "Proyecto: «Dos»");
+    assert_eq!(r["content"][1]["text"], "Project: “Dos”");
     let uno: Value = serde_json::from_str(mcp.call("get_project", json!({"project": "Uno"}))["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(uno["texts"].as_array().unwrap().len(), 1);
     assert_eq!(mcp.project()["texts"].as_array().unwrap().len(), 0);

@@ -195,10 +195,10 @@ impl CameraKind {
     /// The name agents see (MCP), the same in every language.
     pub fn key(self) -> &'static str {
         match self {
-            CameraKind::Auto => "Zoom automático",
-            CameraKind::Zoom => "Zoom",
-            CameraKind::Director => "Director",
-            CameraKind::Move => "Movimiento",
+            CameraKind::Auto => "auto_zoom",
+            CameraKind::Zoom => "zoom",
+            CameraKind::Director => "director",
+            CameraKind::Move => "move",
         }
     }
 }
