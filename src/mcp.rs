@@ -1192,7 +1192,7 @@ fn summary(p: &Project, path: &Path) -> Value {
         }).collect::<Vec<_>>(),
         "marks": timeline::timeline_marks(p),
         "touches": timeline::timeline_touches(p).iter().map(|t| json!({"time": t.time, "x": t.x, "y": t.y, "kind": if t.kind == TouchKind::Tap {"tap"} else {"swipe"}})).collect::<Vec<_>>(),
-        "camera": p.camera.iter().map(|c| json!({"id": c.id, "kind": c.kind.label(), "start": c.start, "end": c.end(),
+        "camera": p.camera.iter().map(|c| json!({"id": c.id, "kind": c.kind.key(), "start": c.start, "end": c.end(),
             "keyframes": c.keys.iter().map(|k| json!({"time": c.start + k.t, "zoom": k.zoom, "x": k.x, "y": k.y, "tilt": k.tilt, "turn": k.turn, "roll": k.roll, "ease": ease_key(k.ease)})).collect::<Vec<_>>()})).collect::<Vec<_>>(),
         "device_motion": p.device.iter().map(|d| {
             let spin = timeline::spin_of(d).map(|(axis, deg)| {
@@ -1223,7 +1223,7 @@ fn summary(p: &Project, path: &Path) -> Value {
             "finish": {"motion_blur": key_of(&MOTION_BLURS, p.style.finish.motion_blur), "antialias": key_of(&ANTIALIAS, p.style.finish.antialias), "vignette": p.style.finish.vignette,
                 "grain": p.style.finish.grain, "fade_in": p.style.finish.fade_in, "fade_out": p.style.finish.fade_out, "crossfade": p.style.finish.crossfade},
         },
-        "export": {"resolution": p.export.resolution.label(), "fps": p.export.fps, "format": p.export.format.label(), "quality": p.export.quality.label(), "folder": p.export.folder, "hardware": p.export.hardware},
+        "export": {"resolution": p.export.resolution.label(), "fps": p.export.fps, "format": p.export.format.label(), "quality": p.export.quality.key(), "folder": p.export.folder, "hardware": p.export.hardware},
     })
 }
 

@@ -108,9 +108,9 @@ pub fn pick_file(title: &str, filter: &str, exts: &[&str], start: &Path) -> Resu
             format!("--title={title}"),
             format!("--filename={}/", start.display()),
             format!("--file-filter={filter} | {globs}"),
-            "--file-filter=Todos los archivos | *".into(),
+            format!("--file-filter={} | *", crate::i18n::lz("Todos los archivos")),
         ],
-        &["--getopenfilename".into(), start.display().to_string(), format!("{filter} ({globs})"), format!("--title={title}")],
+        &["--getopenfilename".into(), start.display().to_string(), format!("{} ({})", filter, globs), format!("--title={title}")],
     )
 }
 
@@ -150,7 +150,7 @@ pub fn install_hint(packages: &[&str]) -> String {
                 "scrcpy" => "Genymobile.scrcpy",
                 other => other,
             })
-            .map(|id| format!("winget install {id}"))
+            .map(|id| format!("winget install {}", id))
             .collect();
         lines.join("\n")
     } else {

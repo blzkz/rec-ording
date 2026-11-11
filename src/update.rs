@@ -8,6 +8,7 @@ use crate::platform::command;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
+use crate::i18n::lz;
 
 /// The download page, where the release workflow publishes the packages and `latest.json`.
 pub const DOWNLOADS: &str = "https://blzkz.github.io/rec-ording-releases";
@@ -123,8 +124,8 @@ pub fn parse_release(json: &str, current: &str) -> Result<Option<Release>, Strin
 }
 
 fn parse_release_for(json: &str, current: &str, how: &Method) -> Result<Option<Release>, String> {
-    let v: serde_json::Value = serde_json::from_str(json).map_err(|e| format!("Respuesta no válida: {e}"))?;
-    let version = v["version"].as_str().ok_or("La versión publicada no tiene número")?;
+    let v: serde_json::Value = serde_json::from_str(json).map_err(|e| tr!("Respuesta no válida: {}", e))?;
+    let version = v["version"].as_str().ok_or(lz("La versión publicada no tiene número"))?;
     if !is_newer(version, current) {
         return Ok(None);
     }
@@ -169,10 +170,10 @@ fn curl(url: &str, out: Option<&Path>, max_secs: u32) -> Result<Vec<u8>, String>
     if let Some(out) = out {
         c.arg("-o").arg(out);
     }
-    let o = c.output().map_err(|_| "No se encontró curl".to_string())?;
+    let o = c.output().map_err(|_| lz("No se encontró curl").to_string())?;
     if !o.status.success() {
         let err = String::from_utf8_lossy(&o.stderr).trim().to_string();
-        return Err(if err.is_empty() { "No se pudo conectar".to_string() } else { err });
+        return Err(if err.is_empty() { lz("No se pudo conectar").to_string() } else { err });
     }
     Ok(o.stdout)
 }
@@ -192,16 +193,16 @@ fn sha256_file(path: &Path) -> Result<String, String> {
 
 /// Downloads the release's package and checks it against the checksum GitHub publishes.
 pub fn download(r: &Release) -> Result<PathBuf, String> {
-    let asset = r.asset.as_ref().ok_or("Esta versión no tiene paquete para tu sistema")?;
+    let asset = r.asset.as_ref().ok_or(lz("Esta versión no tiene paquete para tu sistema"))?;
     let dir = crate::model::cache_dir().join("actualizaciones");
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let file = dir.join(&asset.name);
-    curl(&asset.url, Some(&file), 900).map_err(|e| format!("No se pudo descargar: {e}"))?;
+    curl(&asset.url, Some(&file), 900).map_err(|e| tr!("No se pudo descargar: {}", e))?;
     if let Some(expected) = &asset.sha256 {
         if &sha256_file(&file)? != expected {
             let _ = fs::remove_file(&file);
-            return Err("La descarga está dañada (no coincide la suma de comprobación)".into());
+            return Err(lz("La descarga está dañada (no coincide la suma de comprobación)").into());
         }
     }
     Ok(file)
@@ -224,13 +225,13 @@ pub fn install(r: &Release, how: &Method) -> Result<(), String> {
             fs::create_dir_all(&unpacked).map_err(|e| e.to_string())?;
             let ok = command("tar").arg("-xf").arg(&file).arg("-C").arg(&unpacked).status().map(|s| s.success()).unwrap_or(false);
             if !ok {
-                return Err("No se pudo descomprimir la actualización".into());
+                return Err(lz("No se pudo descomprimir la actualización").into());
             }
-            let exe_name = exe.file_name().ok_or("Ruta del programa no válida")?;
-            let new_dir = find_dir_with(&unpacked, exe_name).ok_or("La actualización no contiene rec-ording.exe")?;
+            let exe_name = exe.file_name().ok_or(lz("Ruta del programa no válida"))?;
+            let new_dir = find_dir_with(&unpacked, exe_name).ok_or(lz("La actualización no contiene rec-ording.exe"))?;
             replace_install(&new_dir, exe)
         }
-        Method::Manual => Err("Esta copia no se puede actualizar sola".into()),
+        Method::Manual => Err(lz("Esta copia no se puede actualizar sola").into()),
     }
 }
 
@@ -240,21 +241,21 @@ fn pkexec(args: &[&str], file: &Path, tool: &str) -> Result<(), String> {
         .args(args)
         .arg(file)
         .status()
-        .map_err(|_| "Falta pkexec (polkit) para instalar el paquete".to_string())?;
+        .map_err(|_| lz("Falta pkexec (polkit) para instalar el paquete").to_string())?;
     match status.code() {
         Some(0) => Ok(()),
         // pkexec: the password dialog was dismissed or refused.
-        Some(126) | Some(127) => Err("Instalación cancelada".into()),
-        _ => Err(format!("{tool} no pudo instalar el paquete")),
+        Some(126) | Some(127) => Err(lz("Instalación cancelada").into()),
+        _ => Err(tr!("{} no pudo instalar el paquete", tool)),
     }
 }
 
 /// Puts the downloaded AppImage in place of the running one (renaming over it is safe while it
 /// runs; the new one starts on restart).
 fn replace_appimage(new: &Path, target: &Path) -> Result<(), String> {
-    let dir = target.parent().ok_or("Ruta del programa no válida")?;
+    let dir = target.parent().ok_or(lz("Ruta del programa no válida"))?;
     let tmp = dir.join(".rec-ording-nuevo.AppImage");
-    fs::copy(new, &tmp).map_err(|e| format!("No se puede escribir en {}: {e}", dir.display()))?;
+    fs::copy(new, &tmp).map_err(|e| tr!("No se puede escribir en {}: {}", dir.display(), e))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -262,7 +263,7 @@ fn replace_appimage(new: &Path, target: &Path) -> Result<(), String> {
     }
     fs::rename(&tmp, target).map_err(|e| {
         let _ = fs::remove_file(&tmp);
-        format!("No se pudo reemplazar el AppImage: {e}")
+        tr!("No se pudo reemplazar el AppImage: {}", e)
     })
 }
 
@@ -289,14 +290,14 @@ fn old_exe(exe: &Path) -> PathBuf {
 
 /// Copies the unzipped release in `new_dir` over the folder of `exe`.
 pub fn replace_install(new_dir: &Path, exe: &Path) -> Result<(), String> {
-    let dir = exe.parent().ok_or("Ruta del programa no válida")?;
-    let new_exe = new_dir.join(exe.file_name().ok_or("Ruta del programa no válida")?);
+    let dir = exe.parent().ok_or(lz("Ruta del programa no válida"))?;
+    let new_exe = new_dir.join(exe.file_name().ok_or(lz("Ruta del programa no válida"))?);
     let old = old_exe(exe);
     let _ = fs::remove_file(&old);
-    fs::rename(exe, &old).map_err(|e| format!("No se puede escribir en {}: {e}", dir.display()))?;
+    fs::rename(exe, &old).map_err(|e| tr!("No se puede escribir en {}: {}", dir.display(), e))?;
     if let Err(e) = fs::copy(&new_exe, exe) {
         let _ = fs::rename(&old, exe);
-        return Err(format!("No se pudo copiar la versión nueva: {e}"));
+        return Err(tr!("No se pudo copiar la versión nueva: {}", e));
     }
     // Models, notes…: everything else in the release.
     let mut stack = vec![new_dir.to_path_buf()];
@@ -309,7 +310,7 @@ pub fn replace_install(new_dir: &Path, exe: &Path) -> Result<(), String> {
                 fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
                 stack.push(p);
             } else if p != new_exe {
-                fs::copy(&p, &dest).map_err(|e| format!("No se pudo copiar {}: {e}", rel.display()))?;
+                fs::copy(&p, &dest).map_err(|e| tr!("No se pudo copiar {}: {}", rel.display(), e))?;
             }
         }
     }
@@ -381,7 +382,14 @@ fn auto_in(raw: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(raw).ok().and_then(|v| v["auto"].as_bool()).unwrap_or(true)
 }
 
-fn save_setting(key: &str, value: serde_json::Value) {
+/// A saved setting (updates, language…).
+pub fn setting(key: &str) -> Option<serde_json::Value> {
+    let raw = fs::read_to_string(skip_path()).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    Some(v.get(key)?.clone())
+}
+
+pub fn save_setting(key: &str, value: serde_json::Value) {
     let raw = fs::read_to_string(skip_path()).unwrap_or_default();
     let _ = fs::write(skip_path(), with_setting(&raw, key, value));
 }

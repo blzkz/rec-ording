@@ -8,6 +8,7 @@ use crate::timeline;
 use std::io::Read;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
+use crate::i18n::lz;
 
 /// Inputs and filters that mix the project's sound into `[aout]`.
 pub struct Graph {
@@ -155,16 +156,16 @@ pub fn length(path: &str) -> Result<f32, String> {
         .args(["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=codec_type:format=duration", "-of", "default=nw=1"])
         .arg(path)
         .output()
-        .map_err(|_| "No se encontró ffprobe".to_string())?;
+        .map_err(|_| lz("No se encontró ffprobe").to_string())?;
     let text = String::from_utf8_lossy(&out.stdout);
     if !text.contains("codec_type=audio") {
-        return Err("Ese archivo no tiene sonido".into());
+        return Err(lz("Ese archivo no tiene sonido").into());
     }
     text.lines()
         .find_map(|l| l.strip_prefix("duration="))
         .and_then(|d| d.trim().parse::<f32>().ok())
         .filter(|d| *d > 0.0)
-        .ok_or_else(|| "No se pudo saber cuánto dura ese sonido".into())
+        .ok_or_else(|| lz("No se pudo saber cuánto dura ese sonido").into())
 }
 
 /// Loudness of a sound file, `PEAKS_PER_SECOND` values per second (0..1), for drawing its wave.
@@ -198,7 +199,7 @@ pub fn render(p: &Project, rate: u32) -> Result<Vec<f32>, String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|_| "No se encontró ffmpeg".to_string())?;
+        .map_err(|_| lz("No se encontró ffmpeg").to_string())?;
     let mut raw = Vec::new();
     child.stdout.take().unwrap().read_to_end(&mut raw).map_err(|e| e.to_string())?;
     let mut err = String::new();
@@ -207,7 +208,7 @@ pub fn render(p: &Project, rate: u32) -> Result<Vec<f32>, String> {
     }
     let ok = child.wait().map(|s| s.success()).unwrap_or(false);
     if !ok {
-        return Err(format!("No se pudo mezclar el sonido: {}", err.trim()));
+        return Err(tr!("No se pudo mezclar el sonido: {}", err.trim()));
     }
     Ok(raw.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect())
 }

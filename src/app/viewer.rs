@@ -275,7 +275,7 @@ impl RecOrdingApp {
                 p.circle_filled(focus, 8.0, Color32::from_black_alpha(80));
                 p.circle_filled(focus, 6.0, YELLOW);
                 p.circle_stroke(focus, 6.0, Stroke::new(1.5_f32, Color32::WHITE));
-                chip(&p, format!("Zoom {:.1}×  ·  Haz clic donde quieras enfocar  ·  Esc para ver el resultado", zoom).replace('.', ","));
+                chip(&p, tr!("Zoom {}×  ·  Haz clic donde quieras enfocar  ·  Esc para ver el resultado", format!("{:.1}", zoom)).replace('.', crate::i18n::comma()));
                 if resp.hovered() {
                     ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
                 }
@@ -308,7 +308,7 @@ impl RecOrdingApp {
                     let r = Rect::from_two_pos(video_pt(u0, v0), video_pt(u1, v1));
                     p.rect_stroke(r, Rounding::same(6.0), Stroke::new(2.0_f32, ACCENT));
                 }
-                chip(&p, "Director · Arrastra para marcar lo que debe verse en este momento".into());
+                chip(&p, lz("Director · Arrastra para marcar lo que debe verse en este momento").into());
                 if resp.hovered() {
                     ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
                 }
@@ -370,12 +370,12 @@ impl RecOrdingApp {
                     icon_play(p, c + Vec2::new(1.5, 0.0), 13.0, col)
                 }
             })
-            .on_hover_text("Reproducir / pausar (Espacio)")
+            .on_hover_text(lz("Reproducir / pausar (Espacio)"))
             .clicked()
         {
             self.toggle_play();
         }
-        if self.icon_button(ui, back, "start", false, |p, c, col| icon_to_start(p, c, 12.0, col)).on_hover_text("Ir al inicio (Inicio)").clicked() {
+        if self.icon_button(ui, back, "start", false, |p, c, col| icon_to_start(p, c, 12.0, col)).on_hover_text(lz("Ir al inicio (Inicio)")).clicked() {
             self.seek(0.0);
         }
 
@@ -388,9 +388,10 @@ impl RecOrdingApp {
             TEXT,
         );
         let n_touches = timeline::timeline_touches(&self.project).len();
-        let mut info = format!("{} clips  ·  {} movimientos de cámara", self.project.clips.len(), self.project.camera.len());
+        let count = |n: usize, one: &str, many: &'static str| if n == 1 { lz(one).to_string() } else { crate::i18n::fill(lz(many), &[n.to_string()]) };
+        let mut info = format!("{}  ·  {}", count(self.project.clips.len(), "1 clip", "{} clips"), count(self.project.camera.len(), "1 movimiento de cámara", "{} movimientos de cámara"));
         if n_touches > 0 {
-            info.push_str(&format!("  ·  {n_touches} toques"));
+            info.push_str(&format!("  ·  {}", count(n_touches, "1 toque", "{} toques")));
         }
         p.text(Pos2::new(rect.right(), c.y), Align2::RIGHT_CENTER, info, regular(12.5), TEXT_3);
     }

@@ -4,6 +4,7 @@
 
 use rayon::prelude::*;
 use std::sync::Arc;
+use crate::i18n::lz;
 
 pub struct Texture {
     pub(crate) w: usize,
@@ -262,8 +263,8 @@ const GEOMETRY_EXTENSIONS: &[&str] = &["KHR_draco_mesh_compression", "EXT_meshop
 /// required but we do not know are tolerated (the model is drawn with what we understand),
 /// except the ones that compress the geometry.
 pub fn read_document(path: &std::path::Path) -> Result<(gltf::Document, Option<Vec<u8>>), String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("No se pudo leer el modelo: {e}"))?;
-    let bad = |e: &dyn std::fmt::Display| format!("El archivo no es un modelo glTF válido: {e}");
+    let bytes = std::fs::read(path).map_err(|e| tr!("No se pudo leer el modelo: {}", e))?;
+    let bad = |e: &dyn std::fmt::Display| tr!("El archivo no es un modelo glTF válido: {}", e);
     let (mut root, blob) = if bytes.starts_with(b"glTF") {
         let mut glb = gltf::Glb::from_slice(&bytes).map_err(|e| bad(&e))?;
         let root = gltf::json::Root::from_slice(&glb.json).map_err(|e| bad(&e))?;
@@ -273,9 +274,9 @@ pub fn read_document(path: &std::path::Path) -> Result<(gltf::Document, Option<V
     };
     if let Some(ext) = root.extensions_required.iter().find(|e| GEOMETRY_EXTENSIONS.contains(&e.as_str())) {
         return Err(if ext.contains("draco") {
-            "El modelo usa compresión Draco, que no se puede leer. Expórtalo de nuevo sin compresión (en Blender, desmarca «Compresión» al exportar a glTF).".to_string()
+            lz("El modelo usa compresión Draco, que no se puede leer. Expórtalo de nuevo sin compresión (en Blender, desmarca «Compresión» al exportar a glTF).").to_string()
         } else {
-            format!("El modelo usa geometría comprimida ({ext}), que no se puede leer. Expórtalo de nuevo sin compresión.")
+            tr!("El modelo usa geometría comprimida ({}), que no se puede leer. Expórtalo de nuevo sin compresión.", ext)
         });
     }
     root.extensions_required.retain(|e| gltf::json::extensions::ENABLED_EXTENSIONS.contains(&e.as_str()));
@@ -287,9 +288,9 @@ pub fn load(path: &str) -> Result<ModelSource, String> {
     let file = std::path::Path::new(path);
     let (doc, blob) = read_document(file)?;
     let base = file.parent();
-    let buffers = gltf::import_buffers(&doc, base, blob).map_err(|e| format!("No se pudieron leer los datos del modelo: {e}"))?;
+    let buffers = gltf::import_buffers(&doc, base, blob).map_err(|e| tr!("No se pudieron leer los datos del modelo: {}", e))?;
     let images = gltf::import_images(&doc, base, &buffers).map_err(|e| {
-        format!("No se pudieron leer las texturas del modelo ({e}). Comprueba que están junto al archivo.")
+        tr!("No se pudieron leer las texturas del modelo ({}). Comprueba que están junto al archivo.", e)
     })?;
     let textures: Vec<Texture> = images.iter().map(to_rgba).collect();
 
@@ -302,7 +303,7 @@ pub fn load(path: &str) -> Result<ModelSource, String> {
             let tex = pbr.base_color_texture();
             let e = m.emissive_factor();
             Material {
-                name: m.name().map(str::to_string).unwrap_or_else(|| format!("Material {}", i + 1)),
+                name: m.name().map(str::to_string).unwrap_or_else(|| tr!("Material {}", i + 1)),
                 base: [to_srgb(f[0]), to_srgb(f[1]), to_srgb(f[2])],
                 alpha: f[3],
                 texture: tex.as_ref().map(|t| t.texture().source().index()),
@@ -325,7 +326,7 @@ pub fn load(path: &str) -> Result<ModelSource, String> {
         .collect();
     let default_mat = materials.len();
     materials.push(Material {
-        name: "Sin material".into(),
+        name: lz("Sin material").into(),
         base: [200.0, 200.0, 200.0],
         alpha: 1.0,
         texture: None,
@@ -351,7 +352,7 @@ pub fn load(path: &str) -> Result<ModelSource, String> {
             nodes[c.index()].parent = Some(n.index());
         }
     }
-    let scene = doc.default_scene().or_else(|| doc.scenes().next()).ok_or("El archivo no tiene ninguna escena")?;
+    let scene = doc.default_scene().or_else(|| doc.scenes().next()).ok_or(lz("El archivo no tiene ninguna escena"))?;
     let mut order = Vec::new();
     let mut stack: Vec<gltf::Node> = scene.nodes().collect();
     while let Some(n) = stack.pop() {
@@ -447,7 +448,7 @@ pub fn load(path: &str) -> Result<ModelSource, String> {
         }
     }
     if tris.is_empty() {
-        return Err("El modelo no tiene triángulos".into());
+        return Err(lz("El modelo no tiene triángulos").into());
     }
 
     let animations: Vec<Animation> = doc
@@ -479,7 +480,7 @@ pub fn load(path: &str) -> Result<ModelSource, String> {
                 });
             }
             (!channels.is_empty() && duration > 0.0).then(|| Animation {
-                name: a.name().map(str::to_string).unwrap_or_else(|| format!("Animación {}", i + 1)),
+                name: a.name().map(str::to_string).unwrap_or_else(|| tr!("Animación {}", i + 1)),
                 duration,
                 channels,
             })
@@ -703,7 +704,7 @@ pub fn prepare(src: &ModelSource, screen_part: usize, quarter_turns: u8) -> Resu
         }
     }
     if dot(nsum, nsum) <= 0.0 {
-        return Err("Esa pieza no tiene superficie visible".into());
+        return Err(lz("Esa pieza no tiene superficie visible").into());
     }
     let main = norm(nsum);
     // Some models put the glass of the back cameras in the same part, facing the same way: keep

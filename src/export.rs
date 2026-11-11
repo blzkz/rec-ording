@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
+use crate::i18n::lz;
 
 pub enum ExportEvent {
     Progress { fraction: f32, eta_secs: Option<f32> },
@@ -97,7 +98,7 @@ pub fn encoder_for(settings: &ExportSettings) -> Option<Encoder> {
 fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<ExportEvent>, hw: Option<&Encoder>, card: bool) -> Result<(), String> {
     let clips = timeline::placed(project);
     if clips.is_empty() {
-        return Err("No hay ningún vídeo en el proyecto".into());
+        return Err(lz("No hay ningún vídeo en el proyecto").into());
     }
     let settings = &project.export;
     let (ow, oh) = settings.dimensions(project.style.aspect);
@@ -121,7 +122,7 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
     let parts: Vec<Part> = clips
         .iter()
         .map(|c| {
-            let m = project.media(c.clip.media).ok_or("Falta una grabación del proyecto")?;
+            let m = project.media(c.clip.media).ok_or(lz("Falta una grabación del proyecto"))?;
             let frames = ((c.end * fps as f32).round() - (c.start * fps as f32).round()).max(0.0) as usize;
             Ok(Part {
                 path: m.info.path.clone(),
@@ -139,7 +140,7 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
     let model = match (&project.style.frame, &project.style.model) {
         (crate::model::FrameStyle::Custom, Some(cm)) => {
             let src = crate::model3d::load(&cm.path)?;
-            let part = cm.screen(src.guess, src.parts.len()).ok_or("No se encontró la pantalla del modelo: elígela en «Pantalla»")?;
+            let part = cm.screen(src.guess, src.parts.len()).ok_or(lz("No se encontró la pantalla del modelo: elígela en «Pantalla»"))?;
             Some(crate::model3d::prepare(&src, part, cm.quarter_turns)?)
         }
         _ => None,
@@ -147,10 +148,10 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
     let ss = project.style.finish.antialias.supersample();
     let mut gpu = if card { GpuCompositor::new(ow, oh, ss, model.as_ref()).ok() } else { None };
     let how = match (&gpu, hw) {
-        (Some(g), Some(_)) => format!("Con la tarjeta gráfica ({})", g.name),
-        (Some(g), None) => format!("Dibuja la tarjeta gráfica ({}) y codifica el procesador", g.name),
-        (None, Some(e)) => format!("Dibuja el procesador y codifica la tarjeta gráfica ({})", e.name),
-        (None, None) => "Con el procesador".to_string(),
+        (Some(g), Some(_)) => tr!("Con la tarjeta gráfica ({})", g.name),
+        (Some(g), None) => tr!("Dibuja la tarjeta gráfica ({}) y codifica el procesador", g.name),
+        (None, Some(e)) => tr!("Dibuja el procesador y codifica la tarjeta gráfica ({})", e.name),
+        (None, None) => lz("Con el procesador").to_string(),
     };
     let _ = tx.send(ExportEvent::Encoder(how));
     // With the graphics card the frames arrive as YUV with the titles on (less to read back
@@ -224,7 +225,7 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("No se pudo iniciar ffmpeg: {e}"))?;
+        .map_err(|e| tr!("No se pudo iniciar ffmpeg: {}", e))?;
     let enc_err = collect_stderr(&mut encoder);
 
     // Reader thread: decodes the clips one after another, giving exactly `frames` frames per
@@ -253,7 +254,7 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
                 .stderr(Stdio::piped())
                 .spawn();
             let Ok(mut dec) = spawned else {
-                *reader_err.lock().unwrap() = "No se pudo iniciar ffmpeg".into();
+                *reader_err.lock().unwrap() = lz("No se pudo iniciar ffmpeg").into();
                 return;
             };
             let err = collect_stderr(&mut dec);
@@ -280,7 +281,7 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
                     }
                     _ if got_one => None,
                     _ => {
-                        *reader_err.lock().unwrap() = format!("No se pudo leer {}: {}", part.path, err.lock().unwrap().trim());
+                        *reader_err.lock().unwrap() = tr!("No se pudo leer {}: {}", part.path, err.lock().unwrap().trim());
                         let _ = dec.kill();
                         return;
                     }
@@ -314,7 +315,7 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
     // Writer thread: adds the pictures and titles to RGBA frames (overlapping with drawing the next one)
     // and feeds the encoder.
     let (out_tx, out_rx) = bounded::<(Vec<u8>, f32)>(3);
-    let mut enc_in = encoder.stdin.take().ok_or("ffmpeg sin entrada")?;
+    let mut enc_in = encoder.stdin.take().ok_or(lz("ffmpeg sin entrada"))?;
     let (texts, images, style) = (project.texts.clone(), project.images.clone(), project.style.clone());
     let writer = thread::spawn(move || -> bool {
         for (mut buf, t) in out_rx {
@@ -373,7 +374,7 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
         }
         let Some((mips, vw, vh)) = last.as_ref() else {
             let e = dec_err.lock().unwrap().clone();
-            failed = Some(if e.is_empty() { "No se pudo decodificar el vídeo".to_string() } else { e });
+            failed = Some(if e.is_empty() { lz("No se pudo decodificar el vídeo").to_string() } else { e });
             break;
         };
         let crossfade = project.style.finish.crossfade;
@@ -445,7 +446,7 @@ fn run(project: &Project, out: &PathBuf, cancel: &AtomicBool, tx: &Sender<Export
     if !status.success() || !wrote_all {
         let msg = enc_err.lock().unwrap().clone();
         let dmsg = dec_err.lock().unwrap().clone();
-        return Err(format!("ffmpeg no pudo crear el vídeo.\n{}{}", msg.trim(), dmsg.trim()));
+        return Err(tr!("ffmpeg no pudo crear el vídeo.\n{}{}", msg.trim(), dmsg.trim()));
     }
     Ok(())
 }

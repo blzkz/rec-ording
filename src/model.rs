@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use crate::i18n::lz;
 
 pub const PROJECT_VERSION: u32 = 4;
 
@@ -36,7 +37,7 @@ impl Default for Project {
     fn default() -> Self {
         Self {
             version: PROJECT_VERSION,
-            name: "Mi app".into(),
+            name: lz("Mi app").into(),
             revision: 0,
             media: Vec::new(),
             clips: Vec::new(),
@@ -141,10 +142,10 @@ impl Ease {
 
     pub fn label(self) -> &'static str {
         match self {
-            Ease::Spring => "Muelle",
-            Ease::Smooth => "Suave",
-            Ease::Linear => "Lineal",
-            Ease::Hold => "Corte",
+            Ease::Spring => lz("Muelle"),
+            Ease::Smooth => lz("Suave"),
+            Ease::Linear => lz("Lineal"),
+            Ease::Hold => lz("Corte"),
         }
     }
 }
@@ -183,6 +184,16 @@ pub enum CameraKind {
 
 impl CameraKind {
     pub fn label(self) -> &'static str {
+        match self {
+            CameraKind::Auto => lz("Zoom automático"),
+            CameraKind::Zoom => lz("Zoom"),
+            CameraKind::Director => lz("Director"),
+            CameraKind::Move => lz("Movimiento"),
+        }
+    }
+
+    /// The name agents see (MCP), the same in every language.
+    pub fn key(self) -> &'static str {
         match self {
             CameraKind::Auto => "Zoom automático",
             CameraKind::Zoom => "Zoom",
@@ -262,10 +273,10 @@ impl MotionBlur {
 
     pub fn label(self) -> &'static str {
         match self {
-            MotionBlur::Off => "No",
-            MotionBlur::Soft => "Suave",
-            MotionBlur::Cinematic => "Cine",
-            MotionBlur::Strong => "Intenso",
+            MotionBlur::Off => lz("No"),
+            MotionBlur::Soft => lz("Suave"),
+            MotionBlur::Cinematic => lz("Cine"),
+            MotionBlur::Strong => lz("Intenso"),
         }
     }
 
@@ -297,9 +308,9 @@ impl Antialias {
 
     pub fn label(self) -> &'static str {
         match self {
-            Antialias::Normal => "Normal",
-            Antialias::High => "Alta",
-            Antialias::Max => "Máxima",
+            Antialias::Normal => lz("Normal"),
+            Antialias::High => lz("Alta"),
+            Antialias::Max => lz("Máxima"),
         }
     }
 
@@ -364,12 +375,12 @@ impl LightStyle {
 
     pub fn label(self) -> &'static str {
         match self {
-            LightStyle::Studio => "Estudio",
-            LightStyle::Soft => "Suave",
-            LightStyle::Dramatic => "Dramática",
-            LightStyle::Backlit => "Contraluz",
-            LightStyle::Warm => "Cálida",
-            LightStyle::Cool => "Fría",
+            LightStyle::Studio => lz("Estudio"),
+            LightStyle::Soft => lz("Suave"),
+            LightStyle::Dramatic => lz("Dramática"),
+            LightStyle::Backlit => lz("Contraluz"),
+            LightStyle::Warm => lz("Cálida"),
+            LightStyle::Cool => lz("Fría"),
         }
     }
 }
@@ -409,11 +420,11 @@ impl TextPlace {
 
     pub fn label(self) -> &'static str {
         match self {
-            TextPlace::Left => "Izquierda",
-            TextPlace::Right => "Derecha",
-            TextPlace::Top => "Arriba",
-            TextPlace::Bottom => "Abajo",
-            TextPlace::Center => "Centro",
+            TextPlace::Left => lz("Izquierda"),
+            TextPlace::Right => lz("Derecha"),
+            TextPlace::Top => lz("Arriba"),
+            TextPlace::Bottom => lz("Abajo"),
+            TextPlace::Center => lz("Centro"),
         }
     }
 }
@@ -432,9 +443,9 @@ impl TextSize {
 
     pub fn label(self) -> &'static str {
         match self {
-            TextSize::Small => "Pequeño",
-            TextSize::Medium => "Mediano",
-            TextSize::Large => "Grande",
+            TextSize::Small => lz("Pequeño"),
+            TextSize::Medium => lz("Mediano"),
+            TextSize::Large => lz("Grande"),
         }
     }
 }
@@ -456,9 +467,9 @@ impl TextReveal {
 
     pub fn label(self) -> &'static str {
         match self {
-            TextReveal::Fade => "Aparecer",
-            TextReveal::Words => "Por palabras",
-            TextReveal::Lines => "Por líneas",
+            TextReveal::Fade => lz("Aparecer"),
+            TextReveal::Words => lz("Por palabras"),
+            TextReveal::Lines => lz("Por líneas"),
         }
     }
 }
@@ -477,9 +488,9 @@ impl TextColor {
 
     pub fn label(self) -> &'static str {
         match self {
-            TextColor::Auto => "Automático",
-            TextColor::Light => "Blanco",
-            TextColor::Dark => "Negro",
+            TextColor::Auto => lz("Automático"),
+            TextColor::Light => lz("Blanco"),
+            TextColor::Dark => lz("Negro"),
         }
     }
 }
@@ -529,9 +540,9 @@ impl AudioTrack {
 
     pub fn label(self) -> &'static str {
         match self {
-            AudioTrack::Effects => "Efectos",
-            AudioTrack::Voice => "Voz en off",
-            AudioTrack::Music => "Música",
+            AudioTrack::Effects => lz("Efectos"),
+            AudioTrack::Voice => lz("Voz en off"),
+            AudioTrack::Music => lz("Música"),
         }
     }
 
@@ -766,10 +777,10 @@ impl Aspect {
 
     pub fn hint(self) -> &'static str {
         match self {
-            Aspect::Landscape => "YouTube, web, ficha de Google Play",
-            Aspect::Portrait => "Reels, Shorts, TikTok, Stories",
-            Aspect::Square => "Instagram, X, LinkedIn",
-            Aspect::Feed => "Feed de Instagram y Facebook",
+            Aspect::Landscape => lz("YouTube, web, ficha de Google Play"),
+            Aspect::Portrait => lz("Reels, Shorts, TikTok, Stories"),
+            Aspect::Square => lz("Instagram, X, LinkedIn"),
+            Aspect::Feed => lz("Feed de Instagram y Facebook"),
         }
     }
 }
@@ -797,12 +808,12 @@ impl FrameStyle {
 
     pub fn label(self) -> &'static str {
         match self {
-            FrameStyle::Rounded => "Redondeado",
-            FrameStyle::Flat => "Recto",
-            FrameStyle::Curved => "Curvo",
-            FrameStyle::Tablet => "Tablet",
-            FrameStyle::None => "Sin marco",
-            FrameStyle::Custom => "Modelo 3D",
+            FrameStyle::Rounded => lz("Redondeado"),
+            FrameStyle::Flat => lz("Recto"),
+            FrameStyle::Curved => lz("Curvo"),
+            FrameStyle::Tablet => lz("Tablet"),
+            FrameStyle::None => lz("Sin marco"),
+            FrameStyle::Custom => lz("Modelo 3D"),
         }
     }
 }
@@ -843,11 +854,11 @@ impl FrameColor {
 
     pub fn label(self) -> &'static str {
         match self {
-            FrameColor::Obsidian => "Obsidiana",
-            FrameColor::Silver => "Plata",
-            FrameColor::Sand => "Arena",
-            FrameColor::Blue => "Azul",
-            FrameColor::White => "Porcelana",
+            FrameColor::Obsidian => lz("Obsidiana"),
+            FrameColor::Silver => lz("Plata"),
+            FrameColor::Sand => lz("Arena"),
+            FrameColor::Blue => lz("Azul"),
+            FrameColor::White => lz("Porcelana"),
         }
     }
 
@@ -978,17 +989,17 @@ impl VideoFit {
 
     pub fn label(self) -> &'static str {
         match self {
-            VideoFit::Fill => "Rellenar",
-            VideoFit::Fit => "Encajar",
-            VideoFit::Stretch => "Estirar",
+            VideoFit::Fill => lz("Rellenar"),
+            VideoFit::Fit => lz("Encajar"),
+            VideoFit::Stretch => lz("Estirar"),
         }
     }
 
     pub fn hint(self) -> &'static str {
         match self {
-            VideoFit::Fill => "Ocupa toda la pantalla y recorta lo que sobra",
-            VideoFit::Fit => "Muestra la grabación entera, con bandas negras",
-            VideoFit::Stretch => "Deforma la grabación para que encaje",
+            VideoFit::Fill => lz("Ocupa toda la pantalla y recorta lo que sobra"),
+            VideoFit::Fit => lz("Muestra la grabación entera, con bandas negras"),
+            VideoFit::Stretch => lz("Deforma la grabación para que encaje"),
         }
     }
 }
@@ -1074,9 +1085,9 @@ impl ExportFormat {
 
     pub fn hint(self) -> &'static str {
         match self {
-            ExportFormat::H264 => "Funciona en todas partes",
-            ExportFormat::Hevc => "Archivos más pequeños",
-            ExportFormat::Gif => "Animación sin sonido",
+            ExportFormat::H264 => lz("Funciona en todas partes"),
+            ExportFormat::Hevc => lz("Archivos más pequeños"),
+            ExportFormat::Gif => lz("Animación sin sonido"),
         }
     }
 
@@ -1100,9 +1111,18 @@ impl Quality {
 
     pub fn label(self) -> &'static str {
         match self {
-            Quality::Standard => "Estándar",
-            Quality::High => "Alta",
-            Quality::Max => "Máxima",
+            Quality::Standard => lz("Estándar"),
+            Quality::High => lz("Alta"),
+            Quality::Max => lz("Máxima"),
+        }
+    }
+
+    /// The name agents use (MCP), the same in every language.
+    pub fn key(self) -> &'static str {
+        match self {
+            Quality::Standard => "standard",
+            Quality::High => "high",
+            Quality::Max => "max",
         }
     }
 }
@@ -1211,7 +1231,7 @@ pub fn list_projects() -> Vec<ProjectEntry> {
         .filter(|p| p.to_string_lossy().ends_with(".recproj.json"))
         .filter_map(|path| {
             let modified = fs::metadata(&path).and_then(|m| m.modified()).ok()?;
-            let name = load_project(&path).map(|p| p.name).unwrap_or_else(|_| "(dañado)".into());
+            let name = load_project(&path).map(|p| p.name).unwrap_or_else(|_| lz("(dañado)").into());
             Some(ProjectEntry { name, path, modified })
         })
         .collect();
@@ -1283,7 +1303,7 @@ pub fn set_current_project(path: &Path) {
 
 /// Reads a project file of any version.
 pub fn load_project(path: &Path) -> Result<Project, String> {
-    let raw = fs::read_to_string(path).map_err(|e| format!("No se pudo leer el proyecto: {e}"))?;
+    let raw = fs::read_to_string(path).map_err(|e| tr!("No se pudo leer el proyecto: {}", e))?;
     let mut p = parse_project(&raw)?;
     if !Path::new(&p.export.folder).is_dir() {
         p.export.folder = videos_dir().to_string_lossy().into_owned();
@@ -1292,11 +1312,11 @@ pub fn load_project(path: &Path) -> Result<Project, String> {
 }
 
 fn parse_project(raw: &str) -> Result<Project, String> {
-    let v: serde_json::Value = serde_json::from_str(raw).map_err(|e| format!("Proyecto dañado: {e}"))?;
+    let v: serde_json::Value = serde_json::from_str(raw).map_err(|e| tr!("Proyecto dañado: {}", e))?;
     if v["version"].as_u64().unwrap_or(0) < 4 {
         return migrate_v3(v);
     }
-    serde_json::from_value(v).map_err(|e| format!("Proyecto dañado: {e}"))
+    serde_json::from_value(v).map_err(|e| tr!("Proyecto dañado: {}", e))
 }
 
 /// Writes atomically (the app and the MCP server may both be watching the file) and bumps
@@ -1334,9 +1354,9 @@ fn migrate_v3(v: serde_json::Value) -> Result<Project, String> {
         style: Style,
         export: ExportSettings,
     }
-    let old: V3 = serde_json::from_value(v).map_err(|e| format!("Proyecto dañado: {e}"))?;
+    let old: V3 = serde_json::from_value(v).map_err(|e| tr!("Proyecto dañado: {}", e))?;
     let mut p = Project {
-        name: if old.name.is_empty() { "Mi app".into() } else { old.name },
+        name: if old.name.is_empty() { lz("Mi app").into() } else { old.name },
         style: old.style,
         export: old.export,
         ..Default::default()

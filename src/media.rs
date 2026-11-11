@@ -13,6 +13,7 @@ use std::process::{Child, Stdio};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
+use crate::i18n::lz;
 
 pub const PREVIEW_FPS: f32 = 30.0;
 const PREVIEW_MAX_SIDE: f32 = 1280.0;
@@ -21,9 +22,9 @@ pub fn probe(path: &str) -> Result<MediaInfo, String> {
     let out = command("ffprobe")
         .args(["-v", "error", "-show_streams", "-show_format", "-of", "json", path])
         .output()
-        .map_err(|e| format!("No se pudo ejecutar ffprobe ({e}). ¿Está instalado ffmpeg?"))?;
+        .map_err(|e| tr!("No se pudo ejecutar ffprobe ({}). ¿Está instalado ffmpeg?", e))?;
     if !out.status.success() {
-        return Err(format!(
+        return Err(tr!(
             "No se pudo leer el vídeo: {}",
             String::from_utf8_lossy(&out.stderr).trim()
         ));
@@ -33,12 +34,12 @@ pub fn probe(path: &str) -> Result<MediaInfo, String> {
     let v = streams
         .iter()
         .find(|s| s["codec_type"] == "video")
-        .ok_or("El archivo no contiene vídeo")?;
+        .ok_or(lz("El archivo no contiene vídeo"))?;
 
     let mut width = v["width"].as_u64().unwrap_or(0) as u32;
     let mut height = v["height"].as_u64().unwrap_or(0) as u32;
     if width == 0 || height == 0 {
-        return Err("No se pudo leer el tamaño del vídeo".into());
+        return Err(lz("No se pudo leer el tamaño del vídeo").into());
     }
 
     let rotation = v["side_data_list"]
@@ -68,7 +69,7 @@ pub fn probe(path: &str) -> Result<MediaInfo, String> {
         .or_else(|| v["duration"].as_str().and_then(|s| s.parse().ok()))
         .unwrap_or(0.0);
     if duration <= 0.05 {
-        return Err("El vídeo está vacío o dañado".into());
+        return Err(lz("El vídeo está vacío o dañado").into());
     }
 
     Ok(MediaInfo {

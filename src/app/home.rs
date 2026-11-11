@@ -9,11 +9,11 @@ pub(super) fn ago(modified: std::time::SystemTime) -> String {
     modified
         .elapsed()
         .map(|d| match d.as_secs() {
-            s if s < 60 => "Ahora mismo".to_string(),
-            s if s < 3600 => format!("Hace {} min", s / 60),
-            s if s < 86400 => format!("Hace {} h", s / 3600),
-            s if s < 2 * 86400 => "Ayer".to_string(),
-            s => format!("Hace {} días", s / 86400),
+            s if s < 60 => lz("Ahora mismo").to_string(),
+            s if s < 3600 => tr!("Hace {} min", s / 60),
+            s if s < 86400 => tr!("Hace {} h", s / 3600),
+            s if s < 2 * 86400 => lz("Ayer").to_string(),
+            s => tr!("Hace {} días", s / 86400),
         })
         .unwrap_or_default()
 }
@@ -22,7 +22,7 @@ impl RecOrdingApp {
     /// Closes the open project (saved) and shows the start screen.
     pub(super) fn go_home(&mut self) {
         if self.recording.is_some() || self.saving_recording || matches!(self.export_ui, ExportUi::Running { .. }) {
-            self.toast("Espera a que termine la grabación o la exportación");
+            self.toast(lz("Espera a que termine la grabación o la exportación"));
             return;
         }
         if self.playing {
@@ -75,7 +75,7 @@ impl RecOrdingApp {
             Ok((path, _)) => {
                 self.open_project(path);
                 self.home = false;
-                self.toast(format!("Proyecto «{}» creado", name.trim()));
+                self.toast(tr!("Proyecto «{}» creado", name.trim()));
             }
             Err(e) => self.toast(e),
         }
@@ -84,7 +84,7 @@ impl RecOrdingApp {
     pub(super) fn pick_project_file(&self) {
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
         thread::spawn(move || {
-            match crate::platform::pick_file("Abrir proyecto", "Proyectos de rec·ording", &["json"], &projects_dir()) {
+            match crate::platform::pick_file(lz("Abrir proyecto"), lz("Proyectos de rec·ording"), &["json"], &projects_dir()) {
                 Ok(Some(p)) => {
                     let _ = tx.send(AppEvent::ProjectPicked(p));
                 }
@@ -111,7 +111,7 @@ impl RecOrdingApp {
             c.vertical_centered(|ui| {
                 wordmark_centered(ui, 34.0);
                 ui.add_space(4.0);
-                ui.label(RichText::new("Crea el vídeo de tu app").font(regular(16.0)).color(TEXT_2));
+                ui.label(RichText::new(lz("Crea el vídeo de tu app")).font(regular(16.0)).color(TEXT_2));
             });
             c.add_space(30.0);
 
@@ -120,21 +120,21 @@ impl RecOrdingApp {
             let half = (width - gap) / 2.0;
             let a = Rect::from_min_size(row.min, Vec2::new(half, row.height()));
             let b = Rect::from_min_size(Pos2::new(row.left() + half + gap, row.top()), Vec2::new(half, row.height()));
-            if action_card(&mut c, a, "new", Icon::Plus, ACCENT, "Nuevo proyecto", "Graba el móvil o importa un vídeo.").clicked() {
+            if action_card(&mut c, a, "new", Icon::Plus, ACCENT, lz("Nuevo proyecto"), lz("Graba el móvil o importa un vídeo.")).clicked() {
                 self.new_project_name.clear();
                 self.sheet = Sheet::NewProject;
             }
-            if action_card(&mut c, b, "open", Icon::Folder, PURPLE, "Abrir proyecto", "Elige uno de tus proyectos o un archivo.").clicked() {
+            if action_card(&mut c, b, "open", Icon::Folder, PURPLE, lz("Abrir proyecto"), lz("Elige uno de tus proyectos o un archivo.")).clicked() {
                 self.projects = list_projects();
                 self.sheet = Sheet::Projects;
             }
 
             c.add_space(34.0);
             c.horizontal(|ui| {
-                ui.label(RichText::new("Recientes").font(medium(15.0)).color(TEXT));
+                ui.label(RichText::new(lz("Recientes")).font(medium(15.0)).color(TEXT));
                 if !self.recent.is_empty() {
                     ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                        if ui.link(RichText::new("Ver todos").font(regular(13.0)).color(ACCENT)).clicked() {
+                        if ui.link(RichText::new(lz("Ver todos")).font(regular(13.0)).color(ACCENT)).clicked() {
                             self.projects = list_projects();
                             self.sheet = Sheet::Projects;
                         }
@@ -143,7 +143,7 @@ impl RecOrdingApp {
             });
             c.add_space(8.0);
             if self.recent.is_empty() {
-                c.label(RichText::new("Aquí aparecerán los proyectos en los que trabajes.").color(TEXT_3));
+                c.label(RichText::new(lz("Aquí aparecerán los proyectos en los que trabajes.")).color(TEXT_3));
             } else {
                 let gap = 14.0;
                 let card_w = ((width - gap * (RECENT as f32 - 1.0)) / RECENT as f32).floor();
@@ -171,7 +171,7 @@ impl RecOrdingApp {
             if !missing.is_empty() {
                 c.add_space(28.0);
                 c.label(
-                    RichText::new(format!("Para usar todas las funciones instala:\n{}", crate::platform::install_hint(&missing)))
+                    RichText::new(tr!("Para usar todas las funciones instala:\n{}", crate::platform::install_hint(&missing)))
                         .font(regular(12.5))
                         .color(YELLOW),
                 );
@@ -186,12 +186,12 @@ impl RecOrdingApp {
         let mut create = false;
         let mut close = false;
         Self::sheet_window(ctx, "new-project", 420.0, |ui| {
-            ui.label(RichText::new("Proyecto nuevo").font(medium(20.0)).color(TEXT));
-            ui.label(RichText::new("Ponle un nombre para encontrarlo después.").color(TEXT_2));
+            ui.label(RichText::new(lz("Proyecto nuevo")).font(medium(20.0)).color(TEXT));
+            ui.label(RichText::new(lz("Ponle un nombre para encontrarlo después.")).color(TEXT_2));
             ui.add_space(10.0);
             let resp = ui.add(
                 egui::TextEdit::singleline(&mut self.new_project_name)
-                    .hint_text("p. ej. «Mi app · Play Store»")
+                    .hint_text(lz("p. ej. «Mi app · Play Store»"))
                     .desired_width(f32::INFINITY)
                     .font(regular(14.0)),
             );
@@ -204,10 +204,10 @@ impl RecOrdingApp {
             }
             ui.add_space(12.0);
             ui.with_layout(egui::Layout::right_to_left(Align::Min), |ui| {
-                if primary_button(ui, "Crear", ok).clicked() {
+                if primary_button(ui, lz("Crear"), ok).clicked() {
                     create = true;
                 }
-                if secondary_button(ui, "Cancelar").clicked() {
+                if secondary_button(ui, lz("Cancelar")).clicked() {
                     close = true;
                 }
             });
@@ -272,7 +272,7 @@ fn recent_card(ui: &mut Ui, rect: Rect, pic_h: f32, e: &ProjectEntry, thumb: Opt
         }
         Some(None) => {
             paint_icon(p, Icon::AddVideo, pic.center(), 26.0, TEXT_3);
-            p.text(pic.center() + Vec2::new(0.0, 26.0), Align2::CENTER_CENTER, "Sin vídeo", regular(11.5), TEXT_3);
+            p.text(pic.center() + Vec2::new(0.0, 26.0), Align2::CENTER_CENTER, lz("Sin vídeo"), regular(11.5), TEXT_3);
         }
         None => {
             p.text(pic.center(), Align2::CENTER_CENTER, "…", regular(16.0), TEXT_3);

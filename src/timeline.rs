@@ -6,6 +6,7 @@ use crate::compositor::Layout;
 use crate::model::*;
 use crate::model3d::ModelMeta;
 use crate::text;
+use crate::i18n::lz;
 
 // ---------- Video track ----------
 
@@ -345,7 +346,7 @@ pub fn add_text(p: &mut Project, t: f32, title: &str) -> Result<u64, String> {
     let next = p.texts.iter().map(|c| c.start).filter(|&s| s >= start).fold(end_of, f32::min);
     let len = 3.0f32.min(next - start);
     if len < 0.8 {
-        return Err("No queda sitio para un texto aquí".into());
+        return Err(lz("No queda sitio para un texto aquí").into());
     }
     let id = p.next_id();
     p.texts.push(TextClip { id, start, duration: len, title: title.into(), ..TextClip::default() });
@@ -357,14 +358,14 @@ pub fn delete_text(p: &mut Project, id: u64) -> Result<(), String> {
     let before = p.texts.len();
     p.texts.retain(|c| c.id != id);
     if p.texts.len() == before {
-        return Err(format!("No hay ningún texto {id}"));
+        return Err(tr!("No hay ningún texto {}", id));
     }
     Ok(())
 }
 
 /// Sets when a title starts and ends (at least 0,8 s long).
 pub fn place_text(p: &mut Project, id: u64, start: f32, end: f32) -> Result<(), String> {
-    let c = p.texts.iter_mut().find(|c| c.id == id).ok_or(format!("No hay ningún texto {id}"))?;
+    let c = p.texts.iter_mut().find(|c| c.id == id).ok_or(tr!("No hay ningún texto {}", id))?;
     let start = start.max(0.0);
     c.start = start;
     c.duration = (end - start).max(0.8);
@@ -390,14 +391,14 @@ pub fn delete_image(p: &mut Project, id: u64) -> Result<(), String> {
     let before = p.images.len();
     p.images.retain(|c| c.id != id);
     if p.images.len() == before {
-        return Err(format!("No hay ninguna imagen {id}"));
+        return Err(tr!("No hay ninguna imagen {}", id));
     }
     Ok(())
 }
 
 /// Sets when a picture starts and ends (at least 0,2 s).
 pub fn place_image(p: &mut Project, id: u64, start: f32, end: f32) -> Result<(), String> {
-    let c = p.images.iter_mut().find(|c| c.id == id).ok_or(format!("No hay ninguna imagen {id}"))?;
+    let c = p.images.iter_mut().find(|c| c.id == id).ok_or(tr!("No hay ninguna imagen {}", id))?;
     let start = start.max(0.0);
     c.start = start;
     c.duration = (end - start).max(0.2);
@@ -415,7 +416,7 @@ pub fn images_at(p: &Project, t: f32) -> Vec<crate::images::Shown<'_>> {
 /// repeating when the file is shorter; effects and voice play once. Returns its id.
 pub fn add_audio(p: &mut Project, track: AudioTrack, path: &str, length: f32, t: f32) -> Result<u64, String> {
     if length < 0.05 {
-        return Err("El archivo no tiene sonido".into());
+        return Err(lz("El archivo no tiene sonido").into());
     }
     let total = duration(p);
     let start = if total > 0.0 { t.clamp(0.0, (total - 0.1).max(0.0)) } else { t.max(0.0) };
@@ -437,7 +438,7 @@ pub fn delete_audio(p: &mut Project, id: u64) -> Result<(), String> {
     let before = p.audio.len();
     p.audio.retain(|c| c.id != id);
     if p.audio.len() == before {
-        return Err(format!("No hay ningún sonido {id}"));
+        return Err(tr!("No hay ningún sonido {}", id));
     }
     Ok(())
 }
@@ -446,7 +447,7 @@ pub fn delete_audio(p: &mut Project, id: u64) -> Result<(), String> {
 /// starts playing, so what is heard keeps its moment (like trimming a video clip); without a
 /// loop it cannot go past either end of the file.
 pub fn trim_audio(p: &mut Project, id: u64, start: f32, end: f32) -> Result<(), String> {
-    let c = p.audio.iter_mut().find(|c| c.id == id).ok_or(format!("No hay ningún sonido {id}"))?;
+    let c = p.audio.iter_mut().find(|c| c.id == id).ok_or(tr!("No hay ningún sonido {}", id))?;
     let len = c.length.max(0.05);
     let mut start = start.max(0.0);
     let mut offset = c.offset + (start - c.start);
@@ -469,7 +470,7 @@ pub fn trim_audio(p: &mut Project, id: u64, start: f32, end: f32) -> Result<(), 
 
 /// Moves a sound without changing what it plays.
 pub fn move_audio(p: &mut Project, id: u64, start: f32) -> Result<(), String> {
-    let c = p.audio.iter_mut().find(|c| c.id == id).ok_or(format!("No hay ningún sonido {id}"))?;
+    let c = p.audio.iter_mut().find(|c| c.id == id).ok_or(tr!("No hay ningún sonido {}", id))?;
     c.start = start.max(0.0);
     p.audio.sort_by(|a, b| a.start.total_cmp(&b.start));
     Ok(())
@@ -477,7 +478,7 @@ pub fn move_audio(p: &mut Project, id: u64, start: f32) -> Result<(), String> {
 
 /// Turns repeating on or off; without it the clip is cut at the end of the file.
 pub fn set_audio_loop(p: &mut Project, id: u64, looped: bool) -> Result<(), String> {
-    let c = p.audio.iter_mut().find(|c| c.id == id).ok_or(format!("No hay ningún sonido {id}"))?;
+    let c = p.audio.iter_mut().find(|c| c.id == id).ok_or(tr!("No hay ningún sonido {}", id))?;
     c.looped = looped;
     if !looped {
         c.duration = c.duration.min(c.length - c.offset).max(0.05);
@@ -613,7 +614,7 @@ fn sort_camera(p: &mut Project) {
 pub fn add_zoom(p: &mut Project, start: f32, end: f32, zoom: f32, x: f32, y: f32) -> Result<u64, String> {
     let total = duration(p);
     if end - start < 0.3 || start < 0.0 || start >= total {
-        return Err("El zoom debe durar al menos 0,3 s y caer dentro del vídeo".into());
+        return Err(lz("El zoom debe durar al menos 0,3 s y caer dentro del vídeo").into());
     }
     let id = p.next_id();
     let clip = zoom_clip(id, start, end.min(total), zoom.clamp(1.0, 5.0), x.clamp(0.0, 1.0), y.clamp(0.0, 1.0), CameraKind::Zoom);
@@ -646,14 +647,14 @@ pub fn add_move(p: &mut Project, t: f32) -> Result<u64, String> {
 fn free_span(p: &Project, t: f32, before: f32, len: f32) -> Result<(f32, f32), String> {
     let total = duration(p);
     if p.camera.iter().any(|c| t > c.start + 1e-4 && t < c.end() - 1e-4) {
-        return Err("Ya hay un movimiento de cámara en ese momento: selecciónalo y añade ahí el fotograma clave".into());
+        return Err(lz("Ya hay un movimiento de cámara en ese momento: selecciónalo y añade ahí el fotograma clave").into());
     }
     let prev_end = p.camera.iter().map(|c| c.end()).filter(|e| *e <= t + 1e-4).fold(0.0f32, f32::max);
     let next_start = p.camera.iter().map(|c| c.start).filter(|s| *s >= t - 1e-4).fold(total.max(t), f32::min);
     let start = (t - before).max(prev_end).max(0.0);
     let end = (start + len).min(next_start).min(total.max(start + 1.0));
     if end - start < 1.0 || t < start || t > end {
-        return Err("No hay hueco libre en la pista de cámara: elige un movimiento existente y añade el fotograma clave en él".into());
+        return Err(lz("No hay hueco libre en la pista de cámara: elige un movimiento existente y añade el fotograma clave en él").into());
     }
     Ok((start, end))
 }
@@ -711,15 +712,15 @@ pub fn delete_camera_clip(p: &mut Project, id: u64) -> Result<(), String> {
     let before = p.camera.len();
     p.camera.retain(|c| c.id != id);
     if p.camera.len() == before {
-        return Err(format!("No hay ningún clip de cámara {id}"));
+        return Err(tr!("No hay ningún clip de cámara {}", id));
     }
     Ok(())
 }
 
 pub fn delete_camera_key(p: &mut Project, id: u64, index: usize) -> Result<(), String> {
-    let c = p.camera.iter_mut().find(|c| c.id == id).ok_or(format!("No hay ningún clip de cámara {id}"))?;
+    let c = p.camera.iter_mut().find(|c| c.id == id).ok_or(tr!("No hay ningún clip de cámara {}", id))?;
     if index >= c.keys.len() {
-        return Err("Ese fotograma clave no existe".into());
+        return Err(lz("Ese fotograma clave no existe").into());
     }
     c.keys.remove(index);
     if c.keys.len() < 2 {
@@ -739,7 +740,7 @@ pub fn delete_camera_key(p: &mut Project, id: u64, index: usize) -> Result<(), S
 pub fn move_camera_clip(p: &mut Project, id: u64, start: f32) -> Result<(), String> {
     let total = duration(p);
     let others: Vec<(f32, f32)> = p.camera.iter().filter(|c| c.id != id).map(|c| (c.start, c.end())).collect();
-    let c = p.camera.iter_mut().find(|c| c.id == id).ok_or(format!("No hay ningún clip de cámara {id}"))?;
+    let c = p.camera.iter_mut().find(|c| c.id == id).ok_or(tr!("No hay ningún clip de cámara {}", id))?;
     let len = c.duration();
     let mut s = start.clamp(0.0, (total - len).max(0.0));
     for (a, b) in others {
@@ -756,7 +757,7 @@ pub fn move_camera_clip(p: &mut Project, id: u64, start: f32) -> Result<(), Stri
 /// Stretches a camera clip to a new start/end. Zooms keep their in and out ramps; other clips
 /// scale all their keyframes.
 pub fn resize_camera_clip(p: &mut Project, id: u64, start: f32, end: f32) -> Result<(), String> {
-    let c = p.camera.iter_mut().find(|c| c.id == id).ok_or(format!("No hay ningún clip de cámara {id}"))?;
+    let c = p.camera.iter_mut().find(|c| c.id == id).ok_or(tr!("No hay ningún clip de cámara {}", id))?;
     let len = (end - start).max(RAMP * 2.0 + 0.1);
     let old = c.duration().max(1e-3);
     if matches!(c.kind, CameraKind::Zoom | CameraKind::Auto) && c.keys.len() == 4 {
@@ -790,13 +791,13 @@ impl DevicePreset {
 
     pub fn label(self) -> &'static str {
         match self {
-            DevicePreset::SpinIn => "Entrada girando",
-            DevicePreset::DropIn => "Caída desde arriba",
-            DevicePreset::FullTurn => "Giro 360°",
-            DevicePreset::Flip => "Voltereta 360°",
-            DevicePreset::RiseUp => "Asomarse desde abajo",
-            DevicePreset::Hop => "Saltito",
-            DevicePreset::Exit => "Salida",
+            DevicePreset::SpinIn => lz("Entrada girando"),
+            DevicePreset::DropIn => lz("Caída desde arriba"),
+            DevicePreset::FullTurn => lz("Giro 360°"),
+            DevicePreset::Flip => lz("Voltereta 360°"),
+            DevicePreset::RiseUp => lz("Asomarse desde abajo"),
+            DevicePreset::Hop => lz("Saltito"),
+            DevicePreset::Exit => lz("Salida@móvil"),
         }
     }
 
@@ -894,7 +895,7 @@ pub fn delete_device_clip(p: &mut Project, id: u64) -> Result<(), String> {
     let before = p.device.len();
     p.device.retain(|c| c.id != id);
     if p.device.len() == before {
-        return Err(format!("No hay ningún movimiento del dispositivo {id}"));
+        return Err(tr!("No hay ningún movimiento del dispositivo {}", id));
     }
     Ok(())
 }
@@ -920,12 +921,12 @@ pub fn append_media(p: &mut Project, info: MediaInfo, touches: Vec<Touch>) -> u6
 
 /// Splits the clip under `t` in two.
 pub fn split_at(p: &mut Project, t: f32) -> Result<u64, String> {
-    let c = locate(p, t).ok_or("No hay ningún clip en ese punto")?;
+    let c = locate(p, t).ok_or(lz("No hay ningún clip en ese punto"))?;
     if let Some(secs) = c.clip.freeze {
         // A still splits into two shorter stills.
         let first = t - c.start;
         if first < 0.1 || secs - first < 0.1 {
-            return Err("Demasiado cerca del borde del clip para dividirlo".into());
+            return Err(lz("Demasiado cerca del borde del clip para dividirlo").into());
         }
         let id = p.next_id();
         p.clips[c.index].freeze = Some(first);
@@ -934,7 +935,7 @@ pub fn split_at(p: &mut Project, t: f32) -> Result<u64, String> {
     }
     let cut = source_time(&c, t);
     if cut - c.clip.source_in < 0.1 || c.clip.source_out - cut < 0.1 {
-        return Err("Demasiado cerca del borde del clip para dividirlo".into());
+        return Err(lz("Demasiado cerca del borde del clip para dividirlo").into());
     }
     let id = p.next_id();
     p.clips[c.index].source_out = cut;
@@ -946,16 +947,16 @@ pub fn split_at(p: &mut Project, t: f32) -> Result<u64, String> {
 /// do the camera moves, device motion and titles over them).
 pub fn trim_clip(p: &mut Project, id: u64, source_in: Option<f32>, source_out: Option<f32>) -> Result<(), String> {
     keep_in_place(p, false, |p| {
-        let i = p.clips.iter().position(|c| c.id == id).ok_or(format!("No hay ningún clip {id}"))?;
+        let i = p.clips.iter().position(|c| c.id == id).ok_or(tr!("No hay ningún clip {}", id))?;
         let media_len = p.media(p.clips[i].media).map(|m| m.info.duration).unwrap_or(f32::MAX);
         let c = &mut p.clips[i];
         if c.freeze.is_some() {
-            return Err("Es un fotograma congelado: cambia su duración en su lugar".into());
+            return Err(lz("Es un fotograma congelado: cambia su duración en su lugar").into());
         }
         let a = source_in.unwrap_or(c.source_in).clamp(0.0, media_len);
         let b = source_out.unwrap_or(c.source_out).clamp(0.0, media_len);
         if b - a < 0.2 {
-            return Err("El clip debe durar al menos 0,2 s".into());
+            return Err(lz("El clip debe durar al menos 0,2 s").into());
         }
         c.source_in = a;
         c.source_out = b;
@@ -966,7 +967,7 @@ pub fn trim_clip(p: &mut Project, id: u64, source_in: Option<f32>, source_out: O
 
 pub fn move_clip(p: &mut Project, id: u64, index: usize) -> Result<(), String> {
     keep_in_place(p, false, |p| {
-        let i = p.clips.iter().position(|c| c.id == id).ok_or(format!("No hay ningún clip {id}"))?;
+        let i = p.clips.iter().position(|c| c.id == id).ok_or(tr!("No hay ningún clip {}", id))?;
         let c = p.clips.remove(i);
         p.clips.insert(index.min(p.clips.len()), c);
         Ok(())
@@ -978,7 +979,7 @@ pub fn move_clip(p: &mut Project, id: u64, index: usize) -> Result<(), String> {
 /// everything else stays with its recording. Returns how many of those went with it.
 pub fn delete_clip(p: &mut Project, id: u64) -> Result<usize, String> {
     let ((), lost) = keep_in_place(p, true, |p| {
-        let i = p.clips.iter().position(|c| c.id == id).ok_or(format!("No hay ningún clip {id}"))?;
+        let i = p.clips.iter().position(|c| c.id == id).ok_or(tr!("No hay ningún clip {}", id))?;
         p.clips.remove(i);
         Ok(())
     })?;
@@ -990,9 +991,9 @@ pub fn delete_clip(p: &mut Project, id: u64) -> Result<usize, String> {
 /// Plays a clip faster or slower (0,25× to 4×).
 pub fn set_clip_speed(p: &mut Project, id: u64, speed: f32) -> Result<(), String> {
     keep_in_place(p, false, |p| {
-        let c = p.clips.iter_mut().find(|c| c.id == id).ok_or(format!("No hay ningún clip {id}"))?;
+        let c = p.clips.iter_mut().find(|c| c.id == id).ok_or(tr!("No hay ningún clip {}", id))?;
         if c.freeze.is_some() {
-            return Err("Un fotograma congelado no tiene velocidad".into());
+            return Err(lz("Un fotograma congelado no tiene velocidad").into());
         }
         c.speed = speed.clamp(0.25, 4.0);
         Ok(())
@@ -1005,7 +1006,7 @@ pub fn set_clip_speed(p: &mut Project, id: u64, speed: f32) -> Result<(), String
 pub fn freeze_frame(p: &mut Project, t: f32, secs: f32) -> Result<u64, String> {
     let secs = secs.clamp(0.1, 60.0);
     keep_in_place(p, false, |p| {
-        let c = locate(p, t).ok_or("No hay ningún vídeo en ese punto")?;
+        let c = locate(p, t).ok_or(lz("No hay ningún vídeo en ese punto"))?;
         let s = source_time(&c, t);
         let at = if c.clip.freeze.is_some() {
             c.index + 1
@@ -1029,8 +1030,8 @@ pub fn freeze_frame(p: &mut Project, t: f32, secs: f32) -> Result<u64, String> {
 /// Changes how long a still lasts.
 pub fn set_freeze_duration(p: &mut Project, id: u64, secs: f32) -> Result<(), String> {
     keep_in_place(p, false, |p| {
-        let c = p.clips.iter_mut().find(|c| c.id == id).ok_or(format!("No hay ningún clip {id}"))?;
-        let f = c.freeze.as_mut().ok_or("Ese clip no es un fotograma congelado")?;
+        let c = p.clips.iter_mut().find(|c| c.id == id).ok_or(tr!("No hay ningún clip {}", id))?;
+        let f = c.freeze.as_mut().ok_or(lz("Ese clip no es un fotograma congelado"))?;
         *f = secs.clamp(0.1, 60.0);
         Ok(())
     })
@@ -1050,7 +1051,7 @@ pub fn replace_clip_video(p: &mut Project, id: u64, info: MediaInfo, touches: Ve
                 mid
             }
         };
-        let i = p.clips.iter().position(|c| c.id == id).ok_or(format!("No hay ningún clip {id}"))?;
+        let i = p.clips.iter().position(|c| c.id == id).ok_or(tr!("No hay ningún clip {}", id))?;
         let c = &mut p.clips[i];
         c.media = media;
         c.source_in = c.source_in.min((len - 0.2).max(0.0));
@@ -1069,10 +1070,10 @@ pub fn add_target(p: &mut Project, t: f32, x0: f32, y0: f32, x1: f32, y1: f32) -
     let (x0, x1) = (x0.min(x1).clamp(0.0, 1.0), x0.max(x1).clamp(0.0, 1.0));
     let (y0, y1) = (y0.min(y1).clamp(0.0, 1.0), y0.max(y1).clamp(0.0, 1.0));
     if x1 - x0 < 0.02 || y1 - y0 < 0.01 {
-        return Err("El recuadro es demasiado pequeño".into());
+        return Err(lz("El recuadro es demasiado pequeño").into());
     }
     if t < 0.0 || t > duration(p) {
-        return Err("Ese momento está fuera del vídeo".into());
+        return Err(lz("Ese momento está fuera del vídeo").into());
     }
     p.director.targets.retain(|o| (o.time - t).abs() >= 0.05);
     let id = p.next_id();
@@ -1085,7 +1086,7 @@ pub fn remove_target(p: &mut Project, id: u64) -> Result<(), String> {
     let before = p.director.targets.len();
     p.director.targets.retain(|t| t.id != id);
     if before == p.director.targets.len() {
-        return Err(format!("No hay ningún objetivo {id}"));
+        return Err(tr!("No hay ningún objetivo {}", id));
     }
     Ok(())
 }
@@ -1131,7 +1132,7 @@ fn shot_for(t: &Target, layout: &Layout, motion: DirectorMotion, intensity: f32,
 pub fn director_generate(p: &mut Project, cw: f32, ch: f32, model: Option<&ModelMeta>) -> Result<(usize, usize), String> {
     let mut targets = p.director.targets.clone();
     if targets.is_empty() {
-        return Err("Dibuja al menos un objetivo".into());
+        return Err(lz("Dibuja al menos un objetivo").into());
     }
     targets.sort_by(|a, b| a.time.total_cmp(&b.time));
     let total = duration(p);
@@ -1336,7 +1337,7 @@ mod tests {
         let half = pose_at(&p, 2.6);
         assert!(half.turn > 100.0 && half.turn < 260.0, "{half:?}");
         add_device_preset(&mut p, DevicePreset::Exit, 10.0);
-        assert!((p.device.iter().find(|d| d.name == "Salida").unwrap().end() - 10.0).abs() < 1e-4);
+        assert!((p.device.iter().find(|d| d.name == DevicePreset::Exit.label()).unwrap().end() - 10.0).abs() < 1e-4);
         assert!(pose_at(&p, 10.0).dy > 0.8);
     }
 

@@ -266,14 +266,15 @@ fn fmt_time(t: f32) -> String {
     let t = t.max(0.0);
     let m = (t / 60.0).floor() as u32;
     let s = t - m as f32 * 60.0;
-    format!("{m}:{s:04.1}").replace('.', ",")
+    format!("{m}:{s:04.1}").replace('.', crate::i18n::comma())
 }
 
 fn fmt_secs(t: f32) -> String {
-    format!("{t:.1} s").replace('.', ",")
+    format!("{t:.1} s").replace('.', crate::i18n::comma())
 }
 
 use crate::platform::open_path;
+use crate::i18n::lz;
 
 fn home_relative(p: &str) -> String {
     let h = crate::platform::home().to_string_lossy().into_owned();
@@ -503,13 +504,13 @@ impl RecOrdingApp {
             // The assistant opened or created a project: show it.
             if current != self.project_path {
                 self.open_from_home(current);
-                self.toast("Se ha abierto un proyecto desde el asistente");
+                self.toast(lz("Se ha abierto un proyecto desde el asistente"));
             }
             return;
         }
         if current != self.project_path {
             self.open_project(current);
-            self.toast("Se ha abierto otro proyecto desde el asistente");
+            self.toast(lz("Se ha abierto otro proyecto desde el asistente"));
             return;
         }
         let Ok(disk) = load_project(&self.project_path) else { return };
@@ -530,7 +531,7 @@ impl RecOrdingApp {
                 for info in media {
                     self.prepare_media(&info);
                 }
-                self.toast("Cambios del asistente aplicados");
+                self.toast(lz("Cambios del asistente aplicados"));
             }
         }
     }
@@ -567,7 +568,7 @@ impl RecOrdingApp {
     }
 
     fn import(&mut self, path: PathBuf) {
-        self.toast("Abriendo vídeo…");
+        self.toast(lz("Abriendo vídeo…"));
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
         thread::spawn(move || {
             let ev = match media::probe(&path.to_string_lossy()) {
@@ -582,7 +583,7 @@ impl RecOrdingApp {
     fn pick_video(&self) {
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
         thread::spawn(move || {
-            let res = crate::platform::pick_file("Importar vídeo", "Vídeos", &["mp4", "mov", "mkv", "webm"], &videos_dir());
+            let res = crate::platform::pick_file(lz("Importar vídeo"), lz("Vídeos"), &["mp4", "mov", "mkv", "webm"], &videos_dir());
             match res {
                 Ok(Some(p)) => {
                     let _ = tx.send(AppEvent::ImportPicked(p));
@@ -599,7 +600,7 @@ impl RecOrdingApp {
     fn pick_model(&self) {
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
         thread::spawn(move || {
-            let res = crate::platform::pick_file("Importar modelo 3D", "Modelos 3D", &["glb", "gltf", "zip"], &crate::platform::home());
+            let res = crate::platform::pick_file(lz("Importar modelo 3D"), lz("Modelos 3D"), &["glb", "gltf", "zip"], &crate::platform::home());
             match res {
                 Ok(Some(p)) => {
                     let _ = tx.send(AppEvent::ModelPicked(p));
@@ -670,7 +671,7 @@ impl RecOrdingApp {
         match self.model_cache.get(&path).cloned() {
             Some(src) => {
                 if src.guess.is_none() {
-                    self.toast("No se encontró la pantalla del modelo: elígela en «Pantalla».");
+                    self.toast(lz("No se encontró la pantalla del modelo: elígela en «Pantalla»."));
                 }
                 self.project.style.model = Some(Self::default_model_settings(&path, &src));
             }
@@ -698,7 +699,7 @@ impl RecOrdingApp {
         let Some(part) = cm.screen(src.guess, src.parts.len()) else {
             self.model_prepared = None;
             self.model_error = Some(cm);
-            self.toast("No se encontró la pantalla del modelo: elígela en «Pantalla».");
+            self.toast(lz("No se encontró la pantalla del modelo: elígela en «Pantalla»."));
             return;
         };
         match model3d::prepare(src, part, cm.quarter_turns) {
@@ -726,7 +727,7 @@ impl RecOrdingApp {
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
         let current = self.project.export.folder.clone();
         thread::spawn(move || {
-            if let Ok(Some(p)) = crate::platform::pick_folder("Guardar vídeos en", std::path::Path::new(&current)) {
+            if let Ok(Some(p)) = crate::platform::pick_folder(lz("Guardar vídeos en"), std::path::Path::new(&current)) {
                 let _ = tx.send(AppEvent::FolderPicked(p));
             }
             ctx.request_repaint();
@@ -762,12 +763,16 @@ impl RecOrdingApp {
                     if recorded {
                         self.sheet = Sheet::None;
                     }
-                    let what = if recorded { "Grabación" } else { "Vídeo" };
-                    let place = if was_empty { "lista" } else { "añadida al final" };
+                    let head = match (recorded, was_empty) {
+                        (true, true) => lz("Grabación lista"),
+                        (true, false) => lz("Grabación añadida al final"),
+                        (false, true) => lz("Vídeo listo"),
+                        (false, false) => lz("Vídeo añadido al final"),
+                    };
                     self.toast(if n_touches > 0 {
-                        format!("{what} {place} · {n_touches} toques → {zooms} zooms automáticos")
+                        tr!("{} · {} toques → {} zooms automáticos", head, n_touches, zooms)
                     } else {
-                        format!("{what} {place}. Añade zooms con el botón de la lupa o la tecla Z.")
+                        tr!("{}. Añade zooms con el botón de la lupa o la tecla Z.", head)
                     });
                 }
                 AppEvent::MediaFailed(e) => self.toast(e),
@@ -841,7 +846,7 @@ impl RecOrdingApp {
                         Ok(()) => {
                             self.prepare_media(&info);
                             self.requested_time = None;
-                            self.toast("Vídeo cambiado; el recorte y lo que hay encima se conservan");
+                            self.toast(lz("Vídeo cambiado; el recorte y lo que hay encima se conservan"));
                         }
                         Err(e) => self.toast(e),
                     }
@@ -921,7 +926,7 @@ impl RecOrdingApp {
                             if self.model_pending.as_deref() == Some(path.as_str()) {
                                 self.model_pending = None;
                                 if src.guess.is_none() {
-                                    self.toast("No se encontró la pantalla del modelo: elígela en «Pantalla».");
+                                    self.toast(lz("No se encontró la pantalla del modelo: elígela en «Pantalla»."));
                                 }
                                 self.project.style.model = Some(Self::default_model_settings(&path, &src));
                                 self.project.style.frame = FrameStyle::Custom;
@@ -953,7 +958,7 @@ impl RecOrdingApp {
                     }
                 }
                 AppEvent::PickerUnavailable => {
-                    self.toast("No hay diálogo de archivos (instala zenity). Puedes arrastrar el vídeo a la ventana.")
+                    self.toast(lz("No hay diálogo de archivos (instala zenity). Puedes arrastrar el vídeo a la ventana."))
                 }
             }
         }
@@ -1140,7 +1145,7 @@ impl RecOrdingApp {
             let ev = match res {
                 CaptureResult::Done { path, touches } => match media::probe(&path.to_string_lossy()) {
                     Ok(info) => AppEvent::MediaLoaded { info, touches, recorded: true },
-                    Err(e) => AppEvent::RecordingFailed(format!("La grabación no se puede abrir: {e}")),
+                    Err(e) => AppEvent::RecordingFailed(tr!("La grabación no se puede abrir: {}", e)),
                 },
                 CaptureResult::Failed(e) => AppEvent::RecordingFailed(e),
             };
@@ -1198,7 +1203,7 @@ impl RecOrdingApp {
     fn undo_redo(&mut self, undo: bool) {
         let (from, to) = if undo { (&mut self.undo, &mut self.redo) } else { (&mut self.redo, &mut self.undo) };
         let Some(prev) = from.pop() else {
-            self.toast(if undo { "No hay nada que deshacer" } else { "No hay nada que rehacer" });
+            self.toast(if undo { lz("No hay nada que deshacer") } else { lz("No hay nada que rehacer") });
             return;
         };
         to.push(std::mem::replace(&mut self.project, prev));
@@ -1217,7 +1222,7 @@ impl RecOrdingApp {
         let p = &mut self.project;
         let r = match self.selection {
             Selection::Clip(id) => match timeline::delete_clip(p, id) {
-                Ok(lost) if lost > 0 => Err(format!("Clip eliminado, con {lost} elementos que estaban sobre él (Ctrl+Z para recuperarlos)")),
+                Ok(lost) if lost > 0 => Err(tr!("Clip eliminado, con {} elementos que estaban sobre él (Ctrl+Z para recuperarlos)", lost)),
                 other => other.map(|_| ()),
             },
             Selection::Camera { id, key: Some(k) } if p.camera.iter().any(|c| c.id == id && c.kind == CameraKind::Move) => timeline::delete_camera_key(p, id, k),
@@ -1481,11 +1486,11 @@ impl RecOrdingApp {
                 left.add_space(18.0);
                 let busy = self.recording.is_some() || self.saving_recording;
                 let home = self.home;
-                if !home && self.toolbar_button(&mut left, "Grabar", |p, c, col| {
+                if !home && self.toolbar_button(&mut left, lz("Grabar"), |p, c, col| {
                     p.circle_filled(c, 5.5, RED);
                     let _ = col;
                 })
-                .on_hover_text("Grabar la pantalla del móvil (por USB) o de un emulador")
+                .on_hover_text(lz("Grabar la pantalla del móvil (por USB) o de un emulador"))
                 .clicked()
                 {
                     self.sheet = Sheet::Record;
@@ -1494,8 +1499,8 @@ impl RecOrdingApp {
                 }
                 if !home
                     && self
-                        .toolbar_button(&mut left, "Importar", |p, c, col| icon_import(p, c, 13.0, col))
-                        .on_hover_text("Añadir un vídeo que ya tienes grabado")
+                        .toolbar_button(&mut left, lz("Importar"), |p, c, col| icon_import(p, c, 13.0, col))
+                        .on_hover_text(lz("Añadir un vídeo que ya tienes grabado"))
                         .clicked()
                     && !busy
                 {
@@ -1504,8 +1509,8 @@ impl RecOrdingApp {
 
                 if !home
                     && self
-                        .toolbar_button(&mut left, "Proyectos", |p, c, col| paint_icon(p, Icon::Home, c, 14.0, col))
-                        .on_hover_text("Cerrar este proyecto y volver al inicio para abrir o crear otro")
+                        .toolbar_button(&mut left, lz("Proyectos"), |p, c, col| paint_icon(p, Icon::Home, c, 14.0, col))
+                        .on_hover_text(lz("Cerrar este proyecto y volver al inicio para abrir o crear otro"))
                         .clicked()
                 {
                     self.go_home();
@@ -1520,21 +1525,21 @@ impl RecOrdingApp {
                             .horizontal_align(Align::Center)
                             .font(medium(14.0))
                             .text_color(TEXT)
-                            .hint_text("Nombre del proyecto"),
+                            .hint_text(lz("Nombre del proyecto")),
                     )
-                    .on_hover_text("Nombre del proyecto (se usa para el archivo exportado)");
+                    .on_hover_text(lz("Nombre del proyecto (se usa para el archivo exportado)"));
                 }
 
                 let mut right = ui.new_child(UiBuilder::new().max_rect(full).layout(egui::Layout::right_to_left(Align::Center)));
                 if !home {
                     let editing = !self.project.is_empty();
-                    let tip = if self.inspector_open { "Ocultar el panel de ajustes" } else { "Mostrar el panel de ajustes" };
+                    let tip = if self.inspector_open { lz("Ocultar el panel de ajustes") } else { lz("Mostrar el panel de ajustes") };
                     if icon_button(&mut right, Icon::Sidebar, tip, "Ctrl+4", false, editing).clicked() {
                         self.inspector_open = !self.inspector_open;
                     }
                     right.add_space(6.0);
                     let can_export = !self.project.is_empty() && !busy;
-                    if primary_button(&mut right, "Exportar", can_export).clicked() {
+                    if primary_button(&mut right, lz("Exportar"), can_export).clicked() {
                         self.sheet = Sheet::Export;
                         if !matches!(self.export_ui, ExportUi::Running { .. }) {
                             self.export_ui = ExportUi::Idle;
@@ -1543,25 +1548,25 @@ impl RecOrdingApp {
                     right.add_space(6.0);
                 }
                 if self
-                    .toolbar_button(&mut right, "Asistente", |p, c, col| {
+                    .toolbar_button(&mut right, lz("Asistente"), |p, c, col| {
                         p.circle_stroke(c, 5.5, Stroke::new(1.5_f32, col));
                         p.circle_filled(c, 1.8, col);
                     })
-                    .on_hover_text("Conectar un agente (Claude, Cursor, Codex…) por MCP")
+                    .on_hover_text(lz("Conectar un agente (Claude, Cursor, Codex…) por MCP"))
                     .clicked()
                 {
                     self.sheet = Sheet::Assistant;
                 }
                 right.add_space(6.0);
-                if icon_button(&mut right, Icon::Gear, "Ajustes e información", "", false, true).clicked() {
+                if icon_button(&mut right, Icon::Gear, lz("Ajustes e información"), "", false, true).clicked() {
                     self.update_check = UpdateCheck::Idle;
                     self.sheet = Sheet::Settings;
                 }
                 if let Some(r) = &self.update {
-                    let tip = format!("{APP_NAME} {} está disponible", r.version);
+                    let tip = tr!("{} {} está disponible", APP_NAME, r.version);
                     right.add_space(6.0);
                     if self
-                        .toolbar_button(&mut right, "Actualización", |p, c, _| {
+                        .toolbar_button(&mut right, lz("Actualización"), |p, c, _| {
                             p.circle_filled(c, 6.5, ACCENT);
                             p.line_segment([c + Vec2::new(0.0, 3.2), c + Vec2::new(0.0, -3.2)], Stroke::new(1.5_f32, Color32::WHITE));
                             p.line_segment([c + Vec2::new(-2.6, -0.6), c + Vec2::new(0.0, -3.2)], Stroke::new(1.5_f32, Color32::WHITE));
@@ -1592,17 +1597,17 @@ impl RecOrdingApp {
             let r = ui.max_rect();
             let col = Rect::from_center_size(r.center() - Vec2::new(0.0, 20.0), Vec2::new(660.0, 440.0));
             let mut c = ui.new_child(UiBuilder::new().max_rect(col).layout(egui::Layout::top_down(Align::Center)));
-            c.label(RichText::new("Crea el vídeo de tu app").font(medium(30.0)).color(TEXT));
+            c.label(RichText::new(lz("Crea el vídeo de tu app")).font(medium(30.0)).color(TEXT));
             c.add_space(2.0);
-            c.label(RichText::new("Graba tu móvil Android o un emulador, o importa una grabación.").font(regular(15.0)).color(TEXT_2));
-            c.label(with_name("rec·ording le pone un marco, un fondo y zooms suaves en cada toque.", regular(15.0), TEXT_2));
+            c.label(RichText::new(lz("Graba tu móvil Android o un emulador, o importa una grabación.")).font(regular(15.0)).color(TEXT_2));
+            c.label(with_name(lz("rec·ording le pone un marco, un fondo y zooms suaves en cada toque."), regular(15.0), TEXT_2));
             c.add_space(30.0);
 
             let (row, _) = c.allocate_exact_size(Vec2::new(640.0, 190.0), Sense::hover());
             let a = Rect::from_min_size(row.min, Vec2::new(310.0, 190.0));
             let b = Rect::from_min_size(Pos2::new(row.right() - 310.0, row.top()), Vec2::new(310.0, 190.0));
             if self
-                .welcome_card(&mut c, a, "rec", "Grabar el móvil", "Conecta el móvil por USB o abre un emulador y graba lo que haces.", RED, |p, ctr| {
+                .welcome_card(&mut c, a, "rec", lz("Grabar el móvil"), lz("Conecta el móvil por USB o abre un emulador y graba lo que haces."), RED, |p, ctr| {
                     icon_phone(p, ctr, 28.0, RED)
                 })
                 .clicked()
@@ -1612,7 +1617,7 @@ impl RecOrdingApp {
                 self.scan_devices();
             }
             if self
-                .welcome_card(&mut c, b, "imp", "Importar vídeo", "Elige una grabación o arrástrala a esta ventana.", ACCENT, |p, ctr| {
+                .welcome_card(&mut c, b, "imp", lz("Importar vídeo"), lz("Elige una grabación o arrástrala a esta ventana."), ACCENT, |p, ctr| {
                     icon_import(p, ctr, 24.0, ACCENT)
                 })
                 .clicked()
@@ -1621,7 +1626,7 @@ impl RecOrdingApp {
             }
 
             c.add_space(26.0);
-            c.label(RichText::new("1  Graba      ·      2  Ajusta el estilo      ·      3  Exporta").font(regular(13.0)).color(TEXT_3));
+            c.label(RichText::new(lz("1  Graba      ·      2  Ajusta el estilo      ·      3  Exporta")).font(regular(13.0)).color(TEXT_3));
 
             let mut missing = Vec::new();
             if !self.tools.ffmpeg {
@@ -1636,7 +1641,7 @@ impl RecOrdingApp {
             if !missing.is_empty() {
                 c.add_space(18.0);
                 c.label(
-                    RichText::new(format!("Para usar todas las funciones instala:\n{}", crate::platform::install_hint(&missing)))
+                    RichText::new(tr!("Para usar todas las funciones instala:\n{}", crate::platform::install_hint(&missing)))
                         .font(regular(12.5))
                         .color(YELLOW),
                 );
@@ -1687,9 +1692,9 @@ impl RecOrdingApp {
 
         let header = |ui: &mut Ui| {
             let (tip_del, tip_ren) = match (&current, &own) {
-                (None, _) => ("Elige un modelo para eliminarlo", "Elige un modelo para renombrarlo"),
-                (Some(_), None) => ("Los modelos incluidos no se pueden eliminar", "Los modelos incluidos no se pueden renombrar"),
-                (Some(_), Some(_)) => ("Eliminar el modelo de la galería…", "Renombrar el modelo…"),
+                (None, _) => (lz("Elige un modelo para eliminarlo"), lz("Elige un modelo para renombrarlo")),
+                (Some(_), None) => (lz("Los modelos incluidos no se pueden eliminar"), lz("Los modelos incluidos no se pueden renombrar")),
+                (Some(_), Some(_)) => (lz("Eliminar el modelo de la galería…"), lz("Renombrar el modelo…")),
             };
             if small_icon_button(ui, Icon::Trash, tip_del, own.is_some(), true).clicked() {
                 header_edit = Some(Sheet::DeleteModel);
@@ -1699,7 +1704,7 @@ impl RecOrdingApp {
             }
         };
         let style = &mut self.project.style;
-        section_with(ui, "Modelos 3D", header, |ui| {
+        section_with(ui, lz("Modelos 3D"), header, |ui| {
             let gap = 6.0;
             let tile_w = ((ui.available_width() - gap * 2.0) / 3.0).floor();
             let mut tiles: Vec<Option<&LibraryModel>> = self.library.iter().map(Some).collect();
@@ -1719,11 +1724,11 @@ impl RecOrdingApp {
                                 }
                                 if m.entry.is_some() {
                                     resp.context_menu(|ui| {
-                                        if ui.button("Renombrar…").clicked() {
+                                        if ui.button(lz("Renombrar…")).clicked() {
                                             edit = Some(((*m).clone(), Sheet::RenameModel));
                                             ui.close_menu();
                                         }
-                                        if ui.button(RichText::new("Eliminar…").color(RED)).clicked() {
+                                        if ui.button(RichText::new(lz("Eliminar…")).color(RED)).clicked() {
                                             edit = Some(((*m).clone(), Sheet::DeleteModel));
                                             ui.close_menu();
                                         }
@@ -1743,12 +1748,12 @@ impl RecOrdingApp {
             // Settings of the model in use, folded away until needed.
             let (Some(src), Some(cm)) = (src.as_ref().filter(|_| style.frame == FrameStyle::Custom), style.model.as_mut()) else { return };
             ui.add_space(2.0);
-            egui::CollapsingHeader::new(RichText::new("Ajustes avanzados").color(TEXT).font(regular(13.0)))
+            egui::CollapsingHeader::new(RichText::new(lz("Ajustes avanzados")).color(TEXT).font(regular(13.0)))
                 .id_salt("model-advanced")
                 .default_open(false)
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        fixed_label(ui, 78.0, RichText::new("Pantalla").color(TEXT), Align::Min);
+                        fixed_label(ui, 78.0, RichText::new(lz("Pantalla")).color(TEXT), Align::Min);
                         // The detected screen is the default: it is listed first, tagged, and stands for
                         // "automatic" (no manual choice saved).
                         let recommended = src.guess.and_then(|g| src.parts.get(g).map(|p| (g, p.name.clone())));
@@ -1759,7 +1764,7 @@ impl RecOrdingApp {
                             (Some(p), _) => part_label(&p.name, false),
                             // Tag first, so a long name is what gets cut short.
                             (None, Some((_, name))) => part_label_tag_first(name),
-                            (None, None) => part_label("Elige una pieza", false),
+                            (None, None) => part_label(lz("Elige una pieza"), false),
                         };
                         egui::ComboBox::from_id_salt("model-screen")
                             .selected_text(current)
@@ -1780,31 +1785,31 @@ impl RecOrdingApp {
                             });
                     })
                     .response
-                    .on_hover_text("La pieza del modelo donde se ve tu grabación");
+                    .on_hover_text(lz("La pieza del modelo donde se ve tu grabación"));
                     if cm.screen_part.is_some() && src.guess.is_some() {
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new("Elegida a mano.").color(YELLOW).font(regular(11.5)));
-                            if ui.link(RichText::new("Volver a la recomendada").font(regular(11.5))).clicked() {
+                            ui.label(RichText::new(lz("Elegida a mano.")).color(YELLOW).font(regular(11.5)));
+                            if ui.link(RichText::new(lz("Volver a la recomendada")).font(regular(11.5))).clicked() {
                                 cm.screen_part = None;
                             }
                         });
                     }
                     ui.horizontal(|ui| {
-                        fixed_label(ui, 78.0, RichText::new("Orientación").color(TEXT), Align::Min);
-                        if secondary_button(ui, "Girar 90°").on_hover_text("Si la grabación sale tumbada o al revés").clicked() {
+                        fixed_label(ui, 78.0, RichText::new(lz("Orientación")).color(TEXT), Align::Min);
+                        if secondary_button(ui, lz("Girar 90°")).on_hover_text(lz("Si la grabación sale tumbada o al revés")).clicked() {
                             cm.quarter_turns = (cm.quarter_turns + 1) % 4;
                         }
                     });
                     ui.add_space(2.0);
                     let opts: Vec<(VideoFit, &str)> = VideoFit::ALL.iter().map(|f| (*f, f.label())).collect();
-                    segmented_row(ui, "Vídeo", &mut style.video_fit, &opts);
+                    segmented_row(ui, lz("Vídeo"), &mut style.video_fit, &opts);
                     ui.label(RichText::new(style.video_fit.hint()).color(TEXT_3).font(regular(11.5)));
                     if style.video_fit == VideoFit::Fill {
-                        slider_row(ui, "Encuadre", &mut style.fit_pan, 0.0..=1.0, |v| {
+                        slider_row(ui, lz("Encuadre"), &mut style.fit_pan, 0.0..=1.0, |v| {
                             match v {
-                                v if v < 0.15 => "Inicio",
-                                v if v > 0.85 => "Final",
-                                _ => "Centro",
+                                v if v < 0.15 => lz("Inicio"),
+                                v if v > 0.85 => lz("Final"),
+                                _ => lz("Centro"),
                             }
                             .to_string()
                         });
@@ -1812,10 +1817,10 @@ impl RecOrdingApp {
                     if !src.animations.is_empty() {
                         ui.add_space(2.0);
                         ui.horizontal(|ui| {
-                            fixed_label(ui, 78.0, RichText::new("Animación").color(TEXT), Align::Min);
+                            fixed_label(ui, 78.0, RichText::new(lz("Animación")).color(TEXT), Align::Min);
                             let name = |a: Option<usize>| match a {
                                 Some(i) => src.animations.get(i).map(|a| a.name.clone()).unwrap_or_default(),
-                                None => "Sin animación".to_string(),
+                                None => lz("Sin animación").to_string(),
                             };
                             egui::ComboBox::from_id_salt("model-anim")
                                 .selected_text(name(cm.animation))
@@ -1823,23 +1828,23 @@ impl RecOrdingApp {
                                 // Long animation names are cut short instead of widening the whole panel.
                                 .truncate()
                                 .show_ui(ui, |ui| {
-                                    ui.selectable_value(&mut cm.animation, None, "Sin animación");
+                                    ui.selectable_value(&mut cm.animation, None, lz("Sin animación"));
                                     for (i, a) in src.animations.iter().enumerate() {
                                         ui.selectable_value(&mut cm.animation, Some(i), format!("{} · {}", a.name, fmt_secs(a.duration)));
                                     }
                                 });
                         });
                         if cm.animation.is_some() {
-                            toggle_row(ui, "Repetir en bucle", "Si no, se reproduce una vez al empezar", &mut cm.loop_animation);
+                            toggle_row(ui, lz("Repetir en bucle"), lz("Si no, se reproduce una vez al empezar"), &mut cm.loop_animation);
                         }
                     }
                     if let Some(e) = &entry {
                         if let (Some(author), Some(license)) = (&e.author, &e.license) {
                             ui.add_space(2.0);
                             let note = if e.needs_credit() {
-                                format!("Modelo de {author} ({license}). Menciona al autor al publicar el vídeo.")
+                                tr!("Modelo de {} ({}). Menciona al autor al publicar el vídeo.", author, license)
                             } else {
-                                format!("Modelo de {author} ({license}). Uso libre, sin atribución.")
+                                tr!("Modelo de {} ({}). Uso libre, sin atribución.", author, license)
                             };
                             ui.label(RichText::new(note).color(TEXT_3).font(regular(11.5)));
                         }
@@ -1893,7 +1898,7 @@ impl RecOrdingApp {
         let mut action: Option<bool> = None; // Some(true) = confirm, Some(false) = cancel
         Self::sheet_window(ctx, "model-edit", 400.0, |ui| {
             if renaming {
-                ui.label(RichText::new("Renombrar modelo").font(medium(20.0)).color(TEXT));
+                ui.label(RichText::new(lz("Renombrar modelo")).font(medium(20.0)).color(TEXT));
                 ui.add_space(8.0);
                 let resp = ui.add(egui::TextEdit::singleline(&mut edit.name).desired_width(f32::INFINITY).font(regular(14.0)));
                 if !resp.has_focus() && edit.error.is_none() && !resp.lost_focus() {
@@ -1903,10 +1908,10 @@ impl RecOrdingApp {
                     action = Some(true);
                 }
             } else {
-                ui.label(RichText::new(format!("¿Eliminar «{}»?", edit.name)).font(medium(20.0)).color(TEXT));
+                ui.label(RichText::new(tr!("¿Eliminar «{}»?", edit.name)).font(medium(20.0)).color(TEXT));
                 ui.add_space(4.0);
                 ui.label(
-                    RichText::new("Se borrará de tu galería junto con sus texturas. Los vídeos que ya has exportado no cambian.")
+                    RichText::new(lz("Se borrará de tu galería junto con sus texturas. Los vídeos que ya has exportado no cambian."))
                         .color(TEXT_2),
                 );
             }
@@ -1916,11 +1921,11 @@ impl RecOrdingApp {
             }
             ui.add_space(12.0);
             ui.with_layout(egui::Layout::right_to_left(Align::Min), |ui| {
-                let ok = if renaming { primary_button(ui, "Guardar", true) } else { tinted_button(ui, "Eliminar", RED, true) };
+                let ok = if renaming { primary_button(ui, lz("Guardar"), true) } else { tinted_button(ui, lz("Eliminar"), RED, true) };
                 if ok.clicked() {
                     action = Some(true);
                 }
-                if secondary_button(ui, "Cancelar").clicked() {
+                if secondary_button(ui, lz("Cancelar")).clicked() {
                     action = Some(false);
                 }
             });
@@ -1940,7 +1945,7 @@ impl RecOrdingApp {
                             self.model_edit = None;
                             self.sheet = Sheet::None;
                             self.refresh_library();
-                            self.toast(format!("Modelo renombrado a «{name}»"));
+                            self.toast(tr!("Modelo renombrado a «{}»", name));
                         }
                         Err(e) => edit.error = Some(e),
                     }
@@ -1960,7 +1965,7 @@ impl RecOrdingApp {
                             self.model_edit = None;
                             self.sheet = Sheet::None;
                             self.refresh_library();
-                            self.toast(format!("«{name}» eliminado de la galería"));
+                            self.toast(tr!("«{}» eliminado de la galería", name));
                         }
                         Err(e) => edit.error = Some(e),
                     }
@@ -1972,7 +1977,7 @@ impl RecOrdingApp {
 
     fn style_inspector(&mut self, ui: &mut Ui) {
         let style = &mut self.project.style;
-        section(ui, "Dispositivo", |ui| {
+        section(ui, lz("Dispositivo"), |ui| {
             let gap = 6.0;
             let tile_w = ((ui.available_width() - gap * 2.0) / 3.0).floor();
             let builtin: Vec<FrameStyle> = FrameStyle::ALL.into_iter().filter(|f| *f != FrameStyle::Custom).collect();
@@ -2009,12 +2014,12 @@ impl RecOrdingApp {
         self.models_inspector(ui);
         let style = &mut self.project.style;
 
-        section(ui, "Ángulo 3D", |ui| {
+        section(ui, lz("Ángulo 3D"), |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
                 for p in ANGLE_PRESETS {
                     let on = (style.tilt - p.tilt).abs() < 0.01 && (style.turn - p.turn).abs() < 0.01 && (style.roll - p.roll).abs() < 0.01;
-                    if chip(ui, p.name, on).clicked() {
+                    if chip(ui, lz(p.name), on).clicked() {
                         style.tilt = p.tilt;
                         style.turn = p.turn;
                         style.roll = p.roll;
@@ -2023,16 +2028,16 @@ impl RecOrdingApp {
             });
             ui.add_space(2.0);
             let deg = |v: f32| format!("{v:.0}°");
-            slider_row(ui, "Inclinación", &mut style.tilt, -40.0..=40.0, deg);
-            slider_row(ui, "Giro", &mut style.turn, -45.0..=45.0, deg);
-            slider_row(ui, "Rotación", &mut style.roll, -25.0..=25.0, deg);
+            slider_row(ui, lz("Inclinación"), &mut style.tilt, -40.0..=40.0, deg);
+            slider_row(ui, lz("Giro"), &mut style.turn, -45.0..=45.0, deg);
+            slider_row(ui, lz("Rotación"), &mut style.roll, -25.0..=25.0, deg);
             ui.add_space(2.0);
-            toggle_row(ui, "Enderezar al hacer zoom", "Para que la app se lea bien de cerca", &mut style.straighten_on_zoom);
-            toggle_row(ui, "Flotar suavemente", "Un leve balanceo continuo", &mut style.float_motion);
-            toggle_row(ui, "Animación de entrada", "El móvil entra girando al empezar", &mut style.intro);
+            toggle_row(ui, lz("Enderezar al hacer zoom"), lz("Para que la app se lea bien de cerca"), &mut style.straighten_on_zoom);
+            toggle_row(ui, lz("Flotar suavemente"), lz("Un leve balanceo continuo"), &mut style.float_motion);
+            toggle_row(ui, lz("Animación de entrada"), lz("El móvil entra girando al empezar"), &mut style.intro);
         });
 
-        section(ui, "Iluminación", |ui| {
+        section(ui, lz("Iluminación"), |ui| {
             let l = &mut style.lighting;
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
@@ -2043,13 +2048,13 @@ impl RecOrdingApp {
                 }
             });
             ui.add_space(2.0);
-            slider_row(ui, "Dirección", &mut l.angle, -180.0..=180.0, |v| format!("{v:.0}°"));
-            slider_row(ui, "Intensidad", &mut l.intensity, 0.5..=1.5, |v| format!("{:.0} %", v * 100.0));
-            slider_row(ui, "Reflejo", &mut l.glare, 0.0..=2.0, |v| format!("{:.0} %", v * 100.0));
-            ui.label(RichText::new("El reflejo es el brillo que cruza el cristal de la pantalla al girar.").color(TEXT_3).font(regular(11.5)));
+            slider_row(ui, lz("Dirección"), &mut l.angle, -180.0..=180.0, |v| format!("{v:.0}°"));
+            slider_row(ui, lz("Intensidad"), &mut l.intensity, 0.5..=1.5, |v| format!("{:.0} %", v * 100.0));
+            slider_row(ui, lz("Reflejo"), &mut l.glare, 0.0..=2.0, |v| format!("{:.0} %", v * 100.0));
+            ui.label(RichText::new(lz("El reflejo es el brillo que cruza el cristal de la pantalla al girar.")).color(TEXT_3).font(regular(11.5)));
         });
 
-        section(ui, "Fondo", |ui| {
+        section(ui, lz("Fondo"), |ui| {
             let gap = 8.0;
             let size = ((ui.available_width() - gap * 4.0) / 5.0).floor();
             for row in BACKGROUND_PRESETS.chunks(5) {
@@ -2057,7 +2062,7 @@ impl RecOrdingApp {
                     ui.spacing_mut().item_spacing.x = gap;
                     for preset in row {
                         let (r, resp) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
-                        let resp = resp.on_hover_text(preset.name).on_hover_cursor(CursorIcon::PointingHand);
+                        let resp = resp.on_hover_text(lz(preset.name)).on_hover_cursor(CursorIcon::PointingHand);
                         let p = ui.painter();
                         fill_gradient(p, &rounded_rect_points(r.shrink(2.0), 8.0), rgb(preset.a), rgb(preset.b), preset.angle);
                         let selected = style.background.a == preset.a && style.background.b == preset.b;
@@ -2070,77 +2075,77 @@ impl RecOrdingApp {
                     }
                 });
             }
-            egui::CollapsingHeader::new(RichText::new("Personalizar").color(TEXT_2).font(regular(12.5)))
+            egui::CollapsingHeader::new(RichText::new(lz("Personalizar")).color(TEXT_2).font(regular(12.5)))
                 .id_salt("bg-custom")
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new("Colores").color(TEXT));
+                        ui.label(RichText::new(lz("Colores")).color(TEXT));
                         ui.add_space(26.0);
                         ui.color_edit_button_srgb(&mut style.background.a);
                         ui.color_edit_button_srgb(&mut style.background.b);
                     });
-                    slider_row(ui, "Ángulo", &mut style.background.angle, 0.0..=360.0, |v| format!("{v:.0}°"));
+                    slider_row(ui, lz("Ángulo"), &mut style.background.angle, 0.0..=360.0, |v| format!("{v:.0}°"));
                 });
         });
 
-        section(ui, "Composición", |ui| {
-            slider_row(ui, "Margen", &mut style.padding, 0.02..=0.25, |v| format!("{:.0} %", v * 100.0));
-            slider_row(ui, "Sombra", &mut style.shadow, 0.0..=1.0, |v| format!("{:.0} %", v * 100.0));
+        section(ui, lz("Composición"), |ui| {
+            slider_row(ui, lz("Margen"), &mut style.padding, 0.02..=0.25, |v| format!("{:.0} %", v * 100.0));
+            slider_row(ui, lz("Sombra"), &mut style.shadow, 0.0..=1.0, |v| format!("{:.0} %", v * 100.0));
         });
 
-        section(ui, "Acabado", |ui| {
+        section(ui, lz("Acabado"), |ui| {
             let f = &mut style.finish;
             fn row<T: PartialEq + Copy>(ui: &mut Ui, label: &str, value: &mut T, all: &[T], name: impl Fn(T) -> &'static str) {
                 let opts: Vec<(T, &str)> = all.iter().map(|v| (*v, name(*v))).collect();
                 segmented_row(ui, label, value, &opts);
             }
-            row(ui, "Desenfoque", &mut f.motion_blur, &MotionBlur::ALL, MotionBlur::label);
-            ui.label(RichText::new("En giros, zooms y movimientos rápidos, como una cámara de cine.").color(TEXT_3).font(regular(11.5)));
-            row(ui, "Bordes", &mut f.antialias, &Antialias::ALL, Antialias::label);
-            ui.label(RichText::new("Más alta: bordes del modelo 3D más limpios y zooms sin saltos de nitidez; exporta algo más despacio.").color(TEXT_3).font(regular(11.5)));
-            slider_row(ui, "Viñeta", &mut f.vignette, 0.0..=1.0, |v| format!("{:.0} %", v * 100.0));
-            slider_row(ui, "Grano", &mut f.grain, 0.0..=1.0, |v| format!("{:.0} %", v * 100.0));
-            let secs = |v: f32| if v <= 0.0 { "No".to_string() } else { format!("{v:.1} s").replace('.', ",") };
-            slider_row(ui, "Entrada", &mut f.fade_in, 0.0..=3.0, secs);
-            slider_row(ui, "Salida", &mut f.fade_out, 0.0..=3.0, secs);
-            slider_row(ui, "Entre clips", &mut f.crossfade, 0.0..=1.5, secs);
-            ui.label(RichText::new("Fundidos desde y a negro (con el sonido) y entre clips.").color(TEXT_3).font(regular(11.5)));
+            row(ui, lz("Desenfoque"), &mut f.motion_blur, &MotionBlur::ALL, MotionBlur::label);
+            ui.label(RichText::new(lz("En giros, zooms y movimientos rápidos, como una cámara de cine.")).color(TEXT_3).font(regular(11.5)));
+            row(ui, lz("Bordes"), &mut f.antialias, &Antialias::ALL, Antialias::label);
+            ui.label(RichText::new(lz("Más alta: bordes del modelo 3D más limpios y zooms sin saltos de nitidez; exporta algo más despacio.")).color(TEXT_3).font(regular(11.5)));
+            slider_row(ui, lz("Viñeta"), &mut f.vignette, 0.0..=1.0, |v| format!("{:.0} %", v * 100.0));
+            slider_row(ui, lz("Grano"), &mut f.grain, 0.0..=1.0, |v| format!("{:.0} %", v * 100.0));
+            let secs = |v: f32| if v <= 0.0 { lz("No").to_string() } else { format!("{v:.1} s").replace('.', crate::i18n::comma()) };
+            slider_row(ui, lz("Entrada"), &mut f.fade_in, 0.0..=3.0, secs);
+            slider_row(ui, lz("Salida"), &mut f.fade_out, 0.0..=3.0, secs);
+            slider_row(ui, lz("Entre clips"), &mut f.crossfade, 0.0..=1.5, secs);
+            ui.label(RichText::new(lz("Fundidos desde y a negro (con el sonido) y entre clips.")).color(TEXT_3).font(regular(11.5)));
         });
 
         self.mix_inspector(ui);
         let style = &mut self.project.style;
 
-        section(ui, "Toques", |ui| {
+        section(ui, lz("Toques"), |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Mostrar los toques").color(TEXT));
+                ui.label(RichText::new(lz("Mostrar los toques")).color(TEXT));
                 ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
                     toggle(ui, &mut style.show_touches);
                 });
             });
             if style.show_touches {
-                slider_row(ui, "Tamaño", &mut style.touch_size, 0.5..=2.0, |v| format!("{:.0} %", v * 100.0));
+                slider_row(ui, lz("Tamaño"), &mut style.touch_size, 0.5..=2.0, |v| format!("{:.0} %", v * 100.0));
             }
         });
 
         let n_touches = timeline::timeline_touches(&self.project).len();
         let has_touches = n_touches > 0;
         let mut regenerate = false;
-        section(ui, "Zoom automático", |ui| {
-            slider_row(ui, "Intensidad", &mut self.project.style.auto_zoom_scale, 1.2..=3.0, |v| {
-                format!("{v:.1}×").replace('.', ",")
+        section(ui, lz("Zoom automático"), |ui| {
+            slider_row(ui, lz("Intensidad"), &mut self.project.style.auto_zoom_scale, 1.2..=3.0, |v| {
+                format!("{v:.1}×").replace('.', crate::i18n::comma())
             });
             if has_touches {
                 ui.label(
-                    RichText::new(format!("{n_touches} toques registrados en las grabaciones."))
+                    RichText::new(tr!("{} toques registrados en las grabaciones.", n_touches))
                         .color(TEXT_3)
                         .font(regular(12.0)),
                 );
-                if secondary_button(ui, "Regenerar zooms desde los toques").on_hover_text("Sustituye los zooms automáticos; los que has creado o editado tú se mantienen.").clicked() {
+                if secondary_button(ui, lz("Regenerar zooms desde los toques")).on_hover_text(lz("Sustituye los zooms automáticos; los que has creado o editado tú se mantienen.")).clicked() {
                     regenerate = true;
                 }
             } else {
                 ui.label(
-                    RichText::new("Este vídeo no tiene toques registrados. Añade zooms con el botón de la lupa o la tecla Z.")
+                    RichText::new(lz("Este vídeo no tiene toques registrados. Añade zooms con el botón de la lupa o la tecla Z."))
                         .color(TEXT_3)
                         .font(regular(12.0)),
                 );
@@ -2150,7 +2155,7 @@ impl RecOrdingApp {
             let scale = self.project.style.auto_zoom_scale;
             let n = timeline::regenerate_auto_zooms(&mut self.project, scale);
             self.selection = Selection::None;
-            self.toast(format!("{n} zooms automáticos"));
+            self.toast(tr!("{} zooms automáticos", n));
         }
     }
 
@@ -2196,28 +2201,28 @@ impl RecOrdingApp {
                     let (r, _) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::hover());
                     let pulse = 0.55 + 0.45 * (t * 4.0).sin().abs();
                     ui.painter().circle_filled(r.center(), 7.0, RED.linear_multiply(pulse));
-                    ui.label(RichText::new("Grabando").font(medium(14.0)).color(RED));
+                    ui.label(RichText::new(lz("Grabando")).font(medium(14.0)).color(RED));
                     let secs = rec.started.elapsed().as_secs();
                     ui.label(RichText::new(format!("{}:{:02}", secs / 60, secs % 60)).font(medium(46.0)).color(TEXT));
                     let n = rec.touch_count.load(Ordering::Relaxed);
                     let msg = if rec.tracks_touches() {
-                        format!("{n} toques registrados")
+                        tr!("{} toques registrados", n)
                     } else {
-                        "Este móvil no permite registrar los toques: añadirás los zooms a mano".into()
+                        lz("Este móvil no permite registrar los toques: añadirás los zooms a mano").into()
                     };
                     ui.label(RichText::new(msg).color(TEXT_2));
                     ui.add_space(6.0);
                     ui.label(
-                        RichText::new("Usa el móvil con los dedos con normalidad. Cada toque se convertirá en un zoom suave.")
+                        RichText::new(lz("Usa el móvil con los dedos con normalidad. Cada toque se convertirá en un zoom suave."))
                             .color(TEXT_3)
                             .font(regular(12.5)),
                     );
                     if rec.method == Method::ScreenRecord && secs > 150 {
-                        ui.label(RichText::new("Sin scrcpy la grabación se corta a los 3 minutos.").color(YELLOW).font(regular(12.5)));
+                        ui.label(RichText::new(lz("Sin scrcpy la grabación se corta a los 3 minutos.")).color(YELLOW).font(regular(12.5)));
                     }
                     ui.add_space(16.0);
                     ui.spacing_mut().button_padding = Vec2::new(28.0, 8.0);
-                    if tinted_button(ui, "Detener grabación", RED, true).clicked() {
+                    if tinted_button(ui, lz("Detener grabación"), RED, true).clicked() {
                         action = Some("stop");
                     }
                 });
@@ -2228,22 +2233,22 @@ impl RecOrdingApp {
                     ui.add_space(10.0);
                     ui.add(egui::Spinner::new().size(28.0).color(TEXT_2));
                     ui.add_space(8.0);
-                    ui.label(RichText::new("Guardando la grabación…").font(medium(16.0)).color(TEXT));
-                    ui.label(RichText::new("Copiando el vídeo y sincronizando los toques.").color(TEXT_2));
+                    ui.label(RichText::new(lz("Guardando la grabación…")).font(medium(16.0)).color(TEXT));
+                    ui.label(RichText::new(lz("Copiando el vídeo y sincronizando los toques.")).color(TEXT_2));
                     ui.add_space(10.0);
                 });
                 return;
             }
 
-            ui.label(RichText::new("Grabar el móvil").font(medium(20.0)).color(TEXT));
-            ui.label(RichText::new("Graba la pantalla de tu móvil Android conectado por USB o de un emulador de Android Studio.").color(TEXT_2));
+            ui.label(RichText::new(lz("Grabar el móvil")).font(medium(20.0)).color(TEXT));
+            ui.label(RichText::new(lz("Graba la pantalla de tu móvil Android conectado por USB o de un emulador de Android Studio.")).color(TEXT_2));
             ui.add_space(10.0);
 
             if !self.tools.adb {
                 let hint = crate::platform::install_hint(&["android-tools", "scrcpy"]);
-                info_box(ui, YELLOW, &format!("Para grabar necesitas adb y scrcpy. Instálalos con:\n{hint}"));
+                info_box(ui, YELLOW, &tr!("Para grabar necesitas adb y scrcpy. Instálalos con:\n{}", hint));
             } else {
-                ui.label(RichText::new("Dispositivo").font(medium(12.5)).color(TEXT_2));
+                ui.label(RichText::new(lz("Dispositivo")).font(medium(12.5)).color(TEXT_2));
                 if self.devices.is_empty() {
                     egui::Frame::none().fill(CARD).rounding(Rounding::same(10.0)).inner_margin(Margin::same(14.0)).show(ui, |ui| {
                         ui.set_width(ui.available_width());
@@ -2251,15 +2256,15 @@ impl RecOrdingApp {
                             let (r, _) = ui.allocate_exact_size(Vec2::new(30.0, 40.0), Sense::hover());
                             icon_phone(ui.painter(), r.center(), 30.0, TEXT_2);
                             ui.vertical(|ui| {
-                                ui.label(RichText::new("Conecta tu móvil por USB").font(medium(14.0)).color(TEXT));
-                                ui.label(RichText::new("1. Activa Opciones de desarrollador › Depuración USB").color(TEXT_2).font(regular(12.5)));
-                                ui.label(RichText::new("2. Conecta el cable y acepta el aviso en el móvil").color(TEXT_2).font(regular(12.5)));
-                                ui.label(RichText::new("O abre un emulador desde Android Studio (Device Manager).").color(TEXT_2).font(regular(12.5)));
+                                ui.label(RichText::new(lz("Conecta tu móvil por USB")).font(medium(14.0)).color(TEXT));
+                                ui.label(RichText::new(lz("1. Activa Opciones de desarrollador › Depuración USB")).color(TEXT_2).font(regular(12.5)));
+                                ui.label(RichText::new(lz("2. Conecta el cable y acepta el aviso en el móvil")).color(TEXT_2).font(regular(12.5)));
+                                ui.label(RichText::new(lz("O abre un emulador desde Android Studio (Device Manager).")).color(TEXT_2).font(regular(12.5)));
                             });
                         });
                         ui.horizontal(|ui| {
                             ui.add(egui::Spinner::new().size(12.0).color(TEXT_3));
-                            ui.label(RichText::new("Buscando dispositivos…").color(TEXT_3).font(regular(12.0)));
+                            ui.label(RichText::new(lz("Buscando dispositivos…")).color(TEXT_3).font(regular(12.0)));
                         });
                     });
                 } else {
@@ -2275,14 +2280,14 @@ impl RecOrdingApp {
                 egui::Frame::none().fill(CARD).rounding(Rounding::same(10.0)).inner_margin(Margin::symmetric(14.0, 10.0)).show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.add_enabled_ui(self.tools.scrcpy, |ui| {
-                        toggle_row(ui, "Grabar el sonido del móvil", "Necesita Android 11 o superior", &mut self.rec_opts.audio);
-                        toggle_row(ui, "Ver el móvil en el ordenador", "Abre una ventana con la pantalla del móvil", &mut self.rec_opts.mirror);
-                        toggle_row(ui, "Barra de estado limpia", "Hora 9:41, batería llena y sin notificaciones mientras grabas", &mut self.rec_opts.clean_status_bar);
+                        toggle_row(ui, lz("Grabar el sonido del móvil"), lz("Necesita Android 11 o superior"), &mut self.rec_opts.audio);
+                        toggle_row(ui, lz("Ver el móvil en el ordenador"), lz("Abre una ventana con la pantalla del móvil"), &mut self.rec_opts.mirror);
+                        toggle_row(ui, lz("Barra de estado limpia"), lz("Hora 9:41, batería llena y sin notificaciones mientras grabas"), &mut self.rec_opts.clean_status_bar);
                     });
                 });
                 if !self.tools.scrcpy {
                     ui.label(
-                        RichText::new("Sin scrcpy se usa adb screenrecord: máximo 3 minutos y sin sonido. Instala scrcpy para mejores resultados.")
+                        RichText::new(lz("Sin scrcpy se usa adb screenrecord: máximo 3 minutos y sin sonido. Instala scrcpy para mejores resultados."))
                             .color(YELLOW)
                             .font(regular(12.0)),
                     );
@@ -2298,10 +2303,10 @@ impl RecOrdingApp {
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
                     let ready = self.selected_serial.is_some() && self.tools.adb;
-                    if tinted_button(ui, "Empezar a grabar", RED, ready).clicked() {
+                    if tinted_button(ui, lz("Empezar a grabar"), RED, ready).clicked() {
                         action = Some("start");
                     }
-                    if secondary_button(ui, "Cancelar").clicked() {
+                    if secondary_button(ui, lz("Cancelar")).clicked() {
                         action = Some("close");
                     }
                 });
@@ -2321,7 +2326,7 @@ impl RecOrdingApp {
         let dur = timeline::duration(&self.project);
         Self::sheet_window(ctx, "export", 460.0, |ui| match &self.export_ui {
             ExportUi::Running { fraction, eta, encoder, .. } => {
-                ui.label(RichText::new("Exportando…").font(medium(20.0)).color(TEXT));
+                ui.label(RichText::new(lz("Exportando…")).font(medium(20.0)).color(TEXT));
                 if let Some(how) = encoder {
                     ui.label(RichText::new(how.as_str()).color(TEXT_3).font(regular(12.0)));
                 }
@@ -2332,13 +2337,13 @@ impl RecOrdingApp {
                 done.set_width(r.width() * fraction.clamp(0.0, 1.0));
                 ui.painter().rect_filled(done, Rounding::same(3.0), ACCENT);
                 let left = match eta {
-                    Some(s) if *s >= 1.0 => format!(" · quedan unos {} s", s.round() as u32),
+                    Some(s) if *s >= 1.0 => tr!(" · quedan unos {} s", s.round() as u32),
                     _ => String::new(),
                 };
-                ui.label(RichText::new(format!("{:.0} %{left}", fraction * 100.0)).color(TEXT_2));
+                ui.label(RichText::new(tr!("{} %{}", format!("{:.0}", fraction * 100.0), left)).color(TEXT_2));
                 ui.add_space(8.0);
                 ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                    if secondary_button(ui, "Cancelar").clicked() {
+                    if secondary_button(ui, lz("Cancelar")).clicked() {
                         action = Some("cancel");
                     }
                 });
@@ -2348,32 +2353,32 @@ impl RecOrdingApp {
                     let (r, _) = ui.allocate_exact_size(Vec2::splat(52.0), Sense::hover());
                     ui.painter().circle_filled(r.center(), 26.0, GREEN.linear_multiply(0.2));
                     icon_check(ui.painter(), r.center(), 30.0, GREEN);
-                    ui.label(RichText::new("Vídeo listo").font(medium(20.0)).color(TEXT));
+                    ui.label(RichText::new(lz("Vídeo listo")).font(medium(20.0)).color(TEXT));
                     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                     ui.label(RichText::new(name).color(TEXT_2));
                     ui.add_space(14.0);
                     ui.horizontal(|ui| {
                         let w = 3.0 * 120.0 + 16.0;
                         ui.add_space((ui.available_width() - w) / 2.0);
-                        if secondary_button(ui, "Mostrar en carpeta").clicked() {
+                        if secondary_button(ui, lz("Mostrar en carpeta")).clicked() {
                             action = Some("folder");
                         }
-                        if secondary_button(ui, "Reproducir").clicked() {
+                        if secondary_button(ui, lz("Reproducir")).clicked() {
                             action = Some("play");
                         }
-                        if primary_button(ui, "Hecho", true).clicked() {
+                        if primary_button(ui, lz("Hecho"), true).clicked() {
                             action = Some("close");
                         }
                     });
                 });
             }
             ExportUi::Failed(msg) => {
-                ui.label(RichText::new("No se pudo exportar").font(medium(20.0)).color(TEXT));
+                ui.label(RichText::new(lz("No se pudo exportar")).font(medium(20.0)).color(TEXT));
                 ui.add_space(6.0);
                 egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| info_box(ui, RED, msg));
                 ui.add_space(8.0);
                 ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                    if primary_button(ui, "Volver", true).clicked() {
+                    if primary_button(ui, lz("Volver"), true).clicked() {
                         action = Some("reset");
                     }
                 });
@@ -2381,77 +2386,77 @@ impl RecOrdingApp {
             ExportUi::Idle => {
                 let s = &mut self.project.export;
                 let style = &mut self.project.style;
-                ui.label(RichText::new("Exportar vídeo").font(medium(20.0)).color(TEXT));
+                ui.label(RichText::new(lz("Exportar vídeo")).font(medium(20.0)).color(TEXT));
                 let (w, h) = s.dimensions(style.aspect);
                 ui.label(
-                    RichText::new(format!("{} × {} px · {} fps · {}", w, h, if s.format == ExportFormat::Gif { s.fps.min(25) } else { s.fps }, fmt_time(dur)))
+                    RichText::new(tr!("{} × {} px · {} fps · {}", w, h, if s.format == ExportFormat::Gif { s.fps.min(25) } else { s.fps }, fmt_time(dur)))
                         .color(TEXT_2),
                 );
                 ui.add_space(12.0);
                 let cw = 290.0;
-                form_row(ui, "Formato", |ui| {
+                form_row(ui, lz("Formato"), |ui| {
                     let opts: Vec<(Aspect, &str)> = Aspect::ALL.iter().map(|a| (*a, a.label())).collect();
                     segmented(ui, &mut style.aspect, &opts, cw);
                 });
-                form_row(ui, "Resolución", |ui| {
+                form_row(ui, lz("Resolución"), |ui| {
                     let opts: Vec<(Resolution, &str)> = Resolution::ALL.iter().map(|r| (*r, r.label())).collect();
                     segmented(ui, &mut s.resolution, &opts, cw);
                 });
-                form_row(ui, "Fotogramas", |ui| {
-                    segmented(ui, &mut s.fps, &[(30, "30 fps"), (60, "60 fps")], cw);
+                form_row(ui, lz("Fotogramas"), |ui| {
+                    segmented(ui, &mut s.fps, &[(30, lz("30 fps")), (60, lz("60 fps"))], cw);
                 });
-                form_row(ui, "Archivo", |ui| {
+                form_row(ui, lz("Archivo"), |ui| {
                     let opts: Vec<(ExportFormat, &str)> = ExportFormat::ALL.iter().map(|f| (*f, f.label())).collect();
                     segmented(ui, &mut s.format, &opts, cw);
                 });
                 form_row(ui, "", |ui| {
                     ui.label(RichText::new(s.format.hint()).color(TEXT_3).font(regular(12.0)));
                 });
-                form_row(ui, "Calidad", |ui| {
+                form_row(ui, lz("Calidad"), |ui| {
                     let opts: Vec<(Quality, &str)> = Quality::ALL.iter().map(|q| (*q, q.label())).collect();
                     segmented(ui, &mut s.quality, &opts, cw);
                 });
                 if has_audio && s.format != ExportFormat::Gif {
-                    form_row(ui, "Sonido", |ui| {
+                    form_row(ui, lz("Sonido"), |ui| {
                         toggle(ui, &mut s.include_audio);
                     });
                 }
                 if s.format != ExportFormat::Gif {
-                    form_row(ui, "Gráfica", |ui| match (crate::gpu::detected(), crate::hwenc::detected()) {
+                    form_row(ui, lz("Gráfica"), |ui| match (crate::gpu::detected(), crate::hwenc::detected()) {
                         (None, _) | (_, None) => {
                             ui.add(egui::Spinner::new().size(14.0).color(TEXT_3));
-                            ui.label(RichText::new("Buscando la tarjeta gráfica…").color(TEXT_3).font(regular(12.0)));
+                            ui.label(RichText::new(lz("Buscando la tarjeta gráfica…")).color(TEXT_3).font(regular(12.0)));
                         }
                         (Some(None), Some(None)) => {
-                            ui.label(RichText::new("No hay ninguna compatible; se usa el procesador").color(TEXT_3).font(regular(12.0)));
+                            ui.label(RichText::new(lz("No hay ninguna compatible; se usa el procesador")).color(TEXT_3).font(regular(12.0)));
                         }
                         (Some(card), Some(enc)) => {
                             toggle(ui, &mut s.hardware);
                             let codec = if s.format == ExportFormat::Hevc { crate::hwenc::Codec::Hevc } else { crate::hwenc::Codec::H264 };
                             let encodes = enc.as_ref().filter(|e| e.supports(codec));
                             let note = match (s.hardware, card, encodes) {
-                                (false, ..) => "Desactivada: lo hace todo el procesador".to_string(),
-                                (true, Some(c), Some(_)) => format!("{c} · dibuja y codifica"),
-                                (true, Some(c), None) => format!("{c} · dibuja; codifica el procesador"),
-                                (true, None, Some(e)) => format!("{} · codifica; dibuja el procesador", e.name),
-                                (true, None, None) => "Se usa el procesador".to_string(),
+                                (false, ..) => lz("Desactivada: lo hace todo el procesador").to_string(),
+                                (true, Some(c), Some(_)) => tr!("{} · dibuja y codifica", c),
+                                (true, Some(c), None) => tr!("{} · dibuja; codifica el procesador", c),
+                                (true, None, Some(e)) => tr!("{} · codifica; dibuja el procesador", e.name),
+                                (true, None, None) => lz("Se usa el procesador").to_string(),
                             };
                             ui.label(RichText::new(note).color(TEXT_3).font(regular(12.0)));
                         }
                     });
                 }
-                form_row(ui, "Guardar en", |ui| {
+                form_row(ui, lz("Guardar en"), |ui| {
                     fixed_label(ui, cw - 98.0, RichText::new(home_relative(&s.folder)).color(TEXT), Align::Min);
-                    if secondary_button(ui, "Cambiar…").clicked() {
+                    if secondary_button(ui, lz("Cambiar…")).clicked() {
                         action = Some("pick-folder");
                     }
                 });
                 ui.add_space(14.0);
                 ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                    if primary_button(ui, "Exportar", true).clicked() {
+                    if primary_button(ui, lz("Exportar"), true).clicked() {
                         action = Some("export");
                     }
-                    if secondary_button(ui, "Cancelar").clicked() {
+                    if secondary_button(ui, lz("Cancelar")).clicked() {
                         action = Some("close");
                     }
                 });
@@ -2521,7 +2526,7 @@ impl RecOrdingApp {
                 p.rect_filled(screen, 0.0, Color32::from_black_alpha(160));
                 let r = screen.shrink(40.0);
                 p.rect_stroke(r, Rounding::same(18.0), Stroke::new(2.0_f32, ACCENT));
-                p.text(r.center(), Align2::CENTER_CENTER, "Suelta el vídeo para importarlo", medium(22.0), TEXT);
+                p.text(r.center(), Align2::CENTER_CENTER, lz("Suelta el vídeo para importarlo"), medium(22.0), TEXT);
             });
     }
 }
@@ -2572,11 +2577,11 @@ fn device_row(ui: &mut Ui, d: &Device, selected: bool) -> egui::Response {
     icon_phone(p, Pos2::new(rect.left() + 26.0, rect.center().y), 26.0, if ready { TEXT } else { TEXT_3 });
     p.text(Pos2::new(rect.left() + 50.0, rect.top() + 10.0), Align2::LEFT_TOP, &d.model, medium(14.0), TEXT);
     let (sub, col) = match d.state {
-        DeviceState::Ready if d.emulator => ("Listo para grabar".to_string(), TEXT_3),
-        DeviceState::Ready => (format!("Conectado · {}", d.serial), TEXT_3),
-        DeviceState::Unauthorized => ("Acepta el aviso de depuración USB en el móvil".to_string(), YELLOW),
-        DeviceState::Offline if d.emulator => ("Todavía arrancando · espera a que se vea la pantalla de inicio".to_string(), YELLOW),
-        DeviceState::Offline => ("No responde · desconecta y vuelve a conectar".to_string(), YELLOW),
+        DeviceState::Ready if d.emulator => (lz("Listo para grabar").to_string(), TEXT_3),
+        DeviceState::Ready => (tr!("Conectado · {}", d.serial), TEXT_3),
+        DeviceState::Unauthorized => (lz("Acepta el aviso de depuración USB en el móvil").to_string(), YELLOW),
+        DeviceState::Offline if d.emulator => (lz("Todavía arrancando · espera a que se vea la pantalla de inicio").to_string(), YELLOW),
+        DeviceState::Offline => (lz("No responde · desconecta y vuelve a conectar").to_string(), YELLOW),
     };
     p.text(Pos2::new(rect.left() + 50.0, rect.top() + 30.0), Align2::LEFT_TOP, sub, regular(12.0), col);
     if selected {
@@ -2642,9 +2647,9 @@ fn model_tile(ui: &mut Ui, f: FrameStyle, selected: bool, width: f32) -> egui::R
 fn gallery_tile(ui: &mut Ui, m: &LibraryModel, thumb: Option<&TextureHandle>, selected: bool, busy: bool, broken: bool, width: f32) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, width * 1.18 + 20.0), Sense::click());
     let tip = match (&m.author, &m.license) {
-        (Some(a), Some(l)) => format!("{} · de {a} ({l})", m.name),
-        _ if broken => format!("{} · no se puede cargar (clic derecho para eliminarlo)", m.name),
-        _ => format!("{} · importado por ti (clic derecho para renombrar o eliminar)", m.name),
+        (Some(a), Some(l)) => tr!("{} · de {} ({})", m.name, a, l),
+        _ if broken => tr!("{} · no se puede cargar (clic derecho para eliminarlo)", m.name),
+        _ => tr!("{} · importado por ti (clic derecho para renombrar o eliminar)", m.name),
     };
     let resp = resp.on_hover_text(tip).on_hover_cursor(CursorIcon::PointingHand);
     let h = ui.ctx().animate_bool(resp.id, resp.hovered());
@@ -2663,11 +2668,11 @@ fn gallery_tile(ui: &mut Ui, m: &LibraryModel, thumb: Option<&TextureHandle>, se
     }
     if busy {
         p.rect_filled(img, Rounding::same(8.0), Color32::from_black_alpha(110));
-        p.text(img.center(), Align2::CENTER_CENTER, "Cargando…", regular(11.0), TEXT);
+        p.text(img.center(), Align2::CENTER_CENTER, lz("Cargando…"), regular(11.0), TEXT);
     } else if broken {
         p.rect_filled(img, Rounding::same(8.0), Color32::from_black_alpha(140));
         p.text(img.center() - Vec2::new(0.0, 8.0), Align2::CENTER_CENTER, "⚠", regular(18.0), YELLOW);
-        p.text(img.center() + Vec2::new(0.0, 12.0), Align2::CENTER_CENTER, "No carga", regular(11.0), YELLOW);
+        p.text(img.center() + Vec2::new(0.0, 12.0), Align2::CENTER_CENTER, lz("No carga"), regular(11.0), YELLOW);
     }
     if selected {
         p.rect_stroke(img, Rounding::same(8.0), Stroke::new(2.0_f32, ACCENT));
@@ -2687,7 +2692,7 @@ fn gallery_tile(ui: &mut Ui, m: &LibraryModel, thumb: Option<&TextureHandle>, se
 fn import_tile(ui: &mut Ui, width: f32, busy: bool) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, width * 1.18 + 20.0), Sense::click());
     let resp = resp
-        .on_hover_text("Añadir un modelo .glb, .gltf o la descarga .zip que lo contiene")
+        .on_hover_text(lz("Añadir un modelo .glb, .gltf o la descarga .zip que lo contiene"))
         .on_hover_cursor(CursorIcon::PointingHand);
     let h = ui.ctx().animate_bool(resp.id, resp.hovered());
     let p = ui.painter();
@@ -2696,13 +2701,13 @@ fn import_tile(ui: &mut Ui, width: f32, busy: bool) -> egui::Response {
     p.rect_stroke(img.shrink(0.5), Rounding::same(8.0), Stroke::new(1.0_f32, Color32::from_rgb(84, 84, 90)));
     let c = img.center();
     if busy {
-        p.text(c, Align2::CENTER_CENTER, "Importando…", regular(11.0), TEXT_2);
+        p.text(c, Align2::CENTER_CENTER, lz("Importando…"), regular(11.0), TEXT_2);
     } else {
         let st = Stroke::new(2.0_f32, TEXT_2);
         p.line_segment([c - Vec2::new(10.0, 0.0), c + Vec2::new(10.0, 0.0)], st);
         p.line_segment([c - Vec2::new(0.0, 10.0), c + Vec2::new(0.0, 10.0)], st);
     }
-    p.text(Pos2::new(rect.center().x, rect.bottom() - 9.0), Align2::CENTER_CENTER, "Importar", regular(11.5), TEXT_2);
+    p.text(Pos2::new(rect.center().x, rect.bottom() - 9.0), Align2::CENTER_CENTER, lz("Importar"), regular(11.5), TEXT_2);
     resp
 }
 
@@ -2710,7 +2715,7 @@ fn import_tile(ui: &mut Ui, width: f32, busy: bool) -> egui::Response {
 fn part_label_tag_first(name: &str) -> egui::text::LayoutJob {
     use egui::text::{LayoutJob, TextFormat};
     let mut job = LayoutJob::default();
-    job.append(" RECOMENDADA ", 0.0, TextFormat { font_id: medium(9.5), color: Color32::WHITE, background: ACCENT, valign: Align::Center, ..Default::default() });
+    job.append(lz(" RECOMENDADA "), 0.0, TextFormat { font_id: medium(9.5), color: Color32::WHITE, background: ACCENT, valign: Align::Center, ..Default::default() });
     job.append(name, 8.0, TextFormat { font_id: regular(13.0), color: TEXT, ..Default::default() });
     job
 }
@@ -2721,7 +2726,7 @@ fn part_label(name: &str, recommended: bool) -> egui::text::LayoutJob {
     job.append(name, 0.0, TextFormat { font_id: regular(13.0), color: TEXT, ..Default::default() });
     if recommended {
         job.append(
-            " RECOMENDADA ",
+            lz(" RECOMENDADA "),
             8.0,
             TextFormat { font_id: medium(9.5), color: Color32::WHITE, background: ACCENT, valign: Align::Center, ..Default::default() },
         );

@@ -6,6 +6,7 @@ use crate::model::{data_dir, Background, CustomModel, FrameStyle, Style};
 use crate::model3d::{self, ModelSource};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
+use crate::i18n::lz;
 
 #[derive(Debug, Clone)]
 pub struct LibraryModel {
@@ -174,9 +175,9 @@ pub fn import_any(path: &Path) -> Result<(PathBuf, ModelSource), String> {
             })
             // Windows 10 and later ship bsdtar as tar.exe.
             .or_else(|_| crate::platform::command("tar").arg("-xf").arg(path).arg("-C").arg(&tmp).status().map(|s| s.success()))
-            .map_err(|_| format!("Para importar un .zip hace falta unzip ({}).", crate::platform::install_hint(&["unzip"])))?;
+            .map_err(|_| tr!("Para importar un .zip hace falta unzip ({}).", crate::platform::install_hint(&["unzip"])))?;
         if !ok {
-            return Err("No se pudo descomprimir el .zip".to_string());
+            return Err(lz("No se pudo descomprimir el .zip").to_string());
         }
         // Prefer a .glb (self-contained) over a .gltf; among several, the largest.
         let mut found: Vec<(bool, u64, PathBuf)> = Vec::new();
@@ -193,7 +194,7 @@ pub fn import_any(path: &Path) -> Result<(PathBuf, ModelSource), String> {
             }
         }
         found.sort();
-        let (_, _, model) = found.pop().ok_or("El .zip no contiene ningún modelo .glb ni .gltf")?;
+        let (_, _, model) = found.pop().ok_or(lz("El .zip no contiene ningún modelo .glb ni .gltf"))?;
         let src = model3d::load(&model.to_string_lossy())?;
         // Name the copy after the download, not after names like "Untitled" or "scene".
         let named = model.with_file_name(format!(
@@ -211,9 +212,9 @@ pub fn import_any(path: &Path) -> Result<(PathBuf, ModelSource), String> {
 
 fn inside_gallery(entry: &Path) -> Result<PathBuf, String> {
     let root = user_dir().canonicalize().map_err(|e| e.to_string())?;
-    let e = entry.canonicalize().map_err(|_| "Ese modelo ya no existe".to_string())?;
+    let e = entry.canonicalize().map_err(|_| lz("Ese modelo ya no existe").to_string())?;
     if e.parent() != Some(root.as_path()) {
-        return Err("Solo se pueden cambiar los modelos que has importado".into());
+        return Err(lz("Solo se pueden cambiar los modelos que has importado").into());
     }
     Ok(e)
 }
@@ -223,7 +224,7 @@ pub fn rename(entry: &Path, new_name: &str) -> Result<PathBuf, String> {
     let entry = inside_gallery(entry)?;
     let name = new_name.trim();
     if name.is_empty() || name.contains(['/', '\\']) || name.starts_with('.') {
-        return Err("Escribe un nombre válido (sin barras)".into());
+        return Err(lz("Escribe un nombre válido (sin barras)").into());
     }
     let (target, model_file) = if entry.is_dir() {
         let model = std::fs::read_dir(&entry)
@@ -231,7 +232,7 @@ pub fn rename(entry: &Path, new_name: &str) -> Result<PathBuf, String> {
             .flatten()
             .map(|e| e.path())
             .find(|p| is_model_file(p))
-            .ok_or("No se encontró el modelo")?;
+            .ok_or(lz("No se encontró el modelo"))?;
         let target = entry.with_file_name(name);
         let file = target.join(model.file_name().unwrap_or_default());
         (target, file)
@@ -244,9 +245,9 @@ pub fn rename(entry: &Path, new_name: &str) -> Result<PathBuf, String> {
         return Ok(model_file);
     }
     if target.exists() {
-        return Err(format!("Ya hay un modelo llamado «{name}»"));
+        return Err(tr!("Ya hay un modelo llamado «{}»", name));
     }
-    std::fs::rename(&entry, &target).map_err(|e| format!("No se pudo renombrar: {e}"))?;
+    std::fs::rename(&entry, &target).map_err(|e| tr!("No se pudo renombrar: {}", e))?;
     Ok(model_file)
 }
 
@@ -254,7 +255,7 @@ pub fn rename(entry: &Path, new_name: &str) -> Result<PathBuf, String> {
 pub fn remove(entry: &Path) -> Result<(), String> {
     let entry = inside_gallery(entry)?;
     let r = if entry.is_dir() { std::fs::remove_dir_all(&entry) } else { std::fs::remove_file(&entry) };
-    r.map_err(|e| format!("No se pudo eliminar: {e}"))
+    r.map_err(|e| tr!("No se pudo eliminar: {}", e))
 }
 
 /// Adds a model to the gallery. A self-contained `.glb` is copied in as is; a model that loads
@@ -262,7 +263,7 @@ pub fn remove(entry: &Path) -> Result<(), String> {
 /// folder together with those files. Returns where the gallery copy lives.
 pub fn import(path: &Path) -> Result<PathBuf, String> {
     if !is_model_file(path) {
-        return Err("Elige un archivo .glb o .gltf".into());
+        return Err(lz("Elige un archivo .glb o .gltf").into());
     }
     let deps = external_files(path)?;
     let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "modelo".into());
@@ -279,7 +280,7 @@ pub fn import(path: &Path) -> Result<PathBuf, String> {
             dest = dir.join(format!("{stem} {n}.{ext}"));
             n += 1;
         }
-        std::fs::copy(path, &dest).map_err(|e| format!("No se pudo copiar el modelo: {e}"))?;
+        std::fs::copy(path, &dest).map_err(|e| tr!("No se pudo copiar el modelo: {}", e))?;
         return Ok(dest);
     }
 
@@ -291,7 +292,7 @@ pub fn import(path: &Path) -> Result<PathBuf, String> {
     }
     let missing: Vec<String> = deps.iter().filter(|d| !src_dir.join(d).is_file()).map(|d| d.display().to_string()).collect();
     if !missing.is_empty() {
-        return Err(format!(
+        return Err(tr!(
             "Al modelo le faltan archivos que deberían estar junto a él: {}. Descomprime la descarga completa y vuelve a importarlo.",
             missing.join(", ")
         ));
@@ -307,7 +308,7 @@ pub fn import(path: &Path) -> Result<PathBuf, String> {
         if let Some(parent) = to.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
-        std::fs::copy(src_dir.join(rel), &to).map(|_| ()).map_err(|e| format!("No se pudo copiar {}: {e}", rel.display()))
+        std::fs::copy(src_dir.join(rel), &to).map(|_| ()).map_err(|e| tr!("No se pudo copiar {}: {}", rel.display(), e))
     };
     let file_name = PathBuf::from(path.file_name().unwrap_or_default());
     let result = copy(&file_name).and_then(|_| deps.iter().try_for_each(|d| copy(d)));

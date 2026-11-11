@@ -24,10 +24,10 @@ const LAYERS: [Layer; 4] = [Layer::Images, Layer::Audio(AudioTrack::Effects), La
 impl Layer {
     fn label(self) -> &'static str {
         match self {
-            Layer::Images => "Imágenes",
-            Layer::Audio(AudioTrack::Effects) => "Efectos",
-            Layer::Audio(AudioTrack::Voice) => "Voz",
-            Layer::Audio(AudioTrack::Music) => "Música",
+            Layer::Images => lz("Imágenes"),
+            Layer::Audio(AudioTrack::Effects) => lz("Efectos"),
+            Layer::Audio(AudioTrack::Voice) => lz("Voz"),
+            Layer::Audio(AudioTrack::Music) => lz("Música"),
         }
     }
 
@@ -42,10 +42,10 @@ impl Layer {
 
     fn empty_hint(self) -> &'static str {
         match self {
-            Layer::Images => "Sin imágenes · arrastra un PNG a la ventana o haz doble clic aquí",
-            Layer::Audio(AudioTrack::Effects) => "Sin efectos de sonido · doble clic aquí",
-            Layer::Audio(AudioTrack::Voice) => "Sin voz en off · doble clic aquí",
-            Layer::Audio(AudioTrack::Music) => "Sin música · doble clic aquí",
+            Layer::Images => lz("Sin imágenes · arrastra un PNG a la ventana o haz doble clic aquí"),
+            Layer::Audio(AudioTrack::Effects) => lz("Sin efectos de sonido · doble clic aquí"),
+            Layer::Audio(AudioTrack::Voice) => lz("Sin voz en off · doble clic aquí"),
+            Layer::Audio(AudioTrack::Music) => lz("Sin música · doble clic aquí"),
         }
     }
 }
@@ -214,27 +214,27 @@ impl RecOrdingApp {
             ui.spacing_mut().item_spacing.x = 10.0;
             // Adding things at the cursor.
             tool_group(ui, |ui| {
-                if icon_button(ui, Icon::Zoom, "Añadir zoom en el cursor", "Z", false, true).clicked() {
+                if icon_button(ui, Icon::Zoom, lz("Añadir zoom en el cursor"), "Z", false, true).clicked() {
                     self.add_zoom_at(self.time);
                 }
-                if icon_button(ui, Icon::Camera, "Añadir movimiento de cámara en el cursor", "", false, true).clicked() {
+                if icon_button(ui, Icon::Camera, lz("Añadir movimiento de cámara en el cursor"), "", false, true).clicked() {
                     match timeline::add_move(&mut self.project, self.time) {
                         Ok(id) => self.selection = Selection::Camera { id, key: Some(1) },
                         Err(e) => self.toast(e),
                     }
                 }
-                if icon_button(ui, Icon::Text, "Añadir texto en el cursor", "T", false, true).clicked() {
+                if icon_button(ui, Icon::Text, lz("Añadir texto en el cursor"), "T", false, true).clicked() {
                     self.add_text_at(self.time);
                 }
-                let phone = icon_button(ui, Icon::PhoneMove, "Añadir movimiento del móvil…", "", false, true);
+                let phone = icon_button(ui, Icon::PhoneMove, lz("Añadir movimiento del móvil…"), "", false, true);
                 let popup = ui.make_persistent_id("device-presets");
                 if phone.clicked() {
                     ui.memory_mut(|m| m.toggle_popup(popup));
                 }
                 egui::popup::popup_above_or_below_widget(ui, popup, &phone, egui::AboveOrBelow::Above, egui::PopupCloseBehavior::CloseOnClick, |ui| {
                     ui.set_min_width(220.0);
-                    ui.label(RichText::new("Movimiento del móvil en el cursor").color(TEXT_2).font(regular(12.0)));
-                    ui.label(RichText::new("Los giros junto a un cambio de clip se centran en él").color(TEXT_3).font(regular(11.5)));
+                    ui.label(RichText::new(lz("Movimiento del móvil en el cursor")).color(TEXT_2).font(regular(12.0)));
+                    ui.label(RichText::new(lz("Los giros junto a un cambio de clip se centran en él")).color(TEXT_3).font(regular(11.5)));
                     for preset in DevicePreset::ALL {
                         if ui.button(preset.label()).clicked() {
                             let id = timeline::add_device_preset(&mut self.project, preset, self.time);
@@ -244,21 +244,21 @@ impl RecOrdingApp {
                 });
             });
             tool_group(ui, |ui| {
-                if icon_button(ui, Icon::Image, "Añadir una imagen en el cursor (PNG con transparencia)", "", false, true).clicked() {
+                if icon_button(ui, Icon::Image, lz("Añadir una imagen en el cursor (PNG con transparencia)"), "", false, true).clicked() {
                     self.pick_picture(self.time);
                 }
-                if icon_button(ui, Icon::Effect, "Añadir un efecto de sonido en el cursor", "", false, true).clicked() {
+                if icon_button(ui, Icon::Effect, lz("Añadir un efecto de sonido en el cursor"), "", false, true).clicked() {
                     self.pick_sound(Some(AudioTrack::Effects), self.time);
                 }
-                if icon_button(ui, Icon::Mic, "Añadir voz en off en el cursor", "", false, true).clicked() {
+                if icon_button(ui, Icon::Mic, lz("Añadir voz en off en el cursor"), "", false, true).clicked() {
                     self.pick_sound(Some(AudioTrack::Voice), self.time);
                 }
-                if icon_button(ui, Icon::Music, "Añadir música en el cursor", "", false, true).clicked() {
+                if icon_button(ui, Icon::Music, lz("Añadir música en el cursor"), "", false, true).clicked() {
                     self.pick_sound(Some(AudioTrack::Music), self.time);
                 }
             });
             tool_group(ui, |ui| {
-                if icon_button(ui, Icon::Director, "Director: marca lo que debe verse y se generan los planos", "", self.director_mode, true).clicked() {
+                if icon_button(ui, Icon::Director, lz("Director: marca lo que debe verse y se generan los planos"), "", self.director_mode, true).clicked() {
                     self.director_mode = !self.director_mode;
                     self.selection = Selection::None;
                     if self.playing {
@@ -268,29 +268,29 @@ impl RecOrdingApp {
             });
             // Editing the video clips.
             tool_group(ui, |ui| {
-                if icon_button(ui, Icon::Split, "Dividir el clip en el cursor", "Ctrl+B", false, true).clicked() {
+                if icon_button(ui, Icon::Split, lz("Dividir el clip en el cursor"), "Ctrl+B", false, true).clicked() {
                     self.split_here();
                 }
-                if icon_button(ui, Icon::Freeze, "Congelar el fotograma del cursor 2 s", "", false, true).clicked() {
+                if icon_button(ui, Icon::Freeze, lz("Congelar el fotograma del cursor 2 s"), "", false, true).clicked() {
                     match timeline::freeze_frame(&mut self.project, self.time, 2.0) {
                         Ok(still) => self.selection = Selection::Clip(still),
                         Err(e) => self.toast(e),
                     }
                     self.requested_time = None;
                 }
-                if icon_button(ui, Icon::AddVideo, "Añadir un vídeo al final", "", false, true).clicked() {
+                if icon_button(ui, Icon::AddVideo, lz("Añadir un vídeo al final"), "", false, true).clicked() {
                     self.pick_video();
                 }
             });
             ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                ui.label(RichText::new(format!("Duración {}", fmt_time(timeline::duration(&self.project)))).color(TEXT_2).font(regular(12.5)));
+                ui.label(RichText::new(tr!("Duración {}", fmt_time(timeline::duration(&self.project)))).color(TEXT_2).font(regular(12.5)));
                 ui.add_space(4.0);
                 // Right to left here: Redo goes first to end up on the right.
                 tool_group(ui, |ui| {
-                    if icon_button(ui, Icon::Redo, "Rehacer", "Ctrl+Mayús+Z", false, !self.redo.is_empty()).clicked() {
+                    if icon_button(ui, Icon::Redo, lz("Rehacer"), lz("Ctrl+Mayús+Z"), false, !self.redo.is_empty()).clicked() {
                         self.undo_redo(false);
                     }
-                    if icon_button(ui, Icon::Undo, "Deshacer", "Ctrl+Z", false, !self.undo.is_empty()).clicked() {
+                    if icon_button(ui, Icon::Undo, lz("Deshacer"), "Ctrl+Z", false, !self.undo.is_empty()).clicked() {
                         self.undo_redo(true);
                     }
                 });
@@ -606,7 +606,7 @@ impl RecOrdingApp {
             let mut c = ui.new_child(builder);
             c.spacing_mut().slider_width = rect.width();
             c.spacing_mut().interact_size.y = 18.0;
-            c.add(egui::Slider::new(volume, 0.0..=2.0).show_value(false)).on_hover_text(format!("Volumen de {}", track.label().to_lowercase()));
+            c.add(egui::Slider::new(volume, 0.0..=2.0).show_value(false)).on_hover_text(tr!("Volumen de {}", track.label().to_lowercase()));
             let text = format!("{:.0} %", *volume * 100.0);
             ui.painter().text(Pos2::new(tl.x0 - 8.0, y), Align2::RIGHT_CENTER, text, regular(10.5), TEXT_3);
         }
@@ -797,7 +797,7 @@ impl RecOrdingApp {
         let dur = tl.dur;
 
         // Row labels
-        for (r, label) in [(tl.video, "Vídeo"), (tl.camera, "Cámara"), (tl.device, "Móvil"), (tl.text, "Texto")] {
+        for (r, label) in [(tl.video, lz("Vídeo")), (tl.camera, lz("Cámara")), (tl.device, lz("Móvil")), (tl.text, lz("Texto"))] {
             p.text(Pos2::new(r.left(), r.center().y), Align2::LEFT_CENTER, label, regular(11.5), TEXT_3);
         }
         for row in &tl.rows {
@@ -822,7 +822,7 @@ impl RecOrdingApp {
             );
             if major {
                 let s = fmt_time(t);
-                let s = s.split(',').next().unwrap_or(&s).to_string();
+                let s = s.split(crate::i18n::comma()).next().unwrap_or(&s).to_string();
                 p.text(Pos2::new(x + 4.0, tl.ruler.top()), Align2::LEFT_TOP, s, regular(10.5), TEXT_3);
             }
             t += minor;
@@ -899,7 +899,7 @@ impl RecOrdingApp {
         let cam_row = Rect::from_min_max(Pos2::new(tl.x0, tl.camera.top()), Pos2::new(tl.x1, tl.camera.bottom()));
         p.rect_filled(cam_row, Rounding::same(7.0), TRACK);
         if self.project.camera.is_empty() {
-            p.text(cam_row.center(), Align2::CENTER_CENTER, "Sin movimientos de cámara · usa los botones de arriba o haz doble clic aquí", regular(12.0), TEXT_3);
+            p.text(cam_row.center(), Align2::CENTER_CENTER, lz("Sin movimientos de cámara · usa los botones de arriba o haz doble clic aquí"), regular(12.0), TEXT_3);
         }
         for c in &self.project.camera {
             let r = Rect::from_min_max(Pos2::new(tl.x(c.start), tl.camera.top() + 2.0), Pos2::new(tl.x(c.end()), tl.camera.bottom() - 2.0));
@@ -911,7 +911,7 @@ impl RecOrdingApp {
                 p.rect_stroke(r, Rounding::same(6.0), Stroke::new(2.0_f32, YELLOW));
             }
             let label = match c.kind {
-                CameraKind::Zoom | CameraKind::Auto => format!("{:.1}×", c.keys.iter().map(|k| k.zoom).fold(1.0, f32::max)).replace('.', ","),
+                CameraKind::Zoom | CameraKind::Auto => format!("{:.1}×", c.keys.iter().map(|k| k.zoom).fold(1.0, f32::max)).replace('.', crate::i18n::comma()),
                 k => k.label().to_string(),
             };
             if r.width() > 34.0 {
@@ -933,7 +933,7 @@ impl RecOrdingApp {
         let dev_row = Rect::from_min_max(Pos2::new(tl.x0, tl.device.top()), Pos2::new(tl.x1, tl.device.bottom()));
         p.rect_filled(dev_row, Rounding::same(6.0), TRACK);
         if self.project.device.is_empty() {
-            p.text(dev_row.center(), Align2::CENTER_CENTER, "Sin movimientos del móvil · botón del móvil, arriba", regular(11.5), TEXT_3);
+            p.text(dev_row.center(), Align2::CENTER_CENTER, lz("Sin movimientos del móvil · botón del móvil, arriba"), regular(11.5), TEXT_3);
         }
         for c in &self.project.device {
             let r = Rect::from_min_max(Pos2::new(tl.x(c.start), tl.device.top() + 2.0), Pos2::new(tl.x(c.end()).max(tl.x(c.start) + 6.0), tl.device.bottom() - 2.0));
@@ -943,7 +943,7 @@ impl RecOrdingApp {
                 p.rect_stroke(r, Rounding::same(5.0), Stroke::new(2.0_f32, YELLOW));
             }
             if r.width() > 50.0 {
-                let g = p.layout_no_wrap(c.name.clone(), regular(10.5), Color32::WHITE);
+                let g = p.layout_no_wrap(lz(&c.name).to_string(), regular(10.5), Color32::WHITE);
                 if g.size().x < r.width() - 12.0 {
                     p.galley(Pos2::new(r.left() + 7.0, r.center().y - g.size().y / 2.0), g, Color32::WHITE);
                 }
@@ -958,7 +958,7 @@ impl RecOrdingApp {
         let text_row = Rect::from_min_max(Pos2::new(tl.x0, tl.text.top()), Pos2::new(tl.x1, tl.text.bottom()));
         p.rect_filled(text_row, Rounding::same(6.0), TRACK);
         if self.project.texts.is_empty() {
-            p.text(text_row.center(), Align2::CENTER_CENTER, "Sin textos · pulsa T o haz doble clic aquí", regular(11.5), TEXT_3);
+            p.text(text_row.center(), Align2::CENTER_CENTER, lz("Sin textos · pulsa T o haz doble clic aquí"), regular(11.5), TEXT_3);
         }
         for c in &self.project.texts {
             let r = Rect::from_min_max(Pos2::new(tl.x(c.start), tl.text.top() + 2.0), Pos2::new(tl.x(c.end()).max(tl.x(c.start) + 6.0), tl.text.bottom() - 2.0));
@@ -971,7 +971,7 @@ impl RecOrdingApp {
             let first = c.title.lines().map(str::trim).find(|l| !l.is_empty()).or(c.subtitle.lines().map(str::trim).find(|l| !l.is_empty()));
             let (label, col) = match first {
                 Some(l) => (l.to_string(), Color32::WHITE),
-                None => ("Sin texto".to_string(), Color32::from_white_alpha(150)),
+                None => (lz("Sin texto").to_string(), Color32::from_white_alpha(150)),
             };
             if r.width() > 30.0 {
                 let tp = ui.painter_at(r.shrink2(Vec2::new(6.0, 0.0)));

@@ -43,37 +43,37 @@ impl RecOrdingApp {
         let mut retake_all = false;
         let mut clear = false;
         let n = self.project.director.targets.len();
-        section(ui, "Director", |ui| {
+        section(ui, lz("Director"), |ui| {
             ui.label(
-                RichText::new("Mueve el cursor a cada momento importante y arrastra sobre la vista previa lo que debe verse. Cada recuadro será un plano de cámara.")
+                RichText::new(lz("Mueve el cursor a cada momento importante y arrastra sobre la vista previa lo que debe verse. Cada recuadro será un plano de cámara."))
                     .color(TEXT_2)
                     .font(regular(12.0)),
             );
-            segmented_row(ui, "Movimiento", &mut self.project.director.motion, &[(DirectorMotion::ThreeD, "3D"), (DirectorMotion::TwoD, "2D")]);
+            segmented_row(ui, lz("Movimiento"), &mut self.project.director.motion, &[(DirectorMotion::ThreeD, "3D"), (DirectorMotion::TwoD, "2D")]);
             if self.project.director.motion == DirectorMotion::ThreeD {
-                slider_row(ui, "Intensidad", &mut self.project.director.intensity, 0.0..=1.0, |v| {
+                slider_row(ui, lz("Intensidad"), &mut self.project.director.intensity, 0.0..=1.0, |v| {
                     match v {
-                        v if v < 0.34 => "Suave",
-                        v if v < 0.67 => "Media",
-                        _ => "Marcada",
+                        v if v < 0.34 => lz("Suave"),
+                        v if v < 0.67 => lz("Media"),
+                        _ => lz("Marcada"),
                     }
                     .to_string()
                 });
             }
-            ui.label(RichText::new(format!("{n} objetivos")).color(TEXT_3).font(regular(12.0)));
+            ui.label(RichText::new(tr!("{} objetivos", n)).color(TEXT_3).font(regular(12.0)));
             ui.horizontal(|ui| {
-                if primary_button(ui, "Generar planos", n > 0).on_hover_text("Sustituye los movimientos de cámara que se solapen").clicked() {
+                if primary_button(ui, lz("Generar planos"), n > 0).on_hover_text(lz("Sustituye los movimientos de cámara que se solapen")).clicked() {
                     generate = true;
                 }
-                if ui.add_enabled(n > 0, egui::Button::new("Otra toma").min_size(Vec2::new(0.0, 28.0))).clicked() {
+                if ui.add_enabled(n > 0, egui::Button::new(lz("Otra toma")).min_size(Vec2::new(0.0, 28.0))).clicked() {
                     retake_all = true;
                 }
             });
             ui.horizontal(|ui| {
-                if ui.add_enabled(n > 0, egui::Button::new(RichText::new("Borrar todo").color(RED)).min_size(Vec2::new(0.0, 28.0))).clicked() {
+                if ui.add_enabled(n > 0, egui::Button::new(RichText::new(lz("Borrar todo")).color(RED)).min_size(Vec2::new(0.0, 28.0))).clicked() {
                     clear = true;
                 }
-                if secondary_button(ui, "Salir del Director").clicked() {
+                if secondary_button(ui, lz("Salir del Director")).clicked() {
                     self.director_mode = false;
                     self.selection = Selection::None;
                 }
@@ -104,10 +104,10 @@ impl RecOrdingApp {
                 self.seek(self.project.director.targets.first().map(|t| (t.time - 1.0).max(0.0)).unwrap_or(0.0));
                 let extra = match replaced {
                     0 => String::new(),
-                    1 => " Sustituyen 1 movimiento que se solapaba (Ctrl+Z para recuperarlo).".into(),
-                    n => format!(" Sustituyen {n} movimientos que se solapaban (Ctrl+Z para recuperarlos)."),
+                    1 => lz(" Sustituyen 1 movimiento que se solapaba (Ctrl+Z para recuperarlo).").into(),
+                    n => tr!(" Sustituyen {} movimientos que se solapaban (Ctrl+Z para recuperarlos).", n),
                 };
-                self.toast(format!("{n} planos generados. Pulsa Espacio para verlos.{extra}"));
+                self.toast(tr!("{} planos generados. Pulsa Espacio para verlos.{}", n, extra));
             }
             Err(e) => self.toast(e),
         }
@@ -142,43 +142,43 @@ impl RecOrdingApp {
         let mut replace = false;
         let mut speed = None;
         let mut still_len = None;
-        let title = if c.clip.freeze.is_some() { "Fotograma congelado" } else { "Clip de vídeo" };
+        let title = if c.clip.freeze.is_some() { lz("Fotograma congelado") } else { lz("Clip de vídeo") };
         section_with(
             ui,
             title,
             |ui| {
-                if small_icon_button(ui, Icon::Trash, "Eliminar el clip", true, true).clicked() {
+                if small_icon_button(ui, Icon::Trash, lz("Eliminar el clip"), true, true).clicked() {
                     delete = true;
                 }
             },
             |ui| {
                 ui.add(egui::Label::new(RichText::new(name).color(TEXT)).truncate());
                 let detail = match c.clip.freeze {
-                    Some(_) => format!("El fotograma de {} de la grabación · {}", fmt_time(c.clip.source_in), fmt_secs(c.clip.duration())),
-                    None => format!("De {} a {} de la grabación · {}", fmt_time(c.clip.source_in), fmt_time(c.clip.source_out), fmt_secs(c.clip.duration())),
+                    Some(_) => tr!("El fotograma de {} de la grabación · {}", fmt_time(c.clip.source_in), fmt_secs(c.clip.duration())),
+                    None => tr!("De {} a {} de la grabación · {}", fmt_time(c.clip.source_in), fmt_time(c.clip.source_out), fmt_secs(c.clip.duration())),
                 };
                 ui.label(RichText::new(detail).color(TEXT_2).font(regular(12.0)));
                 if let Some(secs) = c.clip.freeze {
                     let mut s = secs;
-                    if slider_row(ui, "Duración", &mut s, 0.2..=10.0, fmt_secs) {
+                    if slider_row(ui, lz("Duración"), &mut s, 0.2..=10.0, fmt_secs) {
                         still_len = Some(s);
                     }
                 } else {
                     let mut v = [0.5, 1.0, 1.5, 2.0, 4.0].into_iter().find(|v| (c.clip.speed - v).abs() < 1e-3).unwrap_or(c.clip.speed);
-                    if segmented_row(ui, "Velocidad", &mut v, &[(0.5, "0,5×"), (1.0, "1×"), (1.5, "1,5×"), (2.0, "2×"), (4.0, "4×")]) {
+                    if segmented_row(ui, lz("Velocidad"), &mut v, &[(0.5, lz("0,5×")), (1.0, "1×"), (1.5, lz("1,5×")), (2.0, "2×"), (4.0, "4×")]) {
                         speed = Some(v);
                     }
-                    ui.label(RichText::new("Arrastra sus bordes para recortarlo y el clip para cambiarlo de orden.").color(TEXT_3).font(regular(11.5)));
+                    ui.label(RichText::new(lz("Arrastra sus bordes para recortarlo y el clip para cambiarlo de orden.")).color(TEXT_3).font(regular(11.5)));
                 }
                 ui.add_space(2.0);
                 tool_group(ui, |ui| {
-                    if icon_button(ui, Icon::Split, "Dividir en el cursor", "Ctrl+B", false, true).clicked() {
+                    if icon_button(ui, Icon::Split, lz("Dividir en el cursor"), "Ctrl+B", false, true).clicked() {
                         split = true;
                     }
-                    if icon_button(ui, Icon::Freeze, "Congelar el fotograma del cursor 2 s (lo demás se desplaza)", "", false, true).clicked() {
+                    if icon_button(ui, Icon::Freeze, lz("Congelar el fotograma del cursor 2 s (lo demás se desplaza)"), "", false, true).clicked() {
                         freeze = true;
                     }
-                    if icon_button(ui, Icon::Swap, "Cambiar el vídeo del clip (mantiene el recorte)", "", false, true).clicked() {
+                    if icon_button(ui, Icon::Swap, lz("Cambiar el vídeo del clip (mantiene el recorte)"), "", false, true).clicked() {
                         replace = true;
                     }
                 });
@@ -221,62 +221,62 @@ impl RecOrdingApp {
         let mut action: Option<&str> = None;
         let mut new_key: Option<usize> = key;
         let time = self.time;
-        let title = format!("Cámara · {}", c.kind.label());
+        let title = tr!("Cámara · {}", c.kind.label());
         let mut delete_clip = false;
         section_with(
             ui,
             &title,
             |ui| {
-                if small_icon_button(ui, Icon::Trash, "Eliminar el movimiento", true, true).clicked() {
+                if small_icon_button(ui, Icon::Trash, lz("Eliminar el movimiento"), true, true).clicked() {
                     delete_clip = true;
                 }
             },
             |ui| {
                 ui.label(
-                    RichText::new(format!("De {} a {} · {}", fmt_time(c.start), fmt_time(c.end()), fmt_secs(c.duration())))
+                    RichText::new(tr!("De {} a {} · {}", fmt_time(c.start), fmt_time(c.end()), fmt_secs(c.duration())))
                         .color(TEXT_2)
                         .font(regular(12.0)),
                 );
                 let cm = self.project.camera.iter_mut().find(|x| x.id == id).unwrap();
                 if matches!(c.kind, CameraKind::Zoom | CameraKind::Auto) && c.keys.len() == 4 {
                     let mut zoom = c.keys[1].zoom;
-                    if slider_row(ui, "Nivel", &mut zoom, 1.1..=4.0, |v| format!("{v:.1}×").replace('.', ",")) {
+                    if slider_row(ui, lz("Nivel"), &mut zoom, 1.1..=4.0, |v| format!("{v:.1}×").replace('.', crate::i18n::comma())) {
                         cm.keys[1].zoom = zoom;
                         cm.keys[2].zoom = zoom;
                         cm.kind = CameraKind::Zoom;
                     }
-                    ui.label(RichText::new("Haz clic en la vista previa para elegir dónde enfocar.").color(TEXT_3).font(regular(11.5)));
+                    ui.label(RichText::new(lz("Haz clic en la vista previa para elegir dónde enfocar.")).color(TEXT_3).font(regular(11.5)));
                 } else {
                     // Keyframes, as numbered chips.
                     ui.horizontal_wrapped(|ui| {
                         ui.spacing_mut().item_spacing = Vec2::new(4.0, 4.0);
                         for i in 0..c.keys.len() {
-                            if chip(ui, &format!("{}", i + 1), key == Some(i)).on_hover_text(format!("Fotograma clave en {}", fmt_time(c.start + c.keys[i].t))).clicked() {
+                            if chip(ui, &format!("{}", i + 1), key == Some(i)).on_hover_text(tr!("Fotograma clave en {}", fmt_time(c.start + c.keys[i].t))).clicked() {
                                 new_key = Some(i);
                                 action = Some("seek-key");
                             }
                         }
-                        if chip(ui, "+ en el cursor", false).on_hover_text("Añade un fotograma clave con la cámara de este momento").clicked() {
+                        if chip(ui, lz("+ en el cursor"), false).on_hover_text(lz("Añade un fotograma clave con la cámara de este momento")).clicked() {
                             action = Some("add-key");
                         }
                     });
                     if let Some(k) = key.and_then(|i| cm.keys.get_mut(i)) {
                         ui.add_space(2.0);
                         let deg = |v: f32| format!("{v:.0}°");
-                        slider_row(ui, "Zoom", &mut k.zoom, 1.0..=4.0, |v| format!("{v:.1}×").replace('.', ","));
-                        slider_row(ui, "Inclinación", &mut k.tilt, -60.0..=60.0, deg);
-                        slider_row(ui, "Giro", &mut k.turn, -180.0..=180.0, deg);
-                        slider_row(ui, "Rotación", &mut k.roll, -45.0..=45.0, deg);
+                        slider_row(ui, lz("Zoom"), &mut k.zoom, 1.0..=4.0, |v| format!("{v:.1}×").replace('.', crate::i18n::comma()));
+                        slider_row(ui, lz("Inclinación"), &mut k.tilt, -60.0..=60.0, deg);
+                        slider_row(ui, lz("Giro"), &mut k.turn, -180.0..=180.0, deg);
+                        slider_row(ui, lz("Rotación"), &mut k.roll, -45.0..=45.0, deg);
                         let opts: Vec<(Ease, &str)> = Ease::ALL.iter().map(|e| (*e, e.label())).collect();
-                        segmented_row(ui, "Llegada", &mut k.ease, &opts);
+                        segmented_row(ui, lz("Llegada"), &mut k.ease, &opts);
                         if k.zoom > 1.02 {
-                            ui.label(RichText::new("Haz clic en la vista previa para elegir el encuadre.").color(TEXT_3).font(regular(11.5)));
+                            ui.label(RichText::new(lz("Haz clic en la vista previa para elegir el encuadre.")).color(TEXT_3).font(regular(11.5)));
                         }
-                        if ui.add(egui::Button::new(RichText::new("Eliminar fotograma").color(RED)).min_size(Vec2::new(0.0, 26.0))).clicked() {
+                        if ui.add(egui::Button::new(RichText::new(lz("Eliminar fotograma")).color(RED)).min_size(Vec2::new(0.0, 26.0))).clicked() {
                             action = Some("del-key");
                         }
                     } else {
-                        ui.label(RichText::new("Elige un fotograma clave (los rombos de la línea de tiempo) para cambiar su zoom y sus ángulos.").color(TEXT_3).font(regular(11.5)));
+                        ui.label(RichText::new(lz("Elige un fotograma clave (los rombos de la línea de tiempo) para cambiar su zoom y sus ángulos.")).color(TEXT_3).font(regular(11.5)));
                     }
                 }
             },
@@ -321,18 +321,18 @@ impl RecOrdingApp {
         let mut seek_to = None;
         section_with(
             ui,
-            &format!("Móvil · {}", c.name),
+            &tr!("Móvil · {}", lz(&c.name)),
             |ui| {
-                if small_icon_button(ui, Icon::Trash, "Eliminar el movimiento", true, true).clicked() {
+                if small_icon_button(ui, Icon::Trash, lz("Eliminar el movimiento"), true, true).clicked() {
                     delete = true;
                 }
             },
             |ui| {
-                ui.label(RichText::new(format!("De {} a {}", fmt_time(c.start), fmt_time(c.end()))).color(TEXT_2).font(regular(12.0)));
+                ui.label(RichText::new(tr!("De {} a {}", fmt_time(c.start), fmt_time(c.end()))).color(TEXT_2).font(regular(12.0)));
                 {
                     let dc = self.project.device.iter_mut().find(|x| x.id == id).unwrap();
                     let mut secs = dc.duration();
-                    if slider_row(ui, "Duración", &mut secs, 0.3..=6.0, fmt_secs) {
+                    if slider_row(ui, lz("Duración"), &mut secs, 0.3..=6.0, fmt_secs) {
                         timeline::set_device_duration(dc, secs);
                     }
                     if let Some((axis, degrees)) = timeline::spin_of(dc) {
@@ -340,7 +340,7 @@ impl RecOrdingApp {
                         let sign = degrees.signum();
                         let mut new_spin = None;
                         ui.horizontal(|ui| {
-                            fixed_label(ui, 78.0, RichText::new("Vueltas").color(TEXT), Align::Min);
+                            fixed_label(ui, 78.0, RichText::new(lz("Vueltas")).color(TEXT), Align::Min);
                             ui.spacing_mut().item_spacing.x = 4.0;
                             for n in 1..=3u32 {
                                 if chip(ui, &n.to_string(), n == turns).clicked() {
@@ -349,9 +349,9 @@ impl RecOrdingApp {
                             }
                         });
                         ui.horizontal(|ui| {
-                            fixed_label(ui, 78.0, RichText::new("Sentido").color(TEXT), Align::Min);
+                            fixed_label(ui, 78.0, RichText::new(lz("Sentido")).color(TEXT), Align::Min);
                             ui.spacing_mut().item_spacing.x = 4.0;
-                            let (a, b) = if axis == 1 { ("Hacia atrás", "Hacia delante") } else { ("Izquierda", "Derecha") };
+                            let (a, b) = if axis == 1 { (lz("Hacia atrás"), lz("Hacia delante")) } else { (lz("Izquierda"), lz("Derecha")) };
                             if chip(ui, a, sign < 0.0).clicked() {
                                 new_spin = Some(-degrees.abs());
                             }
@@ -362,8 +362,8 @@ impl RecOrdingApp {
                         if let Some(d) = new_spin {
                             timeline::set_spin(dc, d);
                         }
-                        let axis = ["sobre su eje vertical", "sobre su eje horizontal", "en el plano"][axis];
-                        ui.label(RichText::new(format!("Gira {axis}. Junto a un cambio de clip, el corte queda oculto mientras se ve la trasera.")).color(TEXT_3).font(regular(11.5)));
+                        let axis = [lz("sobre su eje vertical"), lz("sobre su eje horizontal"), lz("en el plano")][axis];
+                        ui.label(RichText::new(tr!("Gira {}. Junto a un cambio de clip, el corte queda oculto mientras se ve la trasera.", axis)).color(TEXT_3).font(regular(11.5)));
                     }
                 }
                 ui.horizontal_wrapped(|ui| {
@@ -379,16 +379,16 @@ impl RecOrdingApp {
                 if let Some(k) = key.and_then(|i| dc.keys.get_mut(i)) {
                     let deg = |v: f32| format!("{v:.0}°");
                     let pct = |v: f32| format!("{:.0} %", v * 100.0);
-                    slider_row(ui, "Horizontal", &mut k.dx, -1.0..=1.0, pct);
-                    slider_row(ui, "Vertical", &mut k.dy, -1.0..=1.0, pct);
-                    slider_row(ui, "Escala", &mut k.scale, 0.3..=2.0, pct);
-                    slider_row(ui, "Inclinación", &mut k.tilt, -360.0..=360.0, deg);
-                    slider_row(ui, "Giro", &mut k.turn, -1080.0..=1080.0, deg);
-                    slider_row(ui, "Rotación", &mut k.roll, -360.0..=360.0, deg);
+                    slider_row(ui, lz("Horizontal"), &mut k.dx, -1.0..=1.0, pct);
+                    slider_row(ui, lz("Vertical"), &mut k.dy, -1.0..=1.0, pct);
+                    slider_row(ui, lz("Escala"), &mut k.scale, 0.3..=2.0, pct);
+                    slider_row(ui, lz("Inclinación"), &mut k.tilt, -360.0..=360.0, deg);
+                    slider_row(ui, lz("Giro"), &mut k.turn, -1080.0..=1080.0, deg);
+                    slider_row(ui, lz("Rotación"), &mut k.roll, -360.0..=360.0, deg);
                     let opts: Vec<(Ease, &str)> = Ease::ALL.iter().map(|e| (*e, e.label())).collect();
-                    segmented_row(ui, "Llegada", &mut k.ease, &opts);
+                    segmented_row(ui, lz("Llegada"), &mut k.ease, &opts);
                 } else {
-                    ui.label(RichText::new("Elige un fotograma clave para ajustar la posición, la escala y el giro.").color(TEXT_3).font(regular(11.5)));
+                    ui.label(RichText::new(lz("Elige un fotograma clave para ajustar la posición, la escala y el giro.")).color(TEXT_3).font(regular(11.5)));
                 }
             },
         );
@@ -413,27 +413,27 @@ impl RecOrdingApp {
         let focus = std::mem::take(&mut self.focus_title);
         section_with(
             ui,
-            "Texto",
+            lz("Texto"),
             |ui| {
-                if small_icon_button(ui, Icon::Trash, "Eliminar el texto", true, true).clicked() {
+                if small_icon_button(ui, Icon::Trash, lz("Eliminar el texto"), true, true).clicked() {
                     delete = true;
                 }
             },
             |ui| {
-                ui.label(RichText::new(format!("De {} a {}", fmt_time(c.start), fmt_time(c.end()))).color(TEXT_2).font(regular(12.0)));
+                ui.label(RichText::new(tr!("De {} a {}", fmt_time(c.start), fmt_time(c.end()))).color(TEXT_2).font(regular(12.0)));
                 let tc = self.project.texts.iter_mut().find(|x| x.id == id).unwrap();
-                ui.label(RichText::new("Titular").color(TEXT));
+                ui.label(RichText::new(lz("Titular")).color(TEXT));
                 let title = ui.add(
                     egui::TextEdit::multiline(&mut tc.title)
-                        .hint_text("Camina.\n(una línea por salto de línea)")
+                        .hint_text(lz("Camina.\n(una línea por salto de línea)"))
                         .desired_rows(2)
                         .desired_width(f32::INFINITY),
                 );
                 if focus {
                     title.request_focus();
                 }
-                ui.label(RichText::new("Debajo, más pequeño").color(TEXT));
-                ui.add(egui::TextEdit::singleline(&mut tc.subtitle).hint_text("Opcional").desired_width(f32::INFINITY));
+                ui.label(RichText::new(lz("Debajo, más pequeño")).color(TEXT));
+                ui.add(egui::TextEdit::singleline(&mut tc.subtitle).hint_text(lz("Opcional")).desired_width(f32::INFINITY));
                 ui.add_space(4.0);
                 fn chips<T: PartialEq + Copy>(ui: &mut Ui, label: &str, value: &mut T, all: &[T], name: impl Fn(T) -> &'static str) {
                     ui.label(RichText::new(label).color(TEXT_2).font(regular(11.5)));
@@ -447,19 +447,19 @@ impl RecOrdingApp {
                         }
                     });
                 }
-                chips(ui, "Posición", &mut tc.place, &TextPlace::ALL, TextPlace::label);
-                chips(ui, "Tamaño", &mut tc.size, &TextSize::ALL, TextSize::label);
-                chips(ui, "Entrada", &mut tc.reveal, &TextReveal::ALL, TextReveal::label);
-                chips(ui, "Color", &mut tc.color, &TextColor::ALL, TextColor::label);
+                chips(ui, lz("Posición"), &mut tc.place, &TextPlace::ALL, TextPlace::label);
+                chips(ui, lz("Tamaño"), &mut tc.size, &TextSize::ALL, TextSize::label);
+                chips(ui, lz("Entrada"), &mut tc.reveal, &TextReveal::ALL, TextReveal::label);
+                chips(ui, lz("Color"), &mut tc.color, &TextColor::ALL, TextColor::label);
                 if tc.place != TextPlace::Center {
-                    toggle_row(ui, "Apartar el móvil", "Le deja sitio al texto mientras se ve", &mut tc.make_room);
+                    toggle_row(ui, lz("Apartar el móvil"), lz("Le deja sitio al texto mientras se ve"), &mut tc.make_room);
                     if tc.make_room {
-                        toggle_row(ui, "Mirar al texto", "El móvil gira un poco hacia él", &mut tc.face_text);
-                        slider_row(ui, "Movimiento", &mut tc.move_time, 0.2..=2.0, fmt_secs);
+                        toggle_row(ui, lz("Mirar al texto"), lz("El móvil gira un poco hacia él"), &mut tc.face_text);
+                        slider_row(ui, lz("Movimiento"), &mut tc.move_time, 0.2..=2.0, fmt_secs);
                     }
                 }
                 let mut secs = tc.duration;
-                if slider_row(ui, "Duración", &mut secs, 0.8..=10.0, fmt_secs) {
+                if slider_row(ui, lz("Duración"), &mut secs, 0.8..=10.0, fmt_secs) {
                     place = Some((tc.start, tc.start + secs));
                 }
             },
@@ -483,16 +483,16 @@ impl RecOrdingApp {
         let mut delete = false;
         section_with(
             ui,
-            &format!("Objetivo {}", n + 1),
+            &tr!("Objetivo {}", n + 1),
             |ui| {
-                if small_icon_button(ui, Icon::Trash, "Eliminar el objetivo", true, true).clicked() {
+                if small_icon_button(ui, Icon::Trash, lz("Eliminar el objetivo"), true, true).clicked() {
                     delete = true;
                 }
             },
             |ui| {
-                ui.label(RichText::new(format!("En {}", fmt_time(t.time))).color(TEXT_2).font(regular(12.0)));
-                ui.label(RichText::new("Arrastra su marca en la regla para cambiar el momento.").color(TEXT_3).font(regular(11.5)));
-                if secondary_button(ui, "Otra toma").on_hover_text("Otro movimiento de cámara para este plano").clicked() {
+                ui.label(RichText::new(tr!("En {}", fmt_time(t.time))).color(TEXT_2).font(regular(12.0)));
+                ui.label(RichText::new(lz("Arrastra su marca en la regla para cambiar el momento.")).color(TEXT_3).font(regular(11.5)));
+                if secondary_button(ui, lz("Otra toma")).on_hover_text(lz("Otro movimiento de cámara para este plano")).clicked() {
                     retake = true;
                 }
             },
@@ -504,7 +504,7 @@ impl RecOrdingApp {
                 self.director_mode = true;
                 self.selection = Selection::Target(id);
             } else {
-                self.toast("Se usará otro movimiento al generar los planos");
+                self.toast(lz("Se usará otro movimiento al generar los planos"));
             }
         }
         if delete {

@@ -8,6 +8,8 @@ Graba tu móvil Android por USB y conviértelo en un vídeo promocional listo pa
 
 Pensado para la ficha de Google Play, YouTube, Reels/Shorts o redes, sin pasar por un editor de vídeo.
 
+La app está en español y en inglés: el idioma se elige en los ajustes (el botón del engranaje).
+
 <p align="center">
   <img src="documentacion/capturas/demo.gif" alt="Vídeo promocional hecho con rec·ording: un móvil 3D con la app, títulos que aparecen junto a él y un giro completo" width="720">
 </p>
@@ -100,7 +102,7 @@ Las grabaciones y exportaciones se guardan en `~/Vídeos/rec-ording`. Los proyec
 
 ## Asistente (MCP)
 
-Un agente (Claude, Cursor, Codex…) puede montar el vídeo por ti con `rec-ording --mcp`, un servidor MCP por stdio que edita el proyecto abierto en la app (la app muestra sus cambios al momento y se pueden deshacer). El botón **Asistente** de la app muestra la configuración lista para copiar. Por ejemplo, en Claude Code:
+Un agente (Claude, Cursor, Codex…) puede montar el vídeo por ti con `rec-ording --mcp`, un servidor MCP por stdio que edita el proyecto abierto en la app (la app muestra sus cambios al momento y se pueden deshacer). El botón **Asistente** de la app muestra la configuración lista para copiar. El servidor responde en español aunque la app esté en inglés. Por ejemplo, en Claude Code:
 
 ```bash
 claude mcp add rec-ording -- /usr/bin/rec-ording --mcp

@@ -6,6 +6,7 @@
 use crate::platform::command;
 use std::process::Stdio;
 use std::sync::OnceLock;
+use crate::i18n::lz;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Api {
@@ -113,7 +114,7 @@ fn vendor_of(node: &str) -> &'static str {
         "0x1002" => "AMD",
         "0x8086" => "Intel",
         "0x10de" => "NVIDIA",
-        _ => "Gráfica",
+        _ => lz("Gráfica"),
     }
 }
 

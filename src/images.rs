@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex, OnceLock};
+use crate::i18n::lz;
 
 /// A picture on screen at some moment: `local` seconds into its clip.
 pub struct Shown<'a> {
@@ -34,12 +35,12 @@ pub fn size(path: &str) -> Result<(usize, usize), String> {
         .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x"])
         .arg(path)
         .output()
-        .map_err(|_| "No se encontró ffprobe".to_string())?;
+        .map_err(|_| lz("No se encontró ffprobe").to_string())?;
     let s = String::from_utf8_lossy(&out.stdout);
-    let (w, h) = s.trim().split_once('x').ok_or("No es una imagen que se pueda abrir")?;
+    let (w, h) = s.trim().split_once('x').ok_or(lz("No es una imagen que se pueda abrir"))?;
     match (w.trim().parse::<usize>(), h.trim().parse::<usize>()) {
         (Ok(w), Ok(h)) if w > 0 && h > 0 => Ok((w, h)),
-        _ => Err("No es una imagen que se pueda abrir".into()),
+        _ => Err(lz("No es una imagen que se pueda abrir").into()),
     }
 }
 
@@ -57,9 +58,9 @@ fn decode(path: &str) -> Result<Picture, String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|_| "No se encontró ffmpeg".to_string())?;
+        .map_err(|_| lz("No se encontró ffmpeg").to_string())?;
     let mut data = vec![0u8; w * h * 4];
-    child.stdout.as_mut().unwrap().read_exact(&mut data).map_err(|_| "No se pudo leer la imagen".to_string())?;
+    child.stdout.as_mut().unwrap().read_exact(&mut data).map_err(|_| lz("No se pudo leer la imagen").to_string())?;
     let _ = child.wait();
     for px in data.chunks_exact_mut(4) {
         let a = px[3] as u32;

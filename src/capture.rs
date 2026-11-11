@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
+use crate::i18n::lz;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Tools {
@@ -72,12 +73,12 @@ pub fn list_devices() -> Vec<Device> {
             let model = parts
                 .find_map(|p| p.strip_prefix("model:"))
                 .map(|m| m.replace('_', " "))
-                .unwrap_or_else(|| "Dispositivo Android".into());
+                .unwrap_or_else(|| lz("Dispositivo Android").into());
             // An Android Studio emulator: named after its virtual device.
             let emulator = serial.starts_with("emulator-");
             let model = match emulator.then(|| avd_name(&serial)).flatten() {
-                Some(avd) => format!("Emulador · {avd}"),
-                None if emulator => "Emulador de Android".into(),
+                Some(avd) => tr!("Emulador · {}", avd),
+                None if emulator => lz("Emulador de Android").into(),
                 None => model,
             };
             Some(Device { serial, model, state, emulator })
@@ -425,7 +426,7 @@ pub fn start(serial: &str, opts: &RecordOptions, tools: Tools) -> Result<Recordi
     // Windows can't ask scrcpy to stop cleanly (see `finish`), so there it records to MKV, which
     // stays playable when cut off.
     let format = if cfg!(windows) { "mkv" } else { "mp4" };
-    let path = videos_dir().join(format!("Grabación {}.{format}", timestamp_for_filename()));
+    let path = videos_dir().join(format!("{}.{format}", tr!("Grabación {}", timestamp_for_filename())));
     let base = Instant::now();
     let log = Arc::new(Mutex::new(Vec::new()));
     let rec_started = Arc::new(Mutex::new(None));
@@ -461,7 +462,7 @@ pub fn start(serial: &str, opts: &RecordOptions, tools: Tools) -> Result<Recordi
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| format!("No se pudo iniciar scrcpy: {e}"))?;
+            .map_err(|e| tr!("No se pudo iniciar scrcpy: {}", e))?;
         (Method::Scrcpy, child)
     } else {
         let child = adb(serial)
@@ -470,7 +471,7 @@ pub fn start(serial: &str, opts: &RecordOptions, tools: Tools) -> Result<Recordi
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| format!("No se pudo iniciar adb screenrecord: {e}"))?;
+            .map_err(|e| tr!("No se pudo iniciar adb screenrecord: {}", e))?;
         (Method::ScreenRecord, child)
     };
     if let Some(o) = recorder.stdout.take() {
@@ -507,7 +508,7 @@ pub fn demo_mode(serial: &str, on: bool) {
     let shell = |cmd: &str| {
         let _ = adb(serial).args(["shell", cmd]).stdout(Stdio::null()).stderr(Stdio::null()).status();
     };
-    let demo = |args: &str| shell(&format!("am broadcast -a com.android.systemui.demo -e command {args}"));
+    let demo = |args: &str| shell(&format!("am broadcast -a com.android.systemui.demo -e command {}", args));
     if on {
         shell("settings put global sysui_demo_allowed 1");
         demo("enter");
@@ -571,13 +572,13 @@ fn keycode(key: &str) -> String {
 /// of its command: that is when it is timed.
 pub fn play(serial: &str, gestures: &[Gesture], mut touched: impl FnMut(Instant, f32, [f32; 4])) -> Result<usize, String> {
     let needs_size = gestures.iter().any(|g| matches!(g, Gesture::Tap { .. } | Gesture::Swipe { .. }));
-    let (w, h) = if needs_size { screen_size(serial).ok_or("No se pudo leer el tamaño de la pantalla del móvil")? } else { (1.0, 1.0) };
+    let (w, h) = if needs_size { screen_size(serial).ok_or(lz("No se pudo leer el tamaño de la pantalla del móvil"))? } else { (1.0, 1.0) };
     let px = |x: f32, y: f32| ((x.clamp(0.0, 1.0) * (w - 1.0)).round() as i32, (y.clamp(0.0, 1.0) * (h - 1.0)).round() as i32);
     let run = |cmd: String| -> Result<Instant, String> {
         let out = adb(serial).args(["shell", &cmd]).output().map_err(|e| format!("adb: {e}"))?;
         let err = String::from_utf8_lossy(&out.stderr);
         if !out.status.success() || err.contains("Exception") || err.contains("Error") {
-            return Err(format!("El móvil no aceptó «{cmd}»: {}", err.trim()));
+            return Err(tr!("El móvil no aceptó «{}»: {}", cmd, err.trim()));
         }
         Ok(Instant::now())
     };
@@ -586,13 +587,13 @@ pub fn play(serial: &str, gestures: &[Gesture], mut touched: impl FnMut(Instant,
         match g {
             Gesture::Tap { x, y } => {
                 let (a, b) = px(*x, *y);
-                let end = run(format!("input tap {a} {b}"))?;
+                let end = run(format!("input tap {} {}", a, b))?;
                 touched(end - Duration::from_millis(80), 0.1, [*x, *y, *x, *y]);
             }
             Gesture::Swipe { x0, y0, x1, y1, duration } => {
                 let d = duration.clamp(0.05, 10.0);
                 let ((a, b), (c, e)) = (px(*x0, *y0), px(*x1, *y1));
-                let end = run(format!("input swipe {a} {b} {c} {e} {}", (d * 1000.0) as u32))?;
+                let end = run(format!("input swipe {} {} {} {} {}", a, b, c, e, (d * 1000.0) as u32))?;
                 touched(end - Duration::from_secs_f32(d + 0.05), d, [*x0, *y0, *x1, *y1]);
             }
             Gesture::Text(t) => {
@@ -693,7 +694,7 @@ impl Recording {
                 .output();
             let _ = adb(&self.serial).args(["shell", "rm", "-f", "/sdcard/rec-ording.mp4"]).status();
             if !matches!(pulled, Ok(ref o) if o.status.success()) {
-                return CaptureResult::Failed("No se pudo copiar el vídeo desde el móvil.".into());
+                return CaptureResult::Failed(lz("No se pudo copiar el vídeo desde el móvil.").into());
             }
         }
 
@@ -701,9 +702,9 @@ impl Recording {
         if !ok {
             let tail = self.log_tail();
             return CaptureResult::Failed(if tail.is_empty() {
-                "La grabación no se guardó.".into()
+                lz("La grabación no se guardó.").into()
             } else {
-                format!("La grabación no se guardó.\n\n{tail}")
+                tr!("La grabación no se guardó.\n\n{}", tail)
             });
         }
 

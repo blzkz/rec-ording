@@ -1,6 +1,9 @@
 // No console window behind the app on Windows (`--mcp` still talks over the pipes it is given).
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+// First, so `tr!` is available to every module.
+#[macro_use]
+mod i18n;
 mod app;
 mod audio;
 mod capture;
@@ -23,7 +26,9 @@ mod timeline;
 mod update;
 
 fn main() -> eframe::Result<()> {
+    i18n::init();
     if std::env::args().any(|a| a == "--mcp") {
+        i18n::use_lang(i18n::Lang::Es);
         mcp::run(std::env::args().any(|a| a == "--resumed"));
         return Ok(());
     }

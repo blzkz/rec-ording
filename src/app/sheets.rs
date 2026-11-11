@@ -8,11 +8,11 @@ impl RecOrdingApp {
         let mut pick = false;
         let mut close = false;
         Self::sheet_window(ctx, "projects", 460.0, |ui| {
-            ui.label(RichText::new("Abrir proyecto").font(medium(20.0)).color(TEXT));
-            ui.label(RichText::new("Cada proyecto guarda sus vídeos, movimientos y estilo.").color(TEXT_2));
+            ui.label(RichText::new(lz("Abrir proyecto")).font(medium(20.0)).color(TEXT));
+            ui.label(RichText::new(lz("Cada proyecto guarda sus vídeos, movimientos y estilo.")).color(TEXT_2));
             ui.add_space(8.0);
             if self.projects.is_empty() {
-                ui.label(RichText::new("Todavía no tienes proyectos.").color(TEXT_3));
+                ui.label(RichText::new(lz("Todavía no tienes proyectos.")).color(TEXT_3));
             }
             egui::ScrollArea::vertical().max_height(340.0).show(ui, |ui| {
                 for e in &self.projects {
@@ -41,11 +41,11 @@ impl RecOrdingApp {
             });
             ui.add_space(12.0);
             ui.horizontal(|ui| {
-                if secondary_button(ui, "Abrir un archivo…").on_hover_text("Un proyecto (.recproj.json) guardado en otra carpeta").clicked() {
+                if secondary_button(ui, lz("Abrir un archivo…")).on_hover_text(lz("Un proyecto (.recproj.json) guardado en otra carpeta")).clicked() {
                     pick = true;
                 }
                 ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                    if secondary_button(ui, "Cerrar").clicked() {
+                    if secondary_button(ui, lz("Cerrar")).clicked() {
                         close = true;
                     }
                 });
@@ -71,38 +71,38 @@ impl RecOrdingApp {
         let command = serde_json::to_string(&exe).unwrap_or_default();
         let json = format!("{{\n  \"mcpServers\": {{\n    \"rec-ording\": {{\n      \"command\": {command},\n      \"args\": [\"--mcp\"]\n    }}\n  }}\n}}");
         let quoted = if exe.contains(char::is_whitespace) { format!("\"{exe}\"") } else { exe.clone() };
-        let claude_code = format!("claude mcp add rec-ording -- {quoted} --mcp");
+        let claude_code = format!("claude mcp add rec-ording -- {} --mcp", quoted);
         let mut close = false;
         let mut copied: Option<&str> = None;
         Self::sheet_window(ctx, "assistant", 480.0, |ui| {
-            ui.label(RichText::new("Asistente (MCP)").font(medium(20.0)).color(TEXT));
+            ui.label(RichText::new(lz("Asistente (MCP)")).font(medium(20.0)).color(TEXT));
             ui.label(
-                RichText::new("Un agente como Claude, Cursor o Codex puede montar el vídeo por ti: importar y recortar grabaciones, añadir zooms y movimientos, usar el Director, cambiar el estilo, ver fotogramas y exportar. Edita el proyecto abierto, y aquí verás sus cambios al momento; los puedes deshacer con Ctrl+Z.")
+                RichText::new(lz("Un agente como Claude, Cursor o Codex puede montar el vídeo por ti: importar y recortar grabaciones, añadir zooms y movimientos, usar el Director, cambiar el estilo, ver fotogramas y exportar. Edita el proyecto abierto, y aquí verás sus cambios al momento; los puedes deshacer con Ctrl+Z."))
                     .color(TEXT_2),
             );
             ui.add_space(10.0);
-            ui.label(RichText::new("Claude Desktop, Cursor y otros (configuración MCP)").font(medium(12.5)).color(TEXT_2));
+            ui.label(RichText::new(lz("Claude Desktop, Cursor y otros (configuración MCP)")).font(medium(12.5)).color(TEXT_2));
             egui::Frame::none().fill(Color32::from_rgb(30, 30, 33)).rounding(Rounding::same(8.0)).inner_margin(Margin::same(10.0)).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.label(RichText::new(&json).monospace().color(TEXT));
             });
-            if secondary_button(ui, "Copiar configuración").clicked() {
+            if secondary_button(ui, lz("Copiar configuración")).clicked() {
                 ui.ctx().copy_text(json.clone());
-                copied = Some("Configuración copiada");
+                copied = Some(lz("Configuración copiada"));
             }
             ui.add_space(8.0);
-            ui.label(RichText::new("Claude Code").font(medium(12.5)).color(TEXT_2));
+            ui.label(RichText::new(lz("Claude Code")).font(medium(12.5)).color(TEXT_2));
             egui::Frame::none().fill(Color32::from_rgb(30, 30, 33)).rounding(Rounding::same(8.0)).inner_margin(Margin::same(10.0)).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.label(RichText::new(&claude_code).monospace().color(TEXT));
             });
-            if secondary_button(ui, "Copiar comando").clicked() {
+            if secondary_button(ui, lz("Copiar comando")).clicked() {
                 ui.ctx().copy_text(claude_code.clone());
-                copied = Some("Comando copiado");
+                copied = Some(lz("Comando copiado"));
             }
             ui.add_space(10.0);
             ui.with_layout(egui::Layout::right_to_left(Align::Min), |ui| {
-                if primary_button(ui, "Hecho", true).clicked() {
+                if primary_button(ui, lz("Hecho"), true).clicked() {
                     close = true;
                 }
             });
@@ -128,14 +128,21 @@ impl RecOrdingApp {
                 ui.painter().circle_filled(r.center(), 10.5, Color32::WHITE);
                 ui.add_space(4.0);
                 ui.label(with_name(APP_NAME, medium(20.0), TEXT));
-                ui.label(RichText::new(format!("Versión {}", update::CURRENT)).color(TEXT_2));
+                ui.label(RichText::new(tr!("Versión {}", update::CURRENT)).color(TEXT_2));
             });
             ui.add_space(14.0);
-            toggle_row(ui, "Actualizaciones automáticas", "Al abrir la app, busca si hay una versión nueva y te ofrece instalarla", &mut auto);
+            // Each language in its own words, so it can be found whatever is showing.
+            let mut lang = crate::i18n::lang();
+            let opts: Vec<(crate::i18n::Lang, &str)> = crate::i18n::Lang::ALL.iter().map(|l| (*l, l.name())).collect();
+            if segmented_row(ui, lz("Idioma"), &mut lang, &opts) {
+                crate::i18n::set(lang);
+            }
+            ui.add_space(8.0);
+            toggle_row(ui, lz("Actualizaciones automáticas"), lz("Al abrir la app, busca si hay una versión nueva y te ofrece instalarla"), &mut auto);
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 let checking = matches!(self.update_check, UpdateCheck::Checking);
-                if ui.add_enabled(!checking, egui::Button::new(RichText::new("Buscar actualizaciones").color(TEXT)).min_size(Vec2::new(0.0, 28.0))).clicked() {
+                if ui.add_enabled(!checking, egui::Button::new(RichText::new(lz("Buscar actualizaciones")).color(TEXT)).min_size(Vec2::new(0.0, 28.0))).clicked() {
                     check = true;
                 }
                 match &self.update_check {
@@ -144,10 +151,10 @@ impl RecOrdingApp {
                         ui.add(egui::Spinner::new().size(14.0).color(TEXT_2));
                     }
                     UpdateCheck::UpToDate => {
-                        ui.label(RichText::new("Tienes la última versión").color(GREEN).font(regular(12.5)));
+                        ui.label(RichText::new(lz("Tienes la última versión")).color(GREEN).font(regular(12.5)));
                     }
                     UpdateCheck::Failed(_) => {
-                        ui.label(RichText::new("No se pudo comprobar").color(RED).font(regular(12.5)));
+                        ui.label(RichText::new(lz("No se pudo comprobar")).color(RED).font(regular(12.5)));
                     }
                 }
             });
@@ -157,12 +164,12 @@ impl RecOrdingApp {
             ui.add_space(10.0);
             ui.separator();
             ui.add_space(6.0);
-            if ui.link(RichText::new("Licencias y créditos").font(regular(13.0)).color(ACCENT)).on_hover_text("Se abre en el navegador").clicked() {
+            if ui.link(RichText::new(lz("Licencias y créditos")).font(regular(13.0)).color(ACCENT)).on_hover_text(lz("Se abre en el navegador")).clicked() {
                 credits = true;
             }
             ui.add_space(10.0);
             button_row(ui, |ui| {
-                if secondary_button(ui, "Cerrar").clicked() {
+                if secondary_button(ui, lz("Cerrar")).clicked() {
                     close = true;
                 }
             });
@@ -200,7 +207,7 @@ impl RecOrdingApp {
         let mut act: Option<Act> = None;
         Self::sheet_window(ctx, "update", 440.0, |ui| {
             ui.label(with_name(&format!("{APP_NAME} {}", r.version), medium(20.0), TEXT));
-            ui.label(RichText::new(format!("Hay una versión nueva. Tienes la {}.", update::CURRENT)).color(TEXT_2));
+            ui.label(RichText::new(tr!("Hay una versión nueva. Tienes la {}.", update::CURRENT)).color(TEXT_2));
             if !r.notes.is_empty() {
                 ui.add_space(8.0);
                 egui::Frame::none().fill(Color32::from_rgb(30, 30, 33)).rounding(Rounding::same(8.0)).inner_margin(Margin::same(12.0)).show(ui, |ui| {
@@ -214,23 +221,23 @@ impl RecOrdingApp {
             match &self.update_ui {
                 UpdateUi::Idle => {
                     let note = match (&how, r.asset.is_some()) {
-                        (_, false) => "Esta versión no tiene paquete para tu sistema. Puedes descargarla desde su página.",
-                        (update::Method::Pacman | update::Method::Deb | update::Method::Rpm, true) => "Se instalará el paquete y el sistema te pedirá tu contraseña.",
-                        (update::Method::AppImage(_), true) => "Se reemplazará el archivo AppImage por el nuevo.",
-                        (update::Method::Folder(_), true) => "Se reemplazarán los archivos de la carpeta de rec·ording.",
-                        (update::Method::Manual, true) => "Esta copia no se instaló con el paquete. Descarga la versión nueva desde su página.",
+                        (_, false) => lz("Esta versión no tiene paquete para tu sistema. Puedes descargarla desde su página."),
+                        (update::Method::Pacman | update::Method::Deb | update::Method::Rpm, true) => lz("Se instalará el paquete y el sistema te pedirá tu contraseña."),
+                        (update::Method::AppImage(_), true) => lz("Se reemplazará el archivo AppImage por el nuevo."),
+                        (update::Method::Folder(_), true) => lz("Se reemplazarán los archivos de la carpeta de rec·ording."),
+                        (update::Method::Manual, true) => lz("Esta copia no se instaló con el paquete. Descarga la versión nueva desde su página."),
                     };
                     ui.label(RichText::new(note).color(TEXT_3).font(regular(11.5)));
                     ui.add_space(10.0);
                     button_row(ui, |ui| {
-                        let main = if can_install { "Actualizar" } else { "Abrir la página" };
+                        let main = if can_install { lz("Actualizar") } else { lz("Abrir la página") };
                         if primary_button(ui, main, true).clicked() {
                             act = Some(if can_install { Act::Install } else { Act::Page });
                         }
-                        if secondary_button(ui, "Ahora no").clicked() {
+                        if secondary_button(ui, lz("Ahora no")).clicked() {
                             act = Some(Act::Close);
                         }
-                        if secondary_button(ui, "Omitir esta versión").clicked() {
+                        if secondary_button(ui, lz("Omitir esta versión")).clicked() {
                             act = Some(Act::Skip);
                         }
                     });
@@ -238,26 +245,26 @@ impl RecOrdingApp {
                 UpdateUi::Installing => {
                     ui.horizontal(|ui| {
                         ui.add(egui::Spinner::new().size(16.0).color(TEXT_2));
-                        ui.label(RichText::new("Descargando e instalando…").color(TEXT_2));
+                        ui.label(RichText::new(lz("Descargando e instalando…")).color(TEXT_2));
                     });
                     ui.add_space(10.0);
                     button_row(ui, |ui| {
-                        if secondary_button(ui, "Ocultar").clicked() {
+                        if secondary_button(ui, lz("Ocultar")).clicked() {
                             act = Some(Act::Close);
                         }
                     });
                 }
                 UpdateUi::Installed => {
-                    ui.label(RichText::new("Listo. Reinicia rec·ording para usar la versión nueva.").color(GREEN));
+                    ui.label(RichText::new(lz("Listo. Reinicia rec·ording para usar la versión nueva.")).color(GREEN));
                     if busy {
-                        ui.label(RichText::new("Termina la grabación o la exportación antes de reiniciar.").color(TEXT_3).font(regular(11.5)));
+                        ui.label(RichText::new(lz("Termina la grabación o la exportación antes de reiniciar.")).color(TEXT_3).font(regular(11.5)));
                     }
                     ui.add_space(10.0);
                     button_row(ui, |ui| {
-                        if primary_button(ui, "Reiniciar", !busy).clicked() && !busy {
+                        if primary_button(ui, lz("Reiniciar"), !busy).clicked() && !busy {
                             act = Some(Act::Restart);
                         }
-                        if secondary_button(ui, "Más tarde").clicked() {
+                        if secondary_button(ui, lz("Más tarde")).clicked() {
                             act = Some(Act::Close);
                         }
                     });
@@ -266,13 +273,13 @@ impl RecOrdingApp {
                     ui.label(RichText::new(e).color(RED));
                     ui.add_space(10.0);
                     button_row(ui, |ui| {
-                        if primary_button(ui, "Reintentar", true).clicked() {
+                        if primary_button(ui, lz("Reintentar"), true).clicked() {
                             act = Some(Act::Install);
                         }
-                        if secondary_button(ui, "Abrir la página").clicked() {
+                        if secondary_button(ui, lz("Abrir la página")).clicked() {
                             act = Some(Act::Page);
                         }
-                        if secondary_button(ui, "Cerrar").clicked() {
+                        if secondary_button(ui, lz("Cerrar")).clicked() {
                             act = Some(Act::Close);
                         }
                     });

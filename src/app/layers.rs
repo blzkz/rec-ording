@@ -22,11 +22,11 @@ impl RecOrdingApp {
     pub(super) fn pick_sound(&self, track: Option<AudioTrack>, at: f32) {
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
         let title = match track {
-            Some(t) => format!("Añadir a {}", t.label().to_lowercase()),
-            None => "Añadir sonido".into(),
+            Some(t) => tr!("Añadir a {}", t.label().to_lowercase()),
+            None => lz("Añadir sonido").into(),
         };
         thread::spawn(move || {
-            match crate::platform::pick_file(&title, "Sonidos", &SOUND_EXTS, &crate::platform::home()) {
+            match crate::platform::pick_file(&title, lz("Sonidos"), &SOUND_EXTS, &crate::platform::home()) {
                 Ok(Some(p)) => Self::read_sound(&tx, track, p, at),
                 Ok(None) => {}
                 Err(()) => {
@@ -53,7 +53,7 @@ impl RecOrdingApp {
     pub(super) fn pick_picture(&self, at: f32) {
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
         thread::spawn(move || {
-            match crate::platform::pick_file("Añadir imagen", "Imágenes", &IMAGE_EXTS, &crate::platform::home()) {
+            match crate::platform::pick_file(lz("Añadir imagen"), lz("Imágenes"), &IMAGE_EXTS, &crate::platform::home()) {
                 Ok(Some(p)) => Self::read_picture(&tx, p, at),
                 Ok(None) => {}
                 Err(()) => {
@@ -91,7 +91,7 @@ impl RecOrdingApp {
         match timeline::add_audio(&mut self.project, track, &path, length, at) {
             Ok(id) => {
                 self.selection = Selection::Audio(id);
-                self.toast(format!("«{}» añadido a {}", file_name(&path), track.label().to_lowercase()));
+                self.toast(tr!("«{}» añadido a {}", file_name(&path), track.label().to_lowercase()));
             }
             Err(e) => self.toast(e),
         }
@@ -101,7 +101,7 @@ impl RecOrdingApp {
         match timeline::add_image(&mut self.project, &path, aspect, at) {
             Ok(id) => {
                 self.selection = Selection::Image(id);
-                self.toast("Imagen añadida: arrástrala en la vista previa para colocarla");
+                self.toast(lz("Imagen añadida: arrástrala en la vista previa para colocarla"));
             }
             Err(e) => self.toast(e),
         }
@@ -216,31 +216,31 @@ impl RecOrdingApp {
             ui,
             c.track.label(),
             |ui| {
-                if small_icon_button(ui, Icon::Trash, "Eliminar el sonido", true, true).clicked() {
+                if small_icon_button(ui, Icon::Trash, lz("Eliminar el sonido"), true, true).clicked() {
                     delete = true;
                 }
             },
             |ui| {
                 ui.add(egui::Label::new(RichText::new(file_name(&c.path)).color(TEXT)).truncate());
                 ui.label(
-                    RichText::new(format!("De {} a {} · {}", fmt_time(c.start), fmt_time(c.end()), fmt_secs(c.duration)))
+                    RichText::new(tr!("De {} a {} · {}", fmt_time(c.start), fmt_time(c.end()), fmt_secs(c.duration)))
                         .color(TEXT_2)
                         .font(regular(12.0)),
                 );
                 let ac = self.project.audio.iter_mut().find(|x| x.id == id).unwrap();
                 let opts: Vec<(AudioTrack, &str)> = AudioTrack::ALL.iter().map(|t| (*t, t.label())).collect();
-                segmented_row(ui, "Pista", &mut ac.track, &opts);
-                slider_row(ui, "Volumen", &mut ac.volume, 0.0..=2.0, |v| format!("{:.0} %", v * 100.0));
-                let secs = |v: f32| if v <= 0.0 { "No".to_string() } else { fmt_secs(v) };
+                segmented_row(ui, lz("Pista"), &mut ac.track, &opts);
+                slider_row(ui, lz("Volumen"), &mut ac.volume, 0.0..=2.0, |v| format!("{:.0} %", v * 100.0));
+                let secs = |v: f32| if v <= 0.0 { lz("No").to_string() } else { fmt_secs(v) };
                 let most = (ac.duration / 2.0).max(0.1);
-                slider_row(ui, "Entrada", &mut ac.fade_in, 0.0..=most.min(5.0), secs);
-                slider_row(ui, "Salida", &mut ac.fade_out, 0.0..=most.min(5.0), secs);
+                slider_row(ui, lz("Entrada"), &mut ac.fade_in, 0.0..=most.min(5.0), secs);
+                slider_row(ui, lz("Salida"), &mut ac.fade_out, 0.0..=most.min(5.0), secs);
                 let mut l = ac.looped;
-                toggle_row(ui, "Repetir en bucle", "Vuelve a empezar al acabar el archivo", &mut l);
+                toggle_row(ui, lz("Repetir en bucle"), lz("Vuelve a empezar al acabar el archivo"), &mut l);
                 if l != ac.looped {
                     looped = Some(l);
                 }
-                ui.label(RichText::new("Arrastra sus bordes en la línea de tiempo para recortarlo, o el clip para moverlo (también a otra pista de sonido).").color(TEXT_3).font(regular(11.5)));
+                ui.label(RichText::new(lz("Arrastra sus bordes en la línea de tiempo para recortarlo, o el clip para moverlo (también a otra pista de sonido).")).color(TEXT_3).font(regular(11.5)));
             },
         );
         if let Some(l) = looped {
@@ -262,30 +262,30 @@ impl RecOrdingApp {
         let mut length = None;
         section_with(
             ui,
-            "Imagen",
+            lz("Imagen"),
             |ui| {
-                if small_icon_button(ui, Icon::Trash, "Eliminar la imagen", true, true).clicked() {
+                if small_icon_button(ui, Icon::Trash, lz("Eliminar la imagen"), true, true).clicked() {
                     delete = true;
                 }
             },
             |ui| {
                 ui.add(egui::Label::new(RichText::new(file_name(&c.path)).color(TEXT)).truncate());
-                ui.label(RichText::new(format!("De {} a {}", fmt_time(c.start), fmt_time(c.end()))).color(TEXT_2).font(regular(12.0)));
+                ui.label(RichText::new(tr!("De {} a {}", fmt_time(c.start), fmt_time(c.end()))).color(TEXT_2).font(regular(12.0)));
                 let ic = self.project.images.iter_mut().find(|x| x.id == id).unwrap();
                 let pct = |v: f32| format!("{:.0} %", v * 100.0);
-                slider_row(ui, "Tamaño", &mut ic.width, 0.03..=1.0, pct);
-                slider_row(ui, "Horizontal", &mut ic.x, 0.0..=1.0, pct);
-                slider_row(ui, "Vertical", &mut ic.y, 0.0..=1.0, pct);
-                slider_row(ui, "Opacidad", &mut ic.opacity, 0.0..=1.0, pct);
-                let secs = |v: f32| if v <= 0.0 { "No".to_string() } else { fmt_secs(v) };
+                slider_row(ui, lz("Tamaño"), &mut ic.width, 0.03..=1.0, pct);
+                slider_row(ui, lz("Horizontal"), &mut ic.x, 0.0..=1.0, pct);
+                slider_row(ui, lz("Vertical"), &mut ic.y, 0.0..=1.0, pct);
+                slider_row(ui, lz("Opacidad"), &mut ic.opacity, 0.0..=1.0, pct);
+                let secs = |v: f32| if v <= 0.0 { lz("No").to_string() } else { fmt_secs(v) };
                 let most = (ic.duration / 2.0).max(0.1).min(3.0);
-                slider_row(ui, "Entrada", &mut ic.fade_in, 0.0..=most, secs);
-                slider_row(ui, "Salida", &mut ic.fade_out, 0.0..=most, secs);
+                slider_row(ui, lz("Entrada"), &mut ic.fade_in, 0.0..=most, secs);
+                slider_row(ui, lz("Salida"), &mut ic.fade_out, 0.0..=most, secs);
                 let mut d = ic.duration;
-                if slider_row(ui, "Duración", &mut d, 0.2..=30.0, fmt_secs) {
+                if slider_row(ui, lz("Duración"), &mut d, 0.2..=30.0, fmt_secs) {
                     length = Some(d);
                 }
-                ui.label(RichText::new("Arrástrala en la vista previa para colocarla. Se ve por encima del vídeo y por debajo de los textos.").color(TEXT_3).font(regular(11.5)));
+                ui.label(RichText::new(lz("Arrástrala en la vista previa para colocarla. Se ve por encima del vídeo y por debajo de los textos.")).color(TEXT_3).font(regular(11.5)));
             },
         );
         if let Some(d) = length {
@@ -303,17 +303,17 @@ impl RecOrdingApp {
         let has_voice = self.project.audio.iter().any(|c| c.track == AudioTrack::Voice);
         let has_music = self.project.audio.iter().any(|c| c.track == AudioTrack::Music);
         let m = &mut self.project.mix;
-        section(ui, "Sonido", |ui| {
+        section(ui, lz("Sonido"), |ui| {
             let pct = |v: f32| format!("{:.0} %", v * 100.0);
-            slider_row(ui, "Grabación", &mut m.recording, 0.0..=2.0, pct);
-            slider_row(ui, "Efectos", &mut m.effects, 0.0..=2.0, pct);
-            slider_row(ui, "Voz en off", &mut m.voice, 0.0..=2.0, pct);
-            slider_row(ui, "Música", &mut m.music, 0.0..=2.0, pct);
+            slider_row(ui, lz("Grabación"), &mut m.recording, 0.0..=2.0, pct);
+            slider_row(ui, lz("Efectos"), &mut m.effects, 0.0..=2.0, pct);
+            slider_row(ui, lz("Voz en off"), &mut m.voice, 0.0..=2.0, pct);
+            slider_row(ui, lz("Música"), &mut m.music, 0.0..=2.0, pct);
             if has_voice && has_music {
-                toggle_row(ui, "Bajar la música con la voz", "Se oye más baja mientras habla la voz en off", &mut m.duck_music);
+                toggle_row(ui, lz("Bajar la música con la voz"), lz("Se oye más baja mientras habla la voz en off"), &mut m.duck_music);
             }
             if self.player.is_none() {
-                ui.label(RichText::new("No hay salida de sonido: la vista previa se reproduce en silencio (la exportación lleva el sonido).").color(TEXT_3).font(regular(11.5)));
+                ui.label(RichText::new(lz("No hay salida de sonido: la vista previa se reproduce en silencio (la exportación lleva el sonido).")).color(TEXT_3).font(regular(11.5)));
             }
         });
     }

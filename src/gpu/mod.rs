@@ -8,6 +8,7 @@ use crate::model3d::PreparedModel;
 use std::ops::Range;
 use std::sync::{Arc, Mutex};
 use wgpu::util::DeviceExt;
+use crate::i18n::lz;
 
 /// Sizes of the uniform blocks (vec4s), as in compose.wgsl and model.wgsl.
 const SCENE_VEC4S: usize = 41;
@@ -207,7 +208,7 @@ impl GpuCompositor {
         // As many samples as the card's largest texture allows (4K at 4×4 does not fit).
         let ss = ss.clamp(1, 4).min(max_dim / ow.max(oh).max(1));
         if ss == 0 {
-            return Err("El vídeo es demasiado grande para la tarjeta gráfica".into());
+            return Err(lz("El vídeo es demasiado grande para la tarjeta gráfica").into());
         }
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
@@ -218,7 +219,7 @@ impl GpuCompositor {
             },
             None,
         ))
-        .map_err(|e| format!("No se pudo usar la tarjeta gráfica: {e}"))?;
+        .map_err(|e| tr!("No se pudo usar la tarjeta gráfica: {}", e))?;
         Self::build(Arc::new(device), Arc::new(queue), card_name(&info), ow, oh, ss, model)
     }
 
@@ -227,7 +228,7 @@ impl GpuCompositor {
         let max_dim = device.limits().max_texture_dimension_2d as usize;
         let ss = ss.clamp(1, 4).min(max_dim / ow.max(oh).max(1));
         if ss == 0 {
-            return Err("La vista previa es demasiado grande para la tarjeta gráfica".into());
+            return Err(lz("La vista previa es demasiado grande para la tarjeta gráfica").into());
         }
         Self::build(device, queue, name, ow, oh, ss, model)
     }
@@ -418,7 +419,7 @@ impl GpuCompositor {
 
     fn check(&self) -> Result<(), String> {
         match self.error.lock().unwrap().take() {
-            Some(e) => Err(format!("Error de la tarjeta gráfica: {e}")),
+            Some(e) => Err(tr!("Error de la tarjeta gráfica: {}", e)),
             None => Ok(()),
         }
     }

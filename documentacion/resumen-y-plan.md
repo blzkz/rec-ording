@@ -152,6 +152,13 @@ Todo el plan de `plan-iluminacion-postproceso.md`, más las mejoras pedidas tras
 
 - Efectos, voz y música tienen su control de volumen junto al nombre de la pista, en la línea de tiempo (0 a 200 %, cada uno por separado). Son los mismos valores que la sección **Sonido** del panel, y la forma de onda de los clips sigue al volumen.
 
+## v0.16.0: inglés y español
+
+- La interfaz está en inglés (por defecto) y en español; el idioma se elige en Ajustes y cambia al momento. El texto español es la clave (`i18n::lz("…")` y `tr!("…", …)`), el inglés está en `src/i18n/en.rs` y un test comprueba que ningún texto se queda sin traducir y que las traducciones llevan los mismos valores. Si una palabra española significa dos cosas, la clave lleva un contexto tras `@` (`"Salida@móvil"`).
+- Los números usan coma decimal en español y punto en inglés.
+- El servidor MCP sigue en español (descripciones y respuestas), sea cual sea el idioma de la app, y sus valores (tipo de movimiento de cámara, calidad) ya no dependen del idioma.
+- README en inglés con GIF y capturas en inglés (`documentacion/capturas/en/`); el español conserva los suyos.
+
 ## Ideas para siguientes versiones
 
 - Luz animada con fotogramas clave (un barrido de luz durante un giro).
