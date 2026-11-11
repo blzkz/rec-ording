@@ -1,163 +1,167 @@
 # rec·ording
 
-(El paquete y el ejecutable se llaman `rec-ording`.)
+**English** · [Español](README.es.md)
 
-Graba tu móvil Android por USB y conviértelo en un vídeo promocional listo para publicar: tu app dentro de un marco de móvil, sobre un fondo cuidado, con zooms suaves que siguen cada toque.
+(The package and the executable are called `rec-ording`.)
 
-Pensado para la ficha de Google Play, YouTube, Reels/Shorts o redes, sin pasar por un editor de vídeo.
+Record your Android phone over USB and turn it into a promo video ready to publish: your app inside a phone frame, on a polished background, with smooth zooms that follow every tap.
+
+Made for the Google Play listing, YouTube, Reels/Shorts or social media, without going through a video editor.
+
+The app's interface is in Spanish; button names below are given in Spanish with their meaning.
 
 <p align="center">
-  <img src="documentacion/capturas/demo.gif" alt="Vídeo promocional hecho con rec·ording: un móvil 3D con la app, títulos que aparecen junto a él y un giro completo" width="720">
+  <img src="documentacion/capturas/demo.gif" alt="Promo video made with rec·ording: a 3D phone showing the app, titles appearing next to it and a full turn" width="720">
 </p>
 
-<p align="center"><strong><a href="https://blzkz.github.io/rec-ording-releases/">Descargar para Windows y Linux</a></strong></p>
+<p align="center"><strong><a href="https://blzkz.github.io/rec-ording-releases/">Download for Windows and Linux</a></strong></p>
 
-## Capturas
+## Screenshots
 
-**Inicio.** Crea un proyecto o vuelve a uno reciente, cada uno con una imagen de su vídeo.
+**Start screen.** Create a project or go back to a recent one, each shown with a picture of its video.
 
-![Pantalla de inicio con cinco proyectos recientes](documentacion/capturas/inicio.png)
+![Start screen with five recent projects](documentacion/capturas/inicio.png)
 
-**Editor.** El móvil en 3D con tu grabación, y debajo todas las pistas: vídeo, cámara, móvil, texto, imágenes y sonido.
+**Editor.** The 3D phone with your recording, and below it every track: video, camera, phone, text, images and sound.
 
-![Editor con la vista previa, el panel de ajustes y la línea de tiempo](documentacion/capturas/editor.png)
+![Editor with the preview, the settings panel and the timeline](documentacion/capturas/editor.png)
 
-**Imágenes con transparencia.** Se colocan arrastrándolas sobre el vídeo.
+**Images with transparency.** Place them by dragging them over the video.
 
-![Un logo seleccionado en la vista previa, con su panel de tamaño, posición y opacidad](documentacion/capturas/imagen.png)
+![A logo selected in the preview, with its size, position and opacity panel](documentacion/capturas/imagen.png)
 
-**Efectos, voz y música.** Varios sonidos por pista, con su forma de onda, y la música baja sola cuando habla la voz.
+**Effects, voice-over and music.** Several sounds per track, each with its waveform and its own volume, and the music lowers itself while the voice speaks.
 
-![Pistas de la línea de tiempo con efectos solapados, voz en off y música en bucle](documentacion/capturas/pistas.png)
+![Timeline tracks with overlapping effects, voice-over and looping music](documentacion/capturas/pistas.png)
 
 <table>
   <tr>
-    <th>Luz y acabado</th>
-    <th>Ajustes de un sonido</th>
-    <th>Ajustes de la app</th>
+    <th>Light and finish</th>
+    <th>Sound settings</th>
+    <th>App settings</th>
   </tr>
   <tr>
-    <td valign="top"><img src="documentacion/capturas/luz-y-acabado.png" alt="Panel de iluminación, fondo, composición y acabado" width="260"></td>
-    <td valign="top"><img src="documentacion/capturas/panel-sonido.png" alt="Panel de un clip de voz en off con pista, volumen, fundidos y bucle" width="260"></td>
-    <td valign="top"><img src="documentacion/capturas/ajustes.png" alt="Ajustes con la versión, las actualizaciones automáticas y las licencias" width="320"></td>
+    <td valign="top"><img src="documentacion/capturas/luz-y-acabado.png" alt="Lighting, background, layout and finish panel" width="260"></td>
+    <td valign="top"><img src="documentacion/capturas/panel-sonido.png" alt="Panel of a voice-over clip with track, volume, fades and loop" width="260"></td>
+    <td valign="top"><img src="documentacion/capturas/ajustes.png" alt="Settings with the version, automatic updates and licenses" width="320"></td>
   </tr>
 </table>
 
-## Cómo se usa
+## How it works
 
-Al abrir la app ves el **inicio**: crea un proyecto nuevo, abre uno que ya tengas (o un archivo `.recproj.json` de otra carpeta) o elige uno de los cinco últimos, que aparecen con una imagen de su vídeo. **Proyectos**, en la barra de arriba, guarda el proyecto abierto y vuelve al inicio.
+The app opens on the **start screen**: create a new project, open one you already have (or a `.recproj.json` file from another folder) or pick one of the last five, shown with a picture of their video. **Proyectos** (Projects), in the top bar, saves the open project and goes back to the start screen.
 
-1. **Graba.** Conecta el móvil por USB (con la depuración USB activada), pulsa **Grabar** y usa tu app con normalidad. rec-ording registra dónde tocas. Con **Barra de estado limpia** (activada por defecto) el móvil muestra las 9:41, la batería llena y ninguna notificación mientras grabas, y vuelve a la normalidad al terminar.
-   También puedes grabar un **emulador** de Android Studio: ábrelo desde el Device Manager y aparecerá en la lista con el nombre de su dispositivo virtual. Los clics que hagas en su ventana se registran como toques.
-   ¿Ya tienes una grabación? Pulsa **Importar** o arrastra el vídeo a la ventana.
-2. **Ajusta.** Elige formato (16:9, 9:16, 1:1, 4:5), modelo (redondeado, recto, curvo, tablet o sin marco) y color del dispositivo, fondo, margen y sombra.
-   En **Modelos 3D** tienes una galería de móviles en 3D (incluye el Galaxy S26 Ultra) y puedes **importar** los tuyos en `.glb`, `.gltf` o directamente el `.zip` de la descarga (las texturas y `.bin` sueltos se copian a tu galería con el modelo; si el modelo no se puede usar, no se añade). Para renombrar o eliminar un modelo importado, selecciónalo y usa el lápiz o la papelera junto al título, o haz clic derecho sobre él. rec-ording busca la pantalla, endereza el modelo y proyecta tu grabación en ella. En **Ajustes avanzados**, dentro de la misma sección, eliges la pieza que hace de pantalla, cómo encaja el vídeo (**Rellenar** recortando, **Encajar** con bandas negras o **Estirar**) y, si el modelo trae animaciones, cuál reproducir y si se repite. Los modelos con licencia CC BY piden mencionar a su autor al publicar el vídeo: el Galaxy S26 Ultra es de [Sagar Modi](https://sketchfab.com/modis1761) ([Sketchfab](https://sketchfab.com/3d-models/samsung-s26-ultra-7ff228963ea446f39f46a5541f71e352), CC BY 4.0; ver `assets/models/CREDITS.md`).
-   En **Ángulo 3D** puedes girar e inclinar el móvil (con cantos y reflejos reales), hacer que se enderece al hacer zoom, que flote suavemente o que entre girando al empezar.
-   Los zooms se crean solos a partir de los toques; puedes moverlos, alargarlos, cambiar su nivel o elegir dónde enfocan haciendo clic en la vista previa.
-3. **Monta.** La línea de tiempo tiene estas pistas:
-   - **Vídeo**: varias grabaciones seguidas. Arrastra los bordes de un clip para recortarlo, el clip para cambiarlo de orden, y **Dividir** (Ctrl+B) para cortarlo en el cursor; el botón de la película con «+» añade otro vídeo al final. En el panel del clip puedes cambiar su **velocidad** (de 0,25× a 4×), **congelar un fotograma** el tiempo que quieras o **cambiar su vídeo** por otra grabación sin perder recortes ni lo que hay encima. Las pequeñas marcas blancas señalan los cambios de pantalla (scroll, teclado, diálogos): los textos, zooms y movimientos se ajustan a ellas al arrastrarlos, y todo lo que hay en la línea de tiempo sigue a su momento de la grabación al recortar o mover clips.
-   - **Cámara**: zooms, **movimientos** con fotogramas clave (zoom, encuadre, inclinación, giro y rotación, con llegada en muelle, suave, lineal o corte) y planos del **Director**. Así puedes girar el móvil a mitad del vídeo.
-   - **Móvil**: movimientos del dispositivo: **giro 360°** sobre el eje vertical, **voltereta 360°** sobre el horizontal, entrada girando, caída desde arriba, asomarse desde abajo, saltito y salida. En los giros eliges vueltas, sentido y duración; si los pones junto a un cambio de clip, se centran en él y el corte ocurre mientras se ve la parte de atrás del móvil. Los movimientos rápidos llevan desenfoque de movimiento.
-   - **Texto**: títulos al estilo de los anuncios de Apple, junto al móvil (que se aparta para dejarles sitio y, si quieres, gira un poco para mirarlos), arriba, abajo o en el centro. Un titular (una línea por salto de línea) y, si quieres, una línea más pequeña debajo; tamaño grande para cifras («100 / ciudades reales.»). Entran apareciendo, palabra a palabra o línea a línea (las anteriores se atenúan). Se añaden con el botón **T**, la tecla T o doble clic en la pista.
-   - **Imágenes**: logos, distintivos o cualquier PNG, WebP o JPEG, con su transparencia, por encima del vídeo y por debajo de los textos. Arrástralas en la vista previa para colocarlas; en su panel eliges tamaño, opacidad, fundidos y duración. Pueden coincidir varias a la vez.
-   - **Efectos**, **Voz** y **Música**: sonidos (mp3, wav, m4a, ogg, flac…) que se mezclan con el de la grabación. Cada pista admite varios sonidos a la vez, que se apilan en carriles. Arrastra un clip para moverlo (también a otra pista de sonido) y sus bordes para recortarlo; en su panel ajustas volumen, fundidos y si se repite en bucle. La música llena por defecto el resto del vídeo, repitiéndose si es corta, y baja sola mientras habla la voz en off. Cada una tiene su propio volumen junto a su nombre, en la línea de tiempo; en el panel, **Sonido** reúne esos volúmenes y el de la grabación. La vista previa ya suena: reproduce la mezcla completa.
-   Para añadir imágenes y sonidos usa sus botones en la barra de la línea de tiempo, haz doble clic en la pista o arrastra el archivo a la ventana (se coloca en el cursor).
-   El **Director** funciona como en Matte: mueve el cursor a cada momento importante, arrastra sobre la vista previa lo que debe verse y pulsa **Generar planos**. Elige movimiento 3D (ángulos y órbitas) o 2D (zoom plano), su intensidad, y pide **otra toma** de un plano si no te convence.
-   Las herramientas de la línea de tiempo son iconos, agrupados como en los editores de vídeo (añadir zoom, movimiento de cámara, texto y movimiento del móvil; Director; dividir, congelar fotograma y añadir vídeo; deshacer y rehacer); al pasar el ratón por encima se ve su nombre y su atajo. Todo se puede deshacer (Ctrl+Z) y rehacer (Ctrl+Mayús+Z).
-   El panel de ajustes de la derecha se puede ensanchar arrastrando su borde y ocultar con el botón de la esquina superior derecha (Ctrl+4) para ver la vista previa más grande.
-   En **Iluminación** eliges la luz del móvil: **Estudio**, **Suave**, **Dramática**, **Contraluz**, **Cálida** o **Fría**, con su dirección, intensidad y el reflejo de la pantalla. La sombra sigue a la luz. En **Acabado**: desenfoque de movimiento (también en zooms y animaciones), calidad de los bordes, viñeta, grano, fundido de entrada y a negro, y fundido entre clips.
-4. **Exporta** en MP4 (H.264 o HEVC) o GIF, a 720p, 1080p o 4K, a 30 o 60 fps, con el sonido del móvil. Si tienes una tarjeta gráfica, la exportación la usa para dibujar los fotogramas (Vulkan, DirectX 12 o Metal) y para codificar el vídeo (NVENC en NVIDIA, VAAPI en AMD e Intel en Linux, AMF o Quick Sync en Windows); si algo falla, se vuelve a hacer con el procesador. Un vídeo de 16 s a 1080p60 con un modelo 3D tarda unos 6 s en lugar de 40 s. Todas las exportaciones salen en BT.709 (rango TV) y etiquetadas, se hagan con la tarjeta o con el procesador. La vista previa también se dibuja en la tarjeta gráfica, con el desenfoque y los bordes de la exportación incluso mientras se reproduce (sin tarjeta, la dibuja el procesador con el mismo resultado).
+1. **Record.** Connect the phone over USB (with USB debugging on), press **Grabar** (Record) and use your app as usual. rec-ording records where you tap. With **Barra de estado limpia** (clean status bar, on by default) the phone shows 9:41, a full battery and no notifications while you record, and goes back to normal when you finish.
+   You can also record an Android Studio **emulator**: open it from the Device Manager and it shows up in the list with the name of its virtual device. Clicks in its window are recorded as taps.
+   Already have a recording? Press **Importar** (Import) or drag the video onto the window.
+2. **Adjust.** Choose the format (16:9, 9:16, 1:1, 4:5), the device (rounded, flat, curved, tablet or no frame) and its color, the background, margin and shadow.
+   **Modelos 3D** (3D models) is a gallery of 3D phones (the Galaxy S26 Ultra is included) where you can **import** your own as `.glb`, `.gltf` or straight from the downloaded `.zip` (loose textures and `.bin` files are copied to your gallery with the model; a model that can't be used is not added). To rename or delete an imported model, select it and use the pencil or trash icon next to the title, or right-click it. rec-ording finds the screen, straightens the model and projects your recording onto it. In **Ajustes avanzados** (advanced settings), in the same section, you choose the part that acts as the screen, how the video fits (**Rellenar**, fill by cropping; **Encajar**, fit with black bars; or **Estirar**, stretch) and, if the model has animations, which one to play and whether it loops. CC BY models ask you to credit their author when you publish the video: the Galaxy S26 Ultra is by [Sagar Modi](https://sketchfab.com/modis1761) ([Sketchfab](https://sketchfab.com/3d-models/samsung-s26-ultra-7ff228963ea446f39f46a5541f71e352), CC BY 4.0; see `assets/models/CREDITS.md`).
+   In **Ángulo 3D** (3D angle) you can turn and tilt the phone (with real edges and reflections), have it straighten when zooming in, float gently or spin in at the start.
+   Zooms are created automatically from the taps; you can move them, stretch them, change their level or choose where they focus by clicking on the preview.
+3. **Edit.** The timeline has these tracks:
+   - **Vídeo** (Video): several recordings one after another. Drag a clip's edges to trim it, drag the clip to reorder it, and use **Dividir** (Split, Ctrl+B) to cut it at the playhead; the film button with a "+" adds another video at the end. In the clip's panel you can change its **speed** (0.25× to 4×), **freeze a frame** for as long as you want or **replace its video** with another recording, keeping its trims and everything on top of it. The small white marks show screen changes (scrolling, keyboard, dialogs): titles, zooms and moves snap to them when dragged, and everything on the timeline stays with its moment of the recording when clips are trimmed or moved.
+   - **Cámara** (Camera): zooms, keyframed **moves** (zoom, framing, tilt, turn and roll, arriving with a spring, smooth, linear or cut easing) and **Director** shots. This is how you turn the phone halfway through the video.
+   - **Móvil** (Phone): device moves: a **360° turn** around the vertical axis, a **360° flip** around the horizontal one, spin in, drop in from above, rise from below, a small hop and an exit. For turns you choose the number of turns, direction and duration; placed next to a cut, they center on it so the cut happens while the back of the phone is showing. Fast moves get motion blur.
+   - **Texto** (Text): titles in the style of Apple's ads, next to the phone (which moves aside to make room and, if you want, turns slightly towards them), at the top, bottom or center. A headline (one line per line break) and an optional smaller line below; a large size for figures ("100 / real cities."). They appear with a fade, word by word or line by line (earlier lines dim). Add them with the **T** button, the T key or a double click on the track.
+   - **Imágenes** (Images): logos, badges or any PNG, WebP or JPEG, with their transparency, above the video and below the titles. Drag them in the preview to place them; their panel sets size, opacity, fades and duration. Several can show at once.
+   - **Efectos**, **Voz** and **Música** (Effects, Voice-over and Music): sounds (mp3, wav, m4a, ogg, flac…) mixed with the recording's own sound. Each track holds several sounds at once, stacked in lanes. Drag a clip to move it (also onto another sound track) and its edges to trim it; its panel sets volume, fades and looping. By default music fills the rest of the video, repeating if it's short, and lowers itself while the voice-over speaks. Each track has its own volume next to its name on the timeline; in the panel, **Sonido** (Sound) gathers those volumes and the recording's. The preview plays the full mix.
+   To add images and sounds, use their buttons in the timeline toolbar, double-click the track or drag the file onto the window (it goes at the playhead).
+   The **Director** works like in Matte: move the playhead to each important moment, drag over the preview what should be seen and press **Generar planos** (generate shots). Choose 3D movement (angles and orbits) or 2D (flat zoom) and its intensity, and ask for **otra toma** (another take) of a shot you don't like.
+   The timeline tools are icons, grouped as in video editors (add zoom, camera move, text and phone move; Director; split, freeze frame and add video; undo and redo); hovering shows their name and shortcut. Everything can be undone (Ctrl+Z) and redone (Ctrl+Shift+Z).
+   The settings panel on the right can be widened by dragging its edge and hidden with the button in the top right corner (Ctrl+4) for a bigger preview.
+   In **Iluminación** (Lighting) you choose the phone's light: **Estudio** (studio), **Suave** (soft), **Dramática** (dramatic), **Contraluz** (backlight), **Cálida** (warm) or **Fría** (cool), with its direction, intensity and the screen's glare. The shadow follows the light. In **Acabado** (Finish): motion blur (also on zooms and animations), edge quality, vignette, grain, fade in and out to black, and crossfades between clips.
+4. **Export** as MP4 (H.264 or HEVC) or GIF, at 720p, 1080p or 4K, at 30 or 60 fps, with sound. With a graphics card, the export uses it to draw the frames (Vulkan, DirectX 12 or Metal) and to encode the video (NVENC on NVIDIA, VAAPI on AMD and Intel on Linux, AMF or Quick Sync on Windows); if something fails, it is done again on the processor. A 16 s video at 1080p60 with a 3D model takes about 6 s instead of 40 s. Every export comes out in BT.709 (TV range) and tagged, whether done on the graphics card or the processor. The preview is also drawn on the graphics card, with the export's blur and edges even while playing (without a graphics card, the processor draws it with the same result).
 
-### Atajos
+### Shortcuts
 
-| Tecla | Acción |
+| Key | Action |
 | --- | --- |
-| Espacio | Reproducir / pausar |
-| Z | Añadir un zoom en el cursor |
-| T | Añadir un texto en el cursor |
-| Ctrl+B | Dividir el clip en el cursor |
-| Ctrl+Z / Ctrl+Mayús+Z | Deshacer / rehacer |
-| Ctrl+4 | Mostrar u ocultar el panel de ajustes |
-| Supr / Retroceso | Eliminar lo seleccionado (clip, movimiento, texto, fotograma clave u objetivo) |
-| Esc | Quitar la selección (ver el resultado) o salir del Director |
-| ← / → | Fotograma anterior / siguiente (con Mayús: 1 segundo) |
-| Inicio / Fin | Ir al principio / al final |
+| Space | Play / pause |
+| Z | Add a zoom at the playhead |
+| T | Add a title at the playhead |
+| Ctrl+B | Split the clip at the playhead |
+| Ctrl+Z / Ctrl+Shift+Z | Undo / redo |
+| Ctrl+4 | Show or hide the settings panel |
+| Delete / Backspace | Delete the selection (clip, move, title, keyframe or target) |
+| Esc | Clear the selection (to see the result) or leave the Director |
+| ← / → | Previous / next frame (with Shift: 1 second) |
+| Home / End | Go to the start / end |
 
-## Requisitos
+## Requirements
 
 ```bash
 sudo pacman -S ffmpeg android-tools scrcpy zenity
 ```
 
-- **ffmpeg**: leer y exportar vídeo (imprescindible).
-- **scrcpy** (recomendado): graba con sonido y sin límite de duración. Sin scrcpy se usa `adb screenrecord` (máximo 3 minutos, sin sonido).
-- **android-tools** (`adb`): detectar el móvil y registrar los toques.
-- **zenity** o **kdialog**: diálogos para elegir archivos (también puedes arrastrar vídeos a la ventana).
+- **ffmpeg**: reads and exports video (required).
+- **scrcpy** (recommended): records with sound and no time limit. Without scrcpy, `adb screenrecord` is used (3 minutes at most, no sound).
+- **android-tools** (`adb`): finds the phone and records the taps.
+- **zenity** or **kdialog**: file pickers (you can also drag videos onto the window).
 
-Las grabaciones y exportaciones se guardan en `~/Vídeos/rec-ording`. Los proyectos se guardan solos en `~/.local/share/rec-ording/proyectos/`.
+Recordings and exports are saved to `rec-ording` in your Videos folder. Projects save themselves to `~/.local/share/rec-ording/proyectos/`.
 
-## Asistente (MCP)
+## Assistant (MCP)
 
-Un agente (Claude, Cursor, Codex…) puede montar el vídeo por ti con `rec-ording --mcp`, un servidor MCP por stdio que edita el proyecto abierto en la app (la app muestra sus cambios al momento y se pueden deshacer). El botón **Asistente** de la app muestra la configuración lista para copiar. Por ejemplo, en Claude Code:
+An agent (Claude, Cursor, Codex…) can edit the video for you with `rec-ording --mcp`, an MCP server over stdio that edits the project open in the app (the app shows its changes right away and they can be undone). The app's **Asistente** (Assistant) button shows the configuration ready to copy. For example, in Claude Code:
 
 ```bash
 claude mcp add rec-ording -- /usr/bin/rec-ording --mcp
 ```
 
-Herramientas: proyectos (`get_project`, `create_project`, `open_project`, `undo`…), grabar e importar, editar clips (también velocidad, `freeze_frame` y `replace_clip_video`), zooms y fotogramas clave de cámara, Director, dispositivo y modelos 3D, movimientos del móvil con giros de 360° (`add_device_motion`, `update_device_motion`), títulos (`add_text`, `update_text`, `delete_text`, `export_texts`, `import_texts`), imágenes (`add_image`, `update_image`, `delete_image`), sonidos en las pistas de efectos, voz y música (`add_sound`, `update_sound`, `delete_sound`) y la mezcla (`set_mix`), estilo con iluminación y acabado (`set_style`), `render_frame` (devuelve una imagen del resultado), `render_strip` (varios momentos en una imagen), `render_preview` (un vídeo corto de un tramo), `get_hardware` (qué tarjeta gráfica y codificador hay) y `export` (con `hardware` para usar la tarjeta o no).
+Tools: projects (`get_project`, `create_project`, `open_project`, `undo`…), recording and importing, clip editing (also speed, `freeze_frame` and `replace_clip_video`), zooms and camera keyframes, the Director, device and 3D models, phone moves with 360° turns (`add_device_motion`, `update_device_motion`), titles (`add_text`, `update_text`, `delete_text`, `export_texts`, `import_texts`), images (`add_image`, `update_image`, `delete_image`), sounds on the effects, voice and music tracks (`add_sound`, `update_sound`, `delete_sound`) and the mix (`set_mix`), style with lighting and finish (`set_style`), `render_frame` (returns a picture of the result), `render_strip` (several moments in one picture), `render_preview` (a short video of a stretch), `get_hardware` (which graphics card and encoder there are) and `export` (with `hardware` to use the graphics card or not).
 
-Además:
+Also:
 
-- Todas las herramientas aceptan `project` para trabajar en un proyecto concreto aunque en la app haya otro abierto, y cada respuesta dice en qué proyecto se hizo.
-- `batch` hace varias operaciones en una llamada y se deshace de una vez.
-- `play_gestures` toca, desliza y escribe en el móvil mientras graba; cada gesto queda apuntado como un toque (con su círculo y su zoom automático).
-- `detect_marks` busca los cambios de pantalla, y las herramientas que colocan algo en el tiempo aceptan `mark` en lugar de segundos.
-- Al instalar una versión nueva, el servidor se reinicia solo y avisa al cliente de que las herramientas han cambiado.
+- Every tool takes `project` to work on a given project even if another one is open in the app, and every answer says which project it acted on.
+- `batch` runs several operations in one call, undone in one step.
+- `play_gestures` taps, swipes and types on the phone while recording; each gesture is recorded as a tap (with its circle and its automatic zoom).
+- `detect_marks` finds the screen changes, and the tools that place something in time take `mark` instead of seconds.
+- When a new version is installed, the server restarts itself and tells the client that the tools have changed.
 
-## Instalación
+## Installation
 
-Los paquetes de la última versión están en la página de descargas, https://blzkz.github.io/rec-ording-releases/:
+The packages of the latest version are on the download page, https://blzkz.github.io/rec-ording-releases/:
 
-| Sistema | Archivo | Cómo se instala |
+| System | File | How to install |
 | --- | --- | --- |
-| Arch, CachyOS, Manjaro | `rec-ording-<versión>-1-x86_64.pkg.tar.zst` | `sudo pacman -U <archivo>` |
-| Debian, Ubuntu, Linux Mint, Pop!_OS | `rec-ording_<versión>-1_amd64.deb` | `sudo apt install ./<archivo>` |
-| Fedora, openSUSE | `rec-ording-<versión>-1.x86_64.rpm` | `sudo dnf install ./<archivo>` o `sudo zypper install <archivo>` |
-| Cualquier otra distribución | `rec-ording-<versión>-x86_64.AppImage` | `chmod +x <archivo>` y ábrelo |
-| Windows | `rec-ording-<versión>-windows-x64.zip` | Descomprímelo y abre `rec-ording.exe` |
+| Arch, CachyOS, Manjaro | `rec-ording-<version>-1-x86_64.pkg.tar.zst` | `sudo pacman -U <file>` |
+| Debian, Ubuntu, Linux Mint, Pop!_OS | `rec-ording_<version>-1_amd64.deb` | `sudo apt install ./<file>` |
+| Fedora, openSUSE | `rec-ording-<version>-1.x86_64.rpm` | `sudo dnf install ./<file>` or `sudo zypper install <file>` |
+| Any other distribution | `rec-ording-<version>-x86_64.AppImage` | `chmod +x <file>` and open it |
+| Windows | `rec-ording-<version>-windows-x64.zip` | Unzip it and open `rec-ording.exe` |
 
-Los paquetes de Linux necesitan glibc 2.35 o más reciente (Ubuntu 22.04, Debian 12, Fedora 36 o posteriores). El .deb y el .rpm instalan ffmpeg y recomiendan adb, scrcpy y zenity; con el AppImage hay que instalarlos aparte. En Fedora, ffmpeg viene de `ffmpeg-free` (o de RPM Fusion).
+The Linux packages need glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36 or later). The .deb and .rpm install ffmpeg and recommend adb, scrcpy and zenity; with the AppImage you install them yourself. On Fedora, ffmpeg comes from `ffmpeg-free` (or from RPM Fusion).
 
-Desde el repositorio, en CachyOS:
+From the repository, on CachyOS:
 
 ```bash
 ./install-cachyos.sh
 ```
 
-o compilando a mano:
+or building it yourself:
 
 ```bash
 cargo build --release
 ./target/release/rec-ording
 ```
 
-### Actualizaciones
+### Updates
 
-Al abrirse, la app lee el `latest.json` de la página de descargas (GitHub Pages del repositorio público `blzkz/rec-ording-releases`, que solo tiene los paquetes). No se usan las releases de GitHub porque siempre muestran unos archivos «Source code». Si la hay, se abre una ventana que lo cuenta y ofrece actualizar (también queda el botón **Actualización** en la barra):
+When it opens, the app reads `latest.json` from the download page (GitHub Pages of the public `blzkz/rec-ording-releases` repository, which only holds the packages). GitHub Releases are not used because they always show "Source code" archives. If there is a new version, a window says so and offers to update (the **Actualización** (Update) button also stays in the toolbar):
 
-- en Linux instala el paquete con el gestor del sistema a través de `pkexec` (pacman, apt, dnf o zypper, según cómo se instaló; pide tu contraseña), o reemplaza el archivo si es un AppImage;
-- en Windows reemplaza los archivos de la carpeta de rec-ording;
-- en una copia compilada a mano, abre la página de descarga.
+- on Linux it installs the package with the system's package manager through `pkexec` (pacman, apt, dnf or zypper, depending on how it was installed; it asks for your password), or replaces the file for an AppImage;
+- on Windows it replaces the files in the rec-ording folder;
+- in a copy built by hand, it opens the download page.
 
-Después basta con reiniciar. Las descargas se comprueban con la suma SHA-256 de `latest.json`.
+Then just restart. Downloads are checked against the SHA-256 checksum in `latest.json`.
 
-El botón del engranaje, en la barra de arriba, muestra la versión instalada y el enlace a las licencias y créditos, busca actualizaciones a mano y permite desactivar **Actualizaciones automáticas** (activadas por defecto): sin ellas, la app no busca versiones nuevas al abrirse.
+The gear button in the top bar shows the installed version and the link to licenses and credits, looks for updates on request and lets you turn off **Actualizaciones automáticas** (automatic updates, on by default): without them, the app doesn't look for new versions when it opens.
 
-Para publicar una versión, sube una etiqueta `vX.Y.Z` (con la versión de `Cargo.toml` y del `PKGBUILD`). El workflow **Release** pasa los tests y compila en Arch, en Ubuntu 22.04 (`.deb`, `.rpm` y AppImage con `packaging/linux/build-packages.sh`) y en Windows, y publica la página de descargas: `packaging/site/make-site.py` genera `index.html` y `latest.json` con los paquetes y sus sumas SHA-256, y se suben a la rama `gh-pages` del repositorio público (solo la última versión). Las notas son el mensaje de la etiqueta anotada, en Markdown (`git tag -a vX.Y.Z -F notas.md`). Necesita el secret `RELEASES_TOKEN`: un token *fine-grained* con permiso *Contents: read and write* solo sobre `blzkz/rec-ording-releases`. Sin él, los paquetes quedan como artefactos de la ejecución y el paso de publicar falla avisándolo.
+To publish a version, push a `vX.Y.Z` tag (matching the version in `Cargo.toml` and the `PKGBUILD`). The **Release** workflow runs the tests and builds on Arch, on Ubuntu 22.04 (`.deb`, `.rpm` and AppImage with `packaging/linux/build-packages.sh`) and on Windows, then publishes the download page: `packaging/site/make-site.py` generates `index.html`, `licencias.html` and `latest.json` with the packages and their SHA-256 checksums, and they are pushed to the `gh-pages` branch of the public repository (only the latest version). The notes are the annotated tag's message, in Markdown (`git tag -a vX.Y.Z -F notes.md`). It needs the `RELEASES_TOKEN` secret: a fine-grained token with *Contents: read and write* permission on `blzkz/rec-ording-releases` only. Without it, the packages stay as artifacts of the run and the publish step fails saying so.
 
 ### Windows
 
-Descarga `rec-ording-<versión>-windows-x64.zip`, descomprímelo y abre `rec-ording.exe`. Lo genera el workflow **Release** de GitHub Actions al subir una etiqueta `v*` (también se puede lanzar a mano desde la pestaña Actions para probar la compilación, sin publicar). Instala las herramientas con:
+Download `rec-ording-<version>-windows-x64.zip`, unzip it and open `rec-ording.exe`. It is built by the **Release** GitHub Actions workflow when a `v*` tag is pushed (it can also be started by hand from the Actions tab to try a build, without publishing). Install the tools with:
 
 ```powershell
 winget install Gyan.FFmpeg
@@ -165,43 +169,43 @@ winget install Google.PlatformTools
 winget install Genymobile.scrcpy
 ```
 
-En Windows las grabaciones se guardan en `.mkv` (scrcpy no se puede detener limpiamente desde otro proceso, y un MKV cortado sigue funcionando). Los proyectos están en `%APPDATA%\rec-ording`.
+On Windows recordings are saved as `.mkv` (scrcpy can't be stopped cleanly from another process, and a cut-off MKV still plays). Projects are in `%APPDATA%\rec-ording`.
 
-Para compilarlo desde Linux (necesita `rustup target add x86_64-pc-windows-gnu` y `mingw-w64-gcc`):
+To build it from Linux (needs `rustup target add x86_64-pc-windows-gnu` and `mingw-w64-gcc`):
 
 ```bash
 ./packaging/windows/build-local.sh
 ```
 
-## Cómo está hecho
+## How it's made
 
-Aplicación nativa en Rust con [egui](https://github.com/emilk/egui).
+A native Rust app built with [egui](https://github.com/emilk/egui).
 
-| Módulo | Qué hace |
+| Module | What it does |
 | --- | --- |
-| `capture.rs` | Graba con scrcpy (o `adb screenrecord`) y lee los toques de la pantalla táctil con `getevent`, sincronizados con el vídeo. También hace gestos con `adb shell input` y pone el modo demo de Android. |
-| `timeline.rs` | Línea de tiempo: clips, cámara y movimientos del móvil por fotogramas clave, zoom automático, Director y todas las operaciones de edición (las usan la app y el MCP). |
-| `mcp.rs` | Servidor MCP (`rec-ording --mcp`). |
-| `compositor.rs` | Dibuja cada fotograma: fondo, sombra, el móvil en 3D (perspectiva, grosor e iluminación), la grabación y los toques. La vista previa y la exportación usan el mismo código. |
-| `media.rs` | Lee vídeos con ffprobe/ffmpeg, crea una copia ligera para que la vista previa sea fluida y genera las miniaturas. |
-| `model3d.rs` | Carga modelos glTF/GLB (con animaciones de nodos), encuentra y endereza la pantalla y los rasteriza con perspectiva, texturas e iluminación. |
-| `library.rs` | Galería de modelos: los incluidos en `assets/models` y los importados, con miniaturas renderizadas. |
-| `export.rs` | Decodifica la grabación, compone cada fotograma y codifica el resultado con ffmpeg. |
-| `app/`, `theme.rs` | Interfaz: inicio, visor, línea de tiempo, inspector y hojas; iconos dibujados de las herramientas. |
-| `thumbs.rs` | Imagen de cada proyecto para el inicio, dibujada como la exportación y guardada en caché. |
-| `images.rs` | Imágenes sobre el vídeo: las lee con ffmpeg, conserva la transparencia y las dibuja bajo los títulos (también en la capa que se manda a la tarjeta gráfica). |
-| `audio.rs` | Sonido: la mezcla de la grabación con las pistas de efectos, voz y música (un solo grafo de ffmpeg para la exportación y la vista previa), formas de onda y la reproducción en la vista previa (cpal). |
-| `text.rs` | Títulos: maquetación con Inter Display (incluida en `assets/fonts`, licencia OFL), animaciones de entrada y salida, y el sitio que el móvil les deja. |
-| `gpu/` | El compositor en la tarjeta gráfica (wgpu): los mismos cálculos que `compositor.rs` en shaders WGSL. Dibuja la exportación y la vista previa (en la misma tarjeta que la ventana, sin copiar la imagen de vuelta). Los tests comparan sus fotogramas con los del procesador. |
-| `post.rs` | El acabado: viñeta, grano y fundidos, igual en el procesador y en la tarjeta. |
-| `hwenc.rs` | Codificación con la tarjeta gráfica (NVENC, AMF, Quick Sync, VAAPI): prueba qué funciona en el equipo. |
-| `update.rs` | Busca versiones nuevas en la página de descargas y las instala con el gestor de paquetes del sistema, reemplazando el AppImage o la carpeta en Windows. |
-| `platform.rs` | Lo que cambia entre Linux y Windows: carpetas, diálogos de archivos, abrir archivos y lanzar herramientas sin ventana de consola. |
+| `capture.rs` | Records with scrcpy (or `adb screenrecord`) and reads the touchscreen's taps with `getevent`, in sync with the video. It also plays gestures with `adb shell input` and turns on Android's demo mode. |
+| `timeline.rs` | The timeline: clips, keyframed camera and phone moves, automatic zoom, the Director and every editing operation (used by both the app and the MCP server). |
+| `mcp.rs` | The MCP server (`rec-ording --mcp`). |
+| `compositor.rs` | Draws each frame: background, shadow, the 3D phone (perspective, thickness and lighting), the recording and the taps. The preview and the export share the same code. |
+| `media.rs` | Reads videos with ffprobe/ffmpeg, makes a light copy so the preview plays smoothly and generates the thumbnails. |
+| `model3d.rs` | Loads glTF/GLB models (with node animations), finds and straightens the screen and rasterizes them with perspective, textures and lighting. |
+| `library.rs` | The model gallery: the ones included in `assets/models` and the imported ones, with rendered thumbnails. |
+| `export.rs` | Decodes the recording, composes each frame and encodes the result with ffmpeg. |
+| `app/`, `theme.rs` | The interface: start screen, viewer, timeline, inspector and sheets; the tools' drawn icons. |
+| `thumbs.rs` | The picture of each project for the start screen, drawn like the export and cached. |
+| `images.rs` | Images over the video: reads them with ffmpeg, keeps their transparency and draws them under the titles (also in the layer sent to the graphics card). |
+| `audio.rs` | Sound: mixes the recording with the effects, voice and music tracks (one ffmpeg graph for both the export and the preview), waveforms and playback in the preview (cpal). |
+| `text.rs` | Titles: layout with Inter Display (included in `assets/fonts`, OFL license), entry and exit animations, and the room the phone leaves for them. |
+| `gpu/` | The compositor on the graphics card (wgpu): the same maths as `compositor.rs` in WGSL shaders. Draws the export and the preview (on the same card as the window, without copying the picture back). Tests compare its frames with the processor's. |
+| `post.rs` | The finish: vignette, grain and fades, the same on the processor and the graphics card. |
+| `hwenc.rs` | Encoding on the graphics card (NVENC, AMF, Quick Sync, VAAPI): tests what works on the computer. |
+| `update.rs` | Looks for new versions on the download page and installs them with the system's package manager, by replacing the AppImage or the folder on Windows. |
+| `platform.rs` | What differs between Linux and Windows: folders, file pickers, opening files and starting tools without a console window. |
 
-Tests: `cargo test` (incluye una prueba que monta y exporta un vídeo a través del servidor MCP). Con un vídeo o un móvil reales:
+Tests: `cargo test` (includes a test that builds and exports a video through the MCP server). With a real video or phone:
 
 ```bash
-REC_TEST_VIDEO=/ruta/video.mp4 cargo test exports_real_video -- --ignored
-REC_TEST_SERIAL=<serial de adb> cargo test records_from_device -- --ignored
-REC_TEST_VIDEO=/ruta/video.mp4 REC_TEST_MODEL=/ruta/movil.glb cargo test exports_real_video -- --ignored
+REC_TEST_VIDEO=/path/video.mp4 cargo test exports_real_video -- --ignored
+REC_TEST_SERIAL=<adb serial> cargo test records_from_device -- --ignored
+REC_TEST_VIDEO=/path/video.mp4 REC_TEST_MODEL=/path/phone.glb cargo test exports_real_video -- --ignored
 ```
